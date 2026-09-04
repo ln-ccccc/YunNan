@@ -215,6 +215,72 @@ class TestInferenceJobPayload(unittest.TestCase):
         self.assertEqual(result["worker_status"], "stale")
         self.assertTrue(result["warnings"])
 
+    def test_serialize_job_removes_private_paths_from_public_sections(self):
+        serialize_job = self.load_jobs_module().serialize_job
+        job = SimpleNamespace(
+            id="job-private-paths",
+            project_id=7,
+            status="failed",
+            requested_device="auto",
+            effective_device=None,
+            fallback_reason=None,
+            warnings_json='["Worker used /secret/warn.log"]',
+            progress_current=1,
+            progress_total=2,
+            request_payload_json=json.dumps(
+                {
+                    "project_id": 7,
+                    "dataset_id": 11,
+                    "mine_resource_id": 13,
+                    "mine_fids": [101],
+                    "year": "2024",
+                    "old_tif_path": "/secret/scene.tif",
+                    "new_tif_path": "/secret/scene.tif",
+                    "kml_path": "/secret/mine.geojson",
+                    "output_root": "/secret/outputs",
+                    "storage_key": "incoming/scene.tif",
+                }
+            ),
+            result_json=json.dumps(
+                {
+                    "written_fid_list": ["101"],
+                    "output_dir": "/secret/outputs/101",
+                    "nested": {
+                        "manifest_path": "/secret/manifest.json",
+                        "count": 1,
+                    },
+                }
+            ),
+            error_code="INFERENCE_FAILED",
+            error_message="无法读取 /secret/scene.tif",
+            cancel_requested=False,
+            create_time=None,
+            started_at=None,
+            finished_at=None,
+        )
+
+        result = serialize_job(job)
+        public_json = json.dumps(result, ensure_ascii=False)
+
+        self.assertEqual(
+            result["request"],
+            {
+                "project_id": 7,
+                "dataset_id": 11,
+                "mine_resource_id": 13,
+                "mine_fids": [101],
+                "year": "2024",
+            },
+        )
+        self.assertEqual(result["result"]["written_fid_list"], ["101"])
+        self.assertEqual(result["result"]["nested"], {"count": 1})
+        self.assertNotIn("/secret", public_json)
+        self.assertNotIn("old_tif_path", public_json)
+        self.assertNotIn("output_root", public_json)
+        self.assertNotIn("manifest_path", public_json)
+        self.assertNotIn("Worker used", public_json)
+        self.assertNotIn("/secret", result["error"]["message"])
+
 
 HAS_FLASK_TEST_STACK = all(
     importlib.util.find_spec(name) is not None
@@ -231,6 +297,10 @@ class TestInferenceJobAPI(unittest.TestCase):
         self.db = db
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
+        self.storage_root = self.root / "project_storage"
+        self.previous_storage_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        os.environ["PROJECT_STORAGE_ROOT"] = str(self.storage_root)
+        (self.storage_root / "incoming").mkdir(parents=True)
         self.old_tif = self.root / "old.tif"
         self.kml = self.root / "roi.kml"
         self.output_root = self.root / "outputs"
@@ -251,6 +321,10 @@ class TestInferenceJobAPI(unittest.TestCase):
         self.db.session.remove()
         self.db.drop_all()
         self.context.pop()
+        if self.previous_storage_root is None:
+            os.environ.pop("PROJECT_STORAGE_ROOT", None)
+        else:
+            os.environ["PROJECT_STORAGE_ROOT"] = self.previous_storage_root
         self.temp_dir.cleanup()
 
     def login(self):
@@ -265,11 +339,103 @@ class TestInferenceJobAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def seed_ready_project(self, *, status="active", include_basemap=True):
+        from applications.models.project import Project, ProjectDataset, ProjectMineBinding
+        from applications.models.project_spatial import ProjectSpatialResource
+
+        project = Project(
+            name="安全推理项目",
+            status=status,
+            monitor_start_year=2024,
+            monitor_end_year=2025,
+        )
+        self.db.session.add(project)
+        self.db.session.flush()
+
+        vector_relative_path = f"projects/{project.id}/normalized/mine.geojson"
+        vector_path = self.storage_root / vector_relative_path
+        vector_path.parent.mkdir(parents=True, exist_ok=True)
+        vector_path.write_text("{}", encoding="utf-8")
+        mine_resource = ProjectSpatialResource(
+            project_id=project.id,
+            resource_type="mine_vector",
+            version=1,
+            status="active",
+            source_path=f"projects/{project.id}/raw/mine.geojson",
+            normalized_path=vector_relative_path,
+            source_format="geojson",
+        )
+        self.db.session.add(mine_resource)
+        self.db.session.add(ProjectMineBinding(project_id=project.id, mine_fid=101))
+        self.db.session.add(ProjectMineBinding(project_id=project.id, mine_fid=102))
+        if include_basemap:
+            self.db.session.add(
+                ProjectSpatialResource(
+                    project_id=project.id,
+                    resource_type="basemap",
+                    version=1,
+                    status="active",
+                    source_path=f"projects/{project.id}/basemap/base.tif",
+                    normalized_path=f"projects/{project.id}/basemap/base.tif",
+                    source_format="tif",
+                )
+            )
+
+        dataset_path = self.storage_root / "incoming" / "scene.tif"
+        dataset_path.touch()
+        dataset = ProjectDataset(
+            project_id=project.id,
+            dataset_kind="imagery",
+            display_name="2024 年影像",
+            file_path="incoming/scene.tif",
+            source_format="tif",
+            year_start=2024,
+            year_end=2024,
+        )
+        self.db.session.add(dataset)
+        self.db.session.commit()
+        return SimpleNamespace(
+            project=project,
+            mine_resource=mine_resource,
+            dataset=dataset,
+            dataset_path=dataset_path,
+            vector_path=vector_path,
+        )
+
+    @staticmethod
+    def project_scope(seed, matched_fids=(101, 102)):
+        return {
+            "mode": "project",
+            "project_id": seed.project.id,
+            "mine_resource_id": seed.mine_resource.id,
+            "vector_path": str(seed.vector_path),
+            "matched_fids": list(matched_fids),
+            "warnings": [],
+        }
+
+    def post_safe_job(self, seed, body=None, matched_fids=(101, 102)):
+        request_body = body or {
+            "project_id": seed.project.id,
+            "dataset_id": seed.dataset.id,
+            "year": "2024",
+            "device": "auto",
+        }
+        with patch(
+            "applications.api.inference.resolve_interpretation_scope",
+            return_value=self.project_scope(seed, matched_fids),
+        ):
+            return self.client.post("/api/inference/jobs", json=request_body)
+
+    def job_count(self):
+        from applications.models.inference_job import InferenceJob
+
+        return InferenceJob.query.count()
+
     def test_get_job_requires_login(self):
         response = self.client.get("/api/inference/jobs/missing")
         self.assertEqual(response.status_code, 401)
 
-    def test_create_job_requires_project_context(self):
+    def test_create_job_rejects_legacy_path_body(self):
         self.login()
         response = self.client.post(
             "/api/inference/jobs",
@@ -281,9 +447,216 @@ class TestInferenceJobAPI(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
         data = json.loads(response.data.decode("utf-8"))
-        self.assertIn("project_id", data["msg"])
+        self.assertIn("不支持", data["msg"])
+        self.assertEqual(self.job_count(), 0)
+
+    def test_create_job_uses_registered_dataset_and_hides_private_paths(self):
+        from applications.models.inference_job import InferenceJob
+
+        self.login()
+        seed = self.seed_ready_project()
+
+        response = self.post_safe_job(seed)
+
+        self.assertEqual(response.status_code, 201)
+        public_job = json.loads(response.data.decode("utf-8"))["data"]
+        job = InferenceJob.query.one()
+        private_payload = json.loads(job.request_payload_json)
+        expected_output_root = (
+            self.storage_root / "projects" / str(seed.project.id) / "outputs" / "inference"
+        ).resolve()
+        self.assertEqual(private_payload["old_tif_path"], str(seed.dataset_path.resolve()))
+        self.assertEqual(private_payload["new_tif_path"], str(seed.dataset_path.resolve()))
+        self.assertEqual(private_payload["kml_path"], str(seed.vector_path.resolve()))
+        self.assertEqual(private_payload["output_root"], str(expected_output_root))
+        self.assertEqual(private_payload["dataset_id"], seed.dataset.id)
+        self.assertEqual(private_payload["mine_fids"], [101, 102])
+        self.assertEqual(
+            public_job["request"],
+            {
+                "project_id": seed.project.id,
+                "dataset_id": seed.dataset.id,
+                "mine_resource_id": seed.mine_resource.id,
+                "mine_fids": [101, 102],
+                "year": "2024",
+                "old_year": "",
+                "new_year": "",
+                "requested_device": "auto",
+                "limit": 0,
+            },
+        )
+        self.assertNotIn(str(self.storage_root), json.dumps(public_job, ensure_ascii=False))
+
+    def test_create_job_rejects_unknown_fields_without_creating_job(self):
+        self.login()
+        seed = self.seed_ready_project()
+        unsupported_fields = {
+            "old_tif_path": "/secret/old.tif",
+            "new_tif_path": "/secret/new.tif",
+            "kml_path": "/secret/mine.kml",
+            "output_root": "/secret/output",
+            "storage_key": "incoming/scene.tif",
+            "file_path": "incoming/scene.tif",
+            "limit": 1,
+        }
+
+        for field_name, field_value in unsupported_fields.items():
+            with self.subTest(field_name=field_name):
+                response = self.post_safe_job(
+                    seed,
+                    {
+                        "project_id": seed.project.id,
+                        "dataset_id": seed.dataset.id,
+                        field_name: field_value,
+                    },
+                )
+
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(self.job_count(), 0)
+
+    def test_create_job_rejects_dataset_from_another_project(self):
+        self.login()
+        seed = self.seed_ready_project()
+        other_seed = self.seed_ready_project()
+
+        response = self.post_safe_job(
+            seed,
+            {
+                "project_id": seed.project.id,
+                "dataset_id": other_seed.dataset.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("数据集", json.loads(response.data.decode("utf-8"))["msg"])
+        self.assertEqual(self.job_count(), 0)
+
+    def test_create_job_rejects_archived_or_not_ready_project(self):
+        self.login()
+        archived_seed = self.seed_ready_project(status="archived")
+        not_ready_seed = self.seed_ready_project(include_basemap=False)
+
+        for seed in (archived_seed, not_ready_seed):
+            with self.subTest(project_id=seed.project.id):
+                response = self.post_safe_job(seed)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("推理", json.loads(response.data.decode("utf-8"))["msg"])
+                self.assertEqual(self.job_count(), 0)
+
+    def test_create_job_rejects_invalid_dataset_storage_keys_without_creating_job(self):
+        self.login()
+        seed = self.seed_ready_project()
+        invalid_storage_keys = (
+            "../scene.tif",
+            "/secret/scene.tif",
+            r"C:\secret\scene.tif",
+            r"\\server\share\scene.tif",
+            r"incoming\..\scene.tif",
+            "incoming/scene.jpg",
+            "incoming/missing.tif",
+            "incoming",
+        )
+
+        for storage_key in invalid_storage_keys:
+            with self.subTest(storage_key=storage_key):
+                seed.dataset.file_path = storage_key
+                self.db.session.commit()
+                response = self.post_safe_job(seed)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(self.job_count(), 0)
+
+    def test_create_job_hides_private_path_from_internal_input_failure(self):
+        self.login()
+        seed = self.seed_ready_project()
+
+        with patch(
+            "applications.api.inference.normalize_job_request",
+            side_effect=FileNotFoundError("new_tif_path 不存在: /secret/scene.tif"),
+        ):
+            response = self.post_safe_job(seed)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("/secret", response.data.decode("utf-8"))
+        self.assertEqual(self.job_count(), 0)
+
+    def test_create_job_converts_tiff_scope_error_to_safe_failure(self):
+        from rasterio.errors import RasterioIOError
+
+        self.login()
+        seed = self.seed_ready_project()
+        body = {
+            "project_id": seed.project.id,
+            "dataset_id": seed.dataset.id,
+            "year": "2024",
+        }
+        with patch(
+            "applications.api.inference.resolve_interpretation_scope",
+            side_effect=RasterioIOError("无法打开 /secret/scene.tif"),
+        ):
+            response = self.client.post("/api/inference/jobs", json=body)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("/secret", response.data.decode("utf-8"))
+        self.assertEqual(self.job_count(), 0)
+
+    def test_create_job_rejects_requested_fids_outside_interpretation_scope(self):
+        self.login()
+        seed = self.seed_ready_project()
+        invalid_values = ([103], [], [101, 103], [0])
+
+        for mine_fids in invalid_values:
+            with self.subTest(mine_fids=mine_fids):
+                response = self.post_safe_job(
+                    seed,
+                    {
+                        "project_id": seed.project.id,
+                        "dataset_id": seed.dataset.id,
+                        "mine_fids": mine_fids,
+                    },
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(self.job_count(), 0)
+
+    def test_get_job_hides_persisted_private_paths(self):
+        from applications.models.inference_job import InferenceJob
+
+        self.login()
+        job = InferenceJob(
+            id="private-path-job",
+            status="failed",
+            requested_device="auto",
+            request_payload_json=json.dumps(
+                {
+                    "project_id": 1,
+                    "dataset_id": 2,
+                    "old_tif_path": "/secret/scene.tif",
+                }
+            ),
+            result_json=json.dumps(
+                {
+                    "written_fid_list": ["101"],
+                    "work_dir": "/secret/work",
+                }
+            ),
+            error_code="FAILED",
+            error_message="处理失败: /secret/work",
+        )
+        self.db.session.add(job)
+        self.db.session.commit()
+
+        response = self.client.get(f"/api/inference/jobs/{job.id}")
+
+        self.assertEqual(response.status_code, 200)
+        public_json = response.data.decode("utf-8")
+        self.assertIn("written_fid_list", public_json)
+        self.assertNotIn("/secret", public_json)
+        self.assertNotIn("old_tif_path", public_json)
+        self.assertNotIn("work_dir", public_json)
 
     def test_recover_abandoned_jobs_only_fails_previous_process_in_same_container(self):
         from applications.inference.jobs import recover_abandoned_jobs

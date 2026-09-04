@@ -111,9 +111,12 @@ class TestInterpretationAPI(unittest.TestCase):
         self.assertEqual(payload["mode"], "project")
         self.assertEqual(payload["matched_fids"], [101, 102])
         self.assertEqual(payload["job"]["project_id"], project["id"])
-        request_payload = payload["job"]["request"]
-        self.assertEqual(request_payload["mine_fids"], [101, 102])
-        copied_input = Path(request_payload["new_tif_path"])
+        public_request = payload["job"]["request"]
+        self.assertEqual(public_request["mine_fids"], [101, 102])
+        self.assertNotIn("new_tif_path", public_request)
+        job = InferenceJob.query.filter_by(id=payload["job"]["id"]).one()
+        private_request = json.loads(job.request_payload_json)
+        copied_input = Path(private_request["new_tif_path"])
         self.assertTrue(copied_input.is_file())
         self.assertIn(
             f"projects{os.sep}{project['id']}{os.sep}inputs{os.sep}interpretation{os.sep}2022",

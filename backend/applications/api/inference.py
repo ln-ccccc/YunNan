@@ -1,9 +1,10 @@
-from pathlib import Path
+import re
 
-from flask import Blueprint, current_app, request
+from flask import Blueprint, request
 
 from applications.auth.guard import ensure_logged_in
 from applications.common.utils.http import fail_api, success_api
+from applications.inference.routing import resolve_interpretation_scope
 from applications.inference.jobs import (
     create_job,
     get_latest_worker_capability,
@@ -13,15 +14,21 @@ from applications.inference.jobs import (
     serialize_job,
     serialize_worker_capability,
 )
-from applications.models.project import Project
-from applications.models.project_spatial import ProjectSpatialResource
+from applications.project_hub.inference_inputs import (
+    ProjectInferenceInputError,
+    resolve_project_inference_inputs,
+)
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 
 inference_api = Blueprint("inference_api", __name__, url_prefix="/api/inference")
-repo_root = Path(__file__).resolve().parents[3]
-default_kml_path = repo_root / "miner" / "yunnan.kml"
-default_output_root = repo_root / "miner" / "change_matrix_outputs"
+_CREATE_JOB_FIELDS = {"project_id", "dataset_id", "year", "mine_fids", "device"}
+_URL_VALUE = re.compile(r"(?i)\b(?:https?|ftp)://[^\s]+")
+_ABSOLUTE_PATH_VALUE = re.compile(r"(?<![A-Za-z0-9+.\-])(?:[A-Za-z]:[\\/]|[\\/]{1,2})")
+
+
+class InferenceRequestValidationError(ValueError):
+    """Raised for an invalid browser-facing inference job request shape."""
 
 
 @inference_api.before_request
@@ -29,57 +36,78 @@ def require_inference_auth():
     return ensure_logged_in()
 
 
-def _configured_roots(config_name, defaults):
-    configured = current_app.config.get(config_name)
-    if not configured:
-        return [Path(item).resolve() for item in defaults]
-    return [Path(item.strip()).expanduser().resolve() for item in str(configured).split(",") if item.strip()]
+def _request_positive_integer(payload, field_name):
+    value = payload.get(field_name)
+    if isinstance(value, bool):
+        raise InferenceRequestValidationError(f"{field_name} 必须是正整数")
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        result = int(value.strip())
+    else:
+        raise InferenceRequestValidationError(f"{field_name} 必须是正整数")
+    if result <= 0:
+        raise InferenceRequestValidationError(f"{field_name} 必须是正整数")
+    return result
+
+
+def _parse_create_job_payload():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise InferenceRequestValidationError("推理任务请求必须是 JSON 对象")
+    unsupported_fields = sorted(set(payload).difference(_CREATE_JOB_FIELDS))
+    if unsupported_fields:
+        raise InferenceRequestValidationError(
+            f"推理任务请求包含不支持字段: {', '.join(unsupported_fields)}"
+        )
+    result = {
+        "project_id": _request_positive_integer(payload, "project_id"),
+        "dataset_id": _request_positive_integer(payload, "dataset_id"),
+    }
+    if "year" in payload:
+        year = payload["year"]
+        if isinstance(year, bool) or not isinstance(year, (str, int)):
+            raise InferenceRequestValidationError("year 必须是字符串或整数")
+        result["year"] = year
+    if "mine_fids" in payload:
+        if not isinstance(payload["mine_fids"], list):
+            raise InferenceRequestValidationError("mine_fids 必须是数组")
+        result["mine_fids"] = payload["mine_fids"]
+    if "device" in payload:
+        if not isinstance(payload["device"], str):
+            raise InferenceRequestValidationError("device 必须是字符串")
+        result["device"] = payload["device"]
+    return result
+
+
+def _safe_create_error_message(error):
+    message = str(error)
+    if "file:" in message.casefold() or _ABSOLUTE_PATH_VALUE.search(_URL_VALUE.sub("", message)):
+        return "无法创建推理任务，请检查项目影像和矿山资源状态"
+    return message
 
 
 @inference_api.post("/jobs")
 def create_inference_job_api():
-    payload = dict(request.get_json(silent=True) or {})
     try:
-        if payload.get("project_id") in (None, ""):
-            raise ValueError("解译任务必须提交 project_id")
-        project_id = int(payload.get("project_id"))
-        project = Project.query.filter_by(id=project_id, deleted_at=None).first()
-        if project is None:
-            raise ValueError("项目不存在")
-        mine_resource = (
-            ProjectSpatialResource.query.filter_by(
-                project_id=project_id,
-                resource_type="mine_vector",
-                status="active",
-            )
-            .order_by(ProjectSpatialResource.version.desc())
-            .first()
+        payload = _parse_create_job_payload()
+        private_inputs = resolve_project_inference_inputs(
+            **payload,
+            scope_resolver=resolve_interpretation_scope,
         )
-        if mine_resource is None or not mine_resource.normalized_path:
-            raise ValueError("项目尚未激活矿山资源")
         storage_root = get_storage_root()
+        project_id = private_inputs["project_id"]
         project_root = resolve_storage_path(storage_root, f"projects/{project_id}")
-        payload["project_id"] = project_id
-        payload["mine_resource_id"] = mine_resource.id
-        payload["kml_path"] = str(resolve_storage_path(storage_root, mine_resource.normalized_path))
-        payload["output_root"] = str(project_root / "outputs" / "inference")
-        requested_fids = payload.get("mine_fids") or ([] if payload.get("fid") in (None, "") else [payload.get("fid")])
-        bound_fids = {row.mine_fid for row in project.mines}
-        if any(int(fid) not in bound_fids for fid in requested_fids):
-            raise ValueError("输入矿山不属于当前项目")
-        project_imagery = [
-            Path(dataset.file_path).expanduser().resolve()
-            for dataset in project.datasets
-            if dataset.dataset_kind == "imagery" and Path(dataset.file_path).expanduser().is_file()
-        ]
         normalized = normalize_job_request(
-            payload,
-            allowed_roots=[project_root, *project_imagery],
+            private_inputs,
+            allowed_roots=[storage_root],
             allowed_output_roots=[project_root / "outputs"],
         )
         job = create_job(normalized)
-    except (ValueError, FileNotFoundError) as error:
-        return fail_api(str(error)), 400
+    except InferenceRequestValidationError as error:
+        return fail_api(str(error)), 422
+    except (ProjectInferenceInputError, ValueError, FileNotFoundError) as error:
+        return fail_api(_safe_create_error_message(error)), 400
     return success_api(data=serialize_job(job)), 201
 
 

@@ -2,8 +2,39 @@
 
 import datetime
 import json
+import re
 import uuid
 from pathlib import Path
+
+
+_PUBLIC_REQUEST_FIELDS = (
+    "project_id",
+    "dataset_id",
+    "mine_resource_id",
+    "mine_fids",
+    "year",
+    "old_year",
+    "new_year",
+    "requested_device",
+    "limit",
+)
+_PRIVATE_PATH_FIELDS = {
+    "file_path",
+    "source_path",
+    "normalized_path",
+    "tile_path",
+    "manifest_path",
+    "output_dir",
+    "output_root",
+    "work_dir",
+    "kml_path",
+    "old_tif_path",
+    "new_tif_path",
+    "storage_key",
+}
+_DROP_PUBLIC_VALUE = object()
+_URL_VALUE = re.compile(r"(?i)\b(?:https?|ftp)://[^\s]+")
+_ABSOLUTE_PATH_VALUE = re.compile(r"(?<![A-Za-z0-9+.\-])(?:[A-Za-z]:[\\/]|[\\/]{1,2})")
 
 
 def _is_within(path_obj, root_obj):
@@ -54,6 +85,11 @@ def normalize_job_request(payload, *, allowed_roots, allowed_output_roots=None):
     }
     if source.get("project_id") not in (None, ""):
         result["project_id"] = int(source["project_id"])
+    if source.get("dataset_id") not in (None, ""):
+        dataset_id = int(source["dataset_id"])
+        if dataset_id <= 0:
+            raise ValueError("dataset_id 必须是正整数")
+        result["dataset_id"] = dataset_id
     if source.get("mine_resource_id") not in (None, ""):
         result["mine_resource_id"] = int(source["mine_resource_id"])
     if source.get("mine_fids") is not None:
@@ -149,7 +185,68 @@ def _loads(value, default):
         return default
 
 
+def _contains_absolute_path(value):
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    if not normalized:
+        return False
+    if "file:" in normalized.casefold():
+        return True
+    without_urls = _URL_VALUE.sub("", normalized)
+    return bool(_ABSOLUTE_PATH_VALUE.search(without_urls))
+
+
+def _sanitize_public_value(value):
+    if isinstance(value, dict):
+        result = {}
+        for key, nested_value in value.items():
+            if str(key).strip().casefold() in _PRIVATE_PATH_FIELDS:
+                continue
+            sanitized = _sanitize_public_value(nested_value)
+            if sanitized is not _DROP_PUBLIC_VALUE:
+                result[key] = sanitized
+        return result
+    if isinstance(value, (list, tuple)):
+        result = []
+        for item in value:
+            sanitized = _sanitize_public_value(item)
+            if sanitized is not _DROP_PUBLIC_VALUE:
+                result.append(sanitized)
+        return result
+    if _contains_absolute_path(value):
+        return _DROP_PUBLIC_VALUE
+    return value
+
+
+def _serialize_public_request(value):
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for field_name in _PUBLIC_REQUEST_FIELDS:
+        if field_name not in value:
+            continue
+        sanitized = _sanitize_public_value(value[field_name])
+        if sanitized is not _DROP_PUBLIC_VALUE:
+            result[field_name] = sanitized
+    return result
+
+
+def _serialize_public_error(job):
+    if not job.error_code and not job.error_message:
+        return None
+    code = _sanitize_public_value(job.error_code)
+    message = _sanitize_public_value(job.error_message)
+    if code is _DROP_PUBLIC_VALUE:
+        code = "INFERENCE_FAILED"
+    if message is _DROP_PUBLIC_VALUE:
+        message = "推理任务执行失败，请查看服务端日志"
+    return {"code": code, "message": message}
+
+
 def serialize_job(job):
+    warnings = _sanitize_public_value(_loads(job.warnings_json, []))
+    result = _sanitize_public_value(_loads(job.result_json, None))
     return {
         "id": job.id,
         "project_id": job.project_id,
@@ -157,14 +254,11 @@ def serialize_job(job):
         "requested_device": job.requested_device,
         "effective_device": job.effective_device,
         "fallback_reason": job.fallback_reason,
-        "warnings": _loads(job.warnings_json, []),
+        "warnings": [] if warnings is _DROP_PUBLIC_VALUE else warnings,
         "progress": {"current": job.progress_current or 0, "total": job.progress_total or 0},
-        "request": _loads(job.request_payload_json, {}),
-        "result": _loads(job.result_json, None),
-        "error": None if not job.error_code and not job.error_message else {
-            "code": job.error_code,
-            "message": job.error_message,
-        },
+        "request": _serialize_public_request(_loads(job.request_payload_json, {})),
+        "result": None if result is _DROP_PUBLIC_VALUE else result,
+        "error": _serialize_public_error(job),
         "cancel_requested": bool(job.cancel_requested),
         "create_time": job.create_time.isoformat() if job.create_time else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
