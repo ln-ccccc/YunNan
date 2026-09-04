@@ -44,10 +44,20 @@ class TestProjectMapIsolation(unittest.TestCase):
                         json.dump(
                             {
                                 "type": "FeatureCollection",
+                                "source_path": "projects/1/mines/1/mines.geojson",
                                 "features": [
                                     {
                                         "type": "Feature",
-                                        "properties": {"FID_1": fid},
+                                        "output_dir": "D:/private/output",
+                                        "properties": {
+                                            "FID_1": fid,
+                                            "file_path": "D:/private/mine.geojson",
+                                            "metadata": {
+                                                "source_path": "projects/1/mines/1/source.geojson",
+                                                "label": "保留的公开属性",
+                                            },
+                                            "nested": [[{"tile_path": "projects/1/tiles/1", "label": "嵌套公开属性"}]],
+                                        },
                                         "geometry": {
                                             "type": "Polygon",
                                             "coordinates": [[[longitude, 25], [longitude + 0.1, 25], [longitude, 25.1], [longitude, 25]]],
@@ -89,7 +99,14 @@ class TestProjectMapIsolation(unittest.TestCase):
                     (tile_dir / "0.png").write_bytes(b"png-tile")
                 db.session.commit()
 
-                self.assertEqual(get_project_geojson(first["id"])["features"][0]["properties"]["FID_1"], 1)
+                first_geojson = get_project_geojson(first["id"])
+                first_properties = first_geojson["features"][0]["properties"]
+                self.assertNotIn("source_path", first_geojson)
+                self.assertNotIn("output_dir", first_geojson["features"][0])
+                self.assertEqual(first_properties["FID_1"], 1)
+                self.assertNotIn("file_path", first_properties)
+                self.assertEqual(first_properties["metadata"], {"label": "保留的公开属性"})
+                self.assertEqual(first_properties["nested"], [[{"label": "嵌套公开属性"}]])
                 self.assertEqual(get_project_geojson(second["id"])["features"][0]["properties"]["FID_1"], 2)
                 manifest = get_project_map_manifest(second["id"])
                 self.assertTrue(manifest["map_ready"])

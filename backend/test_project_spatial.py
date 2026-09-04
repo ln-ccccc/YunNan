@@ -108,14 +108,27 @@ class TestProjectSpatialState(unittest.TestCase):
                 resolve_storage_path(temp_dir, os.path.abspath("outside.tif"))
 
     def test_geojson_preview_detects_fields_and_rejects_duplicate_fid(self):
-        from applications.project_hub.spatial_service import preview_mine_vector
+        from applications.project_hub.spatial_service import (
+            preview_mine_vector,
+            sanitize_public_geojson_properties,
+        )
 
         payload = {
             "type": "FeatureCollection",
             "features": [
                 {
                     "type": "Feature",
-                    "properties": {"FID_1": 7, "name": "Mine A", "city": "Kunming"},
+                    "properties": {
+                        "FID_1": 7,
+                        "name": "Mine A",
+                        "city": "Kunming",
+                        "FILE_PATH": "D:/private/mine.geojson",
+                        "source_path": "projects/1/mines/1/source.geojson",
+                        "normalized_path": "projects/1/mines/1/mines.geojson",
+                        "tile_path": "projects/1/tiles/1",
+                        "manifest_path": "projects/1/manifest.json",
+                        "output_dir": "D:/private/output",
+                    },
                     "geometry": {
                         "type": "Polygon",
                         "coordinates": [[[102.0, 25.0], [102.1, 25.0], [102.1, 25.1], [102.0, 25.0]]],
@@ -137,6 +150,15 @@ class TestProjectSpatialState(unittest.TestCase):
         self.assertEqual(preview["suggested_mapping"]["fid"], "FID_1")
         self.assertEqual(preview["suggested_mapping"]["name"], "name")
         self.assertEqual(preview["crs"], "EPSG:4326")
+        reserved_keys = {"file_path", "source_path", "normalized_path", "tile_path", "manifest_path", "output_dir"}
+        self.assertFalse(reserved_keys & {field.casefold() for field in preview["field_names"]})
+        self.assertFalse(reserved_keys & {field.casefold() for field in preview["sample"][0]})
+        self.assertEqual(
+            sanitize_public_geojson_properties(
+                {"metadata": [[{"manifest_path": "D:/private/manifest.json", "label": "保留"}]]}
+            ),
+            {"metadata": [[{"label": "保留"}]]},
+        )
 
         payload["features"][1]["properties"]["FID_1"] = 7
         with self.assertRaisesRegex(ValueError, "FID.*duplicate"):
@@ -183,6 +205,46 @@ class TestProjectSpatialState(unittest.TestCase):
             self.assertEqual(project.mines[0].mine_fid, 101)
             self.assertEqual(project.mines[0].mine_name_snapshot, "Mine A")
             self.assertTrue(os.path.isfile(os.path.join(temp_dir, resource.normalized_path)))
+
+    def test_custom_mine_fid_mapping_is_available_to_automatic_export(self):
+        from applications.project_hub.service import create_export
+        from applications.project_hub.spatial_service import import_mine_vector
+
+        created = create_project({"name": "自定义 FID 项目", "region": "昆明"})
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"mine_code": 301, "name": "自定义编码矿山"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[102.0, 25.0], [102.1, 25.0], [102.1, 25.1], [102.0, 25.0]]],
+                    },
+                }
+            ],
+        }
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            try:
+                import_mine_vector(
+                    created["id"],
+                    "custom-fid.geojson",
+                    json.dumps(payload),
+                    {"fid": "mine_code", "name": "name"},
+                )
+                exported = create_export(created["id"], {"format": "geojson"})
+                artifact_path = Path(temp_dir) / "projects" / str(created["id"]) / "exports" / str(exported["id"]) / "artifact.geojson"
+                with artifact_path.open("r", encoding="utf-8") as handle:
+                    exported_geojson = json.load(handle)
+                self.assertEqual(exported_geojson["features"][0]["properties"]["mine_fid"], 301)
+                self.assertEqual(exported_geojson["features"][0]["properties"]["mine_name"], "自定义编码矿山")
+            finally:
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root
 
     def test_basemap_candidate_is_scoped_to_incoming_and_queues_job(self):
         from applications.project_hub.spatial_service import list_basemap_candidates, register_basemap

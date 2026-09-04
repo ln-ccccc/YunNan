@@ -44,7 +44,7 @@ app.post('/api/auth/logout', async (req, res) => {
   relayBackendResponse(res, await authBackend.logout(req.headers.cookie || ''));
 });
 
-app.use('/api/projects', authGuard, createProjectRoutes({ getMinesData: () => minesData }));
+app.use('/api/projects', authGuard, createProjectRoutes());
 
 app.get('/tiles/:z/:x/:y.png', (req, res) => {
   return res.status(410).json({ error: '全局瓦片接口已停用，请使用项目瓦片地址' });

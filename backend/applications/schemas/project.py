@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from marshmallow import fields
 
@@ -59,24 +60,27 @@ class ProjectActivityLogSchema(ma.Schema):
 class ProjectExportRecordSchema(ma.Schema):
     id = fields.Integer()
     format = fields.Str()
-    file_path = fields.Str(allow_none=True)
+    artifact_name = fields.Method("get_artifact_name", allow_none=True)
     status = fields.Str()
-    request_params = fields.Method("get_request_params")
     create_time = fields.DateTime()
     update_time = fields.DateTime()
 
-    def get_request_params(self, obj):
-        return _json_text_to_obj(obj.request_params_json)
+    def get_artifact_name(self, obj):
+        raw_path = str(obj.file_path or "").replace("\\", "/")
+        return Path(raw_path).name or None
 
 
 class ProjectBackupRecordSchema(ma.Schema):
     id = fields.Integer()
     scope = fields.Str()
-    manifest_path = fields.Str()
+    snapshot_name = fields.Method("get_snapshot_name")
     status = fields.Str()
     restorable = fields.Boolean()
     create_time = fields.DateTime()
     update_time = fields.DateTime()
+
+    def get_snapshot_name(self, obj):
+        return "项目配置快照"
 
 
 class ProjectSummarySchema(ma.Schema):
@@ -96,3 +100,45 @@ class ProjectSummarySchema(ma.Schema):
     latest_activity_at = fields.DateTime(allow_none=True)
     create_time = fields.DateTime()
     update_time = fields.DateTime()
+
+
+class ProjectAssetViewSchema(ma.Schema):
+    id = fields.Str()
+    source_type = fields.Str()
+    source_id = fields.Integer()
+    asset_type = fields.Str()
+    name = fields.Str()
+    format = fields.Str()
+    status = fields.Str()
+    version = fields.Integer()
+    created_at = fields.Str(allow_none=True)
+    updated_at = fields.Str(allow_none=True)
+    spatial = fields.Dict(allow_none=True)
+    temporal = fields.Dict(allow_none=True)
+    provenance = fields.Dict(allow_none=True)
+    error = fields.Dict(allow_none=True)
+    capabilities = fields.Dict(allow_none=True)
+
+
+class ProjectOverviewActivitySchema(ma.Schema):
+    action_code = fields.Str()
+    actor_id = fields.Str()
+    actor_type = fields.Str()
+    target_type = fields.Str()
+    target_id = fields.Str()
+    result = fields.Str()
+    job_id = fields.Str(allow_none=True)
+    payload = fields.Dict()
+    created_at = fields.Str(allow_none=True)
+
+
+class ProjectOverviewViewSchema(ma.Schema):
+    project_id = fields.Integer()
+    lifecycle_status = fields.Str()
+    summary = fields.Dict()
+    readiness = fields.Dict()
+    capabilities = fields.Dict()
+    blockers = fields.List(fields.Dict())
+    next_actions = fields.List(fields.Dict())
+    counts = fields.Dict()
+    recent_activity = fields.List(fields.Nested(ProjectOverviewActivitySchema))

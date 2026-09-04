@@ -3,9 +3,10 @@ import logging
 from io import BytesIO
 from pathlib import Path
 
-from flask import Blueprint, request, send_file, send_from_directory, session
+from flask import Blueprint, jsonify, request, send_file, send_from_directory, session
 
 from applications.auth.guard import login_required
+from applications.common.utils.code import SUCCESS
 from applications.common.utils.http import fail_api, success_api
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
@@ -17,13 +18,17 @@ from applications.project_hub.classification_results import (
     list_classification_revisions,
     save_classification_revision,
 )
+from applications.project_hub.assets import ProjectAssetFilterError
+from applications.project_hub.project_storage import ProjectStorageValidationError
 from applications.project_hub.service import (
     archive_project,
     create_backup,
     create_dataset,
     create_export,
     create_project,
+    get_project_assets,
     get_project_detail,
+    get_project_overview,
     get_project_timeline,
     list_backups,
     list_exports,
@@ -56,6 +61,31 @@ from applications.project_hub.spatial_storage import get_storage_root, resolve_s
 
 project_api = Blueprint("project_api", __name__, url_prefix="/api/projects")
 LOGGER = logging.getLogger(__name__)
+
+
+def _read_model_success_api(data):
+    return jsonify(success=True, code=SUCCESS, data=data)
+
+
+def _request_actor():
+    return str(session.get("admin_username") or "system")
+
+
+def _spatial_failure_response(error, message, project_id):
+    if isinstance(error, ValueError):
+        return fail_api(str(error))
+    LOGGER.exception("%s project_id=%s", message, project_id)
+    return fail_api(f"{message}，请检查服务日志", status=500)
+
+
+def _project_hub_failure_response(error, message, project_id=None):
+    if isinstance(error, ValueError):
+        return fail_api(str(error))
+    if project_id is None:
+        LOGGER.exception(message)
+    else:
+        LOGGER.exception("%s project_id=%s", message, project_id)
+    return fail_api(f"{message}，请检查服务日志", status=500)
 
 
 def _is_label_geotiff_filename(fid, filename):
@@ -150,9 +180,33 @@ def project_list_api():
 @login_required
 def project_create_api():
     try:
-        return success_api(data=create_project(request.json or {}))
+        return success_api(data=create_project(request.json or {}, actor=_request_actor()))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _project_hub_failure_response(exc, "项目创建失败")
+
+
+@project_api.get("/<int:project_id>/overview")
+@login_required
+def project_overview_api(project_id):
+    try:
+        return _read_model_success_api(get_project_overview(project_id))
+    except ValueError as error:
+        return fail_api(str(error), status=404)
+
+
+@project_api.get("/<int:project_id>/assets")
+@login_required
+def project_assets_api(project_id):
+    filters = {
+        "asset_type": request.args.get("type", type=str),
+        "status": request.args.get("status", type=str),
+    }
+    try:
+        return _read_model_success_api(get_project_assets(project_id, filters))
+    except ProjectAssetFilterError as error:
+        return fail_api(str(error), status=400)
+    except ValueError as error:
+        return fail_api(str(error), status=404)
 
 
 @project_api.get("/<int:project_id>")
@@ -168,18 +222,26 @@ def project_detail_api(project_id):
 @login_required
 def project_update_api(project_id):
     try:
-        return success_api(data=update_project(project_id, request.json or {}))
+        return success_api(
+            data=update_project(project_id, request.json or {}, actor=_request_actor())
+        )
     except Exception as exc:
-        return fail_api(str(exc))
+        return _project_hub_failure_response(exc, "项目更新失败", project_id)
 
 
 @project_api.put("/<int:project_id>/mines")
 @login_required
 def project_replace_mines_api(project_id):
     try:
-        return success_api(data=replace_project_mines(project_id, (request.json or {}).get("mines") or []))
+        return success_api(
+            data=replace_project_mines(
+                project_id,
+                (request.json or {}).get("mines") or [],
+                actor=_request_actor(),
+            )
+        )
     except Exception as exc:
-        return fail_api(str(exc))
+        return _project_hub_failure_response(exc, "矿山绑定更新失败", project_id)
 
 
 @project_api.get("/<int:project_id>/spatial")
@@ -188,7 +250,7 @@ def project_spatial_api(project_id):
     try:
         return success_api(data=get_project_spatial(project_id))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _spatial_failure_response(exc, "空间资源读取失败", project_id)
 
 
 @project_api.post("/<int:project_id>/spatial/mines/preview")
@@ -198,7 +260,7 @@ def project_mines_preview_api(project_id):
         payload = request.json or {}
         return success_api(data=preview_mine_vector(payload.get("filename"), payload.get("content")))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _spatial_failure_response(exc, "矿山文件预览失败", project_id)
 
 
 @project_api.post("/<int:project_id>/spatial/mines")
@@ -212,10 +274,11 @@ def project_mines_import_api(project_id):
                 payload.get("filename"),
                 payload.get("content"),
                 payload.get("field_mapping") or {},
+                actor=_request_actor(),
             )
         )
     except Exception as exc:
-        return fail_api(str(exc))
+        return _spatial_failure_response(exc, "矿山导入失败", project_id)
 
 
 @project_api.get("/<int:project_id>/spatial/basemap-candidates")
@@ -224,7 +287,7 @@ def project_basemap_candidates_api(project_id):
     try:
         return success_api(data={"items": list_basemap_candidates(project_id)})
     except Exception as exc:
-        return fail_api(str(exc))
+        return _spatial_failure_response(exc, "底图候选读取失败", project_id)
 
 
 @project_api.post("/<int:project_id>/spatial/basemaps")
@@ -238,10 +301,11 @@ def project_basemap_register_api(project_id):
                 payload.get("candidate"),
                 payload.get("min_zoom", 8),
                 payload.get("max_zoom", 15),
+                actor=_request_actor(),
             )
         )
     except Exception as exc:
-        return fail_api(str(exc))
+        return _spatial_failure_response(exc, "底图处理启动失败", project_id)
 
 
 @project_api.get("/<int:project_id>/spatial/jobs/<string:job_id>")
@@ -250,25 +314,25 @@ def project_spatial_job_api(project_id, job_id):
     try:
         return success_api(data=get_spatial_job(project_id, job_id))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _spatial_failure_response(exc, "空间任务读取失败", project_id)
 
 
 @project_api.post("/<int:project_id>/spatial/jobs/<string:job_id>/retry")
 @login_required
 def project_spatial_job_retry_api(project_id, job_id):
     try:
-        return success_api(data=retry_spatial_job(project_id, job_id))
+        return success_api(data=retry_spatial_job(project_id, job_id, actor=_request_actor()))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _spatial_failure_response(exc, "空间任务重试失败", project_id)
 
 
 @project_api.post("/<int:project_id>/spatial/jobs/<string:job_id>/cancel")
 @login_required
 def project_spatial_job_cancel_api(project_id, job_id):
     try:
-        return success_api(data=cancel_spatial_job(project_id, job_id))
+        return success_api(data=cancel_spatial_job(project_id, job_id, actor=_request_actor()))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _spatial_failure_response(exc, "空间任务取消失败", project_id)
 
 
 @project_api.get("/<int:project_id>/map/manifest")
@@ -402,9 +466,15 @@ def project_mines_trend_report_api(project_id):
 @login_required
 def project_dataset_create_api(project_id):
     try:
-        return success_api(data=create_dataset(project_id, request.json or {}))
-    except Exception as exc:
+        return success_api(
+            data=create_dataset(project_id, request.json or {}, actor=_request_actor())
+        )
+    except ProjectStorageValidationError as exc:
+        return fail_api(str(exc), status=422)
+    except ValueError as exc:
         return fail_api(str(exc))
+    except Exception as exc:
+        return _project_hub_failure_response(exc, "影像登记失败", project_id)
 
 
 @project_api.get("/<int:project_id>/timeline")
@@ -413,34 +483,41 @@ def project_timeline_api(project_id):
     try:
         return success_api(data=get_project_timeline(project_id))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _project_hub_failure_response(exc, "项目活动读取失败", project_id)
 
 
 @project_api.post("/<int:project_id>/archive")
 @login_required
 def project_archive_api(project_id):
     try:
-        return success_api(data=archive_project(project_id))
+        return success_api(data=archive_project(project_id, actor=_request_actor()))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _project_hub_failure_response(exc, "项目归档失败", project_id)
 
 
 @project_api.post("/<int:project_id>/restore")
 @login_required
 def project_restore_api(project_id):
     try:
-        return success_api(data=restore_project(project_id))
+        return success_api(data=restore_project(project_id, actor=_request_actor()))
     except Exception as exc:
-        return fail_api(str(exc))
+        return _project_hub_failure_response(exc, "项目恢复失败", project_id)
 
 
 @project_api.post("/<int:project_id>/exports")
 @login_required
 def project_export_create_api(project_id):
     try:
-        return success_api(data=create_export(project_id, request.json or {}))
-    except Exception as exc:
+        return success_api(
+            data=create_export(project_id, request.json or {}, actor=_request_actor())
+        )
+    except ProjectStorageValidationError as exc:
+        return fail_api(str(exc), status=422)
+    except ValueError as exc:
         return fail_api(str(exc))
+    except Exception:
+        LOGGER.exception("项目导出创建失败 project_id=%s", project_id)
+        return fail_api("项目导出失败，请检查服务日志", status=500)
 
 
 @project_api.get("/<int:project_id>/exports")
@@ -456,9 +533,16 @@ def project_export_list_api(project_id):
 @login_required
 def project_backup_create_api(project_id):
     try:
-        return success_api(data=create_backup(project_id, request.json or {}))
-    except Exception as exc:
+        return success_api(
+            data=create_backup(project_id, request.json or {}, actor=_request_actor())
+        )
+    except ProjectStorageValidationError as exc:
+        return fail_api(str(exc), status=422)
+    except ValueError as exc:
         return fail_api(str(exc))
+    except Exception:
+        LOGGER.exception("项目配置快照创建失败 project_id=%s", project_id)
+        return fail_api("项目配置快照创建失败，请检查服务日志", status=500)
 
 
 @project_api.get("/<int:project_id>/backups")
@@ -474,6 +558,15 @@ def project_backup_list_api(project_id):
 @login_required
 def project_backup_restore_api(project_id, backup_id):
     try:
-        return success_api(data=restore_backup(project_id, backup_id))
-    except Exception as exc:
+        return success_api(
+            data=restore_backup(project_id, backup_id, actor=_request_actor())
+        )
+    except ProjectStorageValidationError as exc:
+        return fail_api(str(exc), status=422)
+    except ValueError as exc:
         return fail_api(str(exc))
+    except Exception:
+        LOGGER.exception(
+            "项目配置快照恢复失败 project_id=%s backup_id=%s", project_id, backup_id
+        )
+        return fail_api("项目配置快照恢复失败，请检查服务日志", status=500)

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
+from applications.project_hub.spatial_service import sanitize_public_geojson_value
 from applications.project_hub.spatial_state import serialize_project_spatial_state
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
@@ -52,7 +53,7 @@ def get_project_geojson(project_id):
         raise ValueError("项目矿山数据无法读取") from exc
     if payload.get("type") != "FeatureCollection" or not isinstance(payload.get("features"), list):
         raise ValueError("项目矿山数据格式错误")
-    return payload
+    return sanitize_public_geojson_value(payload)
 
 
 def get_project_map_manifest(project_id):

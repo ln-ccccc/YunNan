@@ -1,51 +1,74 @@
 import { Router } from 'express';
-import fs from 'node:fs';
-import path from 'node:path';
 
 import { projectApi as defaultProjectApi } from '../services/projectBackend.js';
-import { buildProjectExportFeatures } from '../services/projectExportFeatures.js';
 
 function relayJson(res, upstream) {
   res.status(upstream.status || 200).json(upstream.body);
+}
+
+function relayBinary(res, upstream) {
+  res.status(upstream.status || 200);
+  if (upstream.contentType) {
+    res.set('content-type', upstream.contentType);
+  }
+  res.send(upstream.body);
 }
 
 function requestCookie(req) {
   return req.headers.cookie || '';
 }
 
+function validatePositiveRouteParam(req, res, next, value) {
+  if (!/^[1-9]\d*$/.test(String(value || ''))) {
+    return res.status(400).json({
+      success: false,
+      code: 1,
+      msg: '项目参数不合法',
+    });
+  }
+  return next();
+}
+
+function validateSpatialJobRouteParam(req, res, next, value) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''))) {
+    return res.status(400).json({
+      success: false,
+      code: 1,
+      msg: '项目参数不合法',
+    });
+  }
+  return next();
+}
+
 export function createProjectRoutes({
   projectApi = defaultProjectApi,
-  getMinesData = () => [],
-  projectStorageRoot = process.env.PROJECT_STORAGE_ROOT || '/project_storage',
 } = {}) {
   const router = Router();
-  const storageRoot = path.resolve(projectStorageRoot);
 
-  router.get('/:projectId/outputs/inference/:fid/:filename', (req, res) => {
+  router.param('projectId', validatePositiveRouteParam);
+  router.param('backupId', validatePositiveRouteParam);
+  router.param('jobId', validateSpatialJobRouteParam);
+
+  router.get('/:projectId/outputs/inference/:fid/:filename', async (req, res) => {
     const projectId = String(req.params.projectId || '');
     const fid = String(req.params.fid || '');
     const filename = String(req.params.filename || '');
-    if (!/^\d+$/.test(projectId) || !/^\d+$/.test(fid)) {
+    if (!/^[1-9]\d*$/.test(projectId) || !/^[1-9]\d*$/.test(fid)) {
       return res.status(400).json({ error: 'Invalid project output path' });
     }
     const escapedFid = fid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const allowedName = new RegExp(`^${escapedFid}\\+\\d{4}(?:_src)?\\.png$`);
-    if (path.basename(filename) !== filename || !allowedName.test(filename)) {
+    if (filename.includes('/') || filename.includes('\\') || !allowedName.test(filename)) {
       return res.status(400).json({ error: 'Invalid project output filename' });
     }
-    const outputRoot = path.resolve(
-      storageRoot,
-      'projects',
-      projectId,
-      'outputs',
-      'inference',
-      fid,
-    );
-    const target = path.resolve(outputRoot, filename);
-    if (!target.startsWith(`${outputRoot}${path.sep}`) || !fs.existsSync(target)) {
-      return res.status(404).json({ error: 'Project inference output not found' });
+    try {
+      relayBinary(
+        res,
+        await projectApi.getProjectInferenceOutput(projectId, fid, filename, requestCookie(req)),
+      );
+    } catch (error) {
+      res.status(502).json({ success: false, code: 1, msg: error?.message || String(error) });
     }
-    return res.sendFile(target);
   });
 
   router.get('/', async (req, res) => {
@@ -98,6 +121,22 @@ export function createProjectRoutes({
   router.get('/:projectId/mines/indices', relay('GET', () => '/mines/indices', { query: true }));
   router.get('/:projectId/mines/change-matrix', relay('GET', () => '/mines/change-matrix', { query: true }));
   router.get('/:projectId/mines/trend-report', relay('GET', () => '/mines/trend-report', { query: true }));
+
+  router.get('/:projectId/overview', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.getProjectOverview(req.params.projectId, requestCookie(req)));
+    } catch (error) {
+      res.status(502).json({ success: false, code: 1, msg: error?.message || String(error) });
+    }
+  });
+
+  router.get('/:projectId/assets', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.listProjectAssets(req.params.projectId, req.query, requestCookie(req)));
+    } catch (error) {
+      res.status(502).json({ success: false, code: 1, msg: error?.message || String(error) });
+    }
+  });
 
   router.get('/:projectId', async (req, res) => {
     try {
@@ -157,25 +196,15 @@ export function createProjectRoutes({
 
   router.post('/:projectId/exports', async (req, res) => {
     try {
-      const projectId = Number(req.params.projectId);
-      const payload = { ...(req.body || {}) };
-      const format = String(payload.format || '').toLowerCase();
-      if (!Array.isArray(payload.features) && (format === 'geojson' || format === 'shp')) {
-        const [detailUpstream, geojsonUpstream] = await Promise.all([
-          projectApi.getProjectDetail(projectId, requestCookie(req)),
-          projectApi.request('GET', `/api/projects/${projectId}/geojson`, { cookie: requestCookie(req) }),
-        ]);
-        const detailBody = detailUpstream?.body || {};
-        const geojsonBody = geojsonUpstream?.body || {};
-        if (!detailBody?.data || !geojsonBody?.data) {
-          return relayJson(res, detailUpstream);
-        }
-        payload.features = buildProjectExportFeatures({
-          projectDetail: detailBody.data,
-          minesData: geojsonBody.data.features || [],
+      if (Object.hasOwn(req.body || {}, 'output_dir')) {
+        return res.status(422).json({
+          success: false,
+          code: 1,
+          msg: '不支持指定服务端输出目录，请移除 output_dir',
         });
       }
-      relayJson(res, await projectApi.createProjectExport(projectId, payload, requestCookie(req)));
+      const projectId = Number(req.params.projectId);
+      relayJson(res, await projectApi.createProjectExport(projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
       res.status(502).json({ success: false, code: 1, msg: error?.message || String(error) });
     }

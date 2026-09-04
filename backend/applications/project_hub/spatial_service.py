@@ -21,6 +21,38 @@ FIELD_CANDIDATES = {
     "status": ("status", "state", "HFZLQK", "ZLHFZLQK", "状态"),
     "area": ("area", "shape_area", "TBTYMJ_1", "TBTYMJ", "面积"),
 }
+PRIVATE_GEOJSON_PROPERTY_KEYS = frozenset(
+    {
+        "file_path",
+        "source_path",
+        "normalized_path",
+        "tile_path",
+        "manifest_path",
+        "output_dir",
+    }
+)
+
+
+def _is_public_geojson_property_key(key):
+    return str(key).strip().casefold() not in PRIVATE_GEOJSON_PROPERTY_KEYS
+
+
+def sanitize_public_geojson_value(value):
+    if isinstance(value, dict):
+        return {
+            key: sanitize_public_geojson_value(item)
+            for key, item in value.items()
+            if _is_public_geojson_property_key(key)
+        }
+    if isinstance(value, list):
+        return [sanitize_public_geojson_value(item) for item in value]
+    return value
+
+
+def sanitize_public_geojson_properties(properties):
+    if not isinstance(properties, dict):
+        return {}
+    return sanitize_public_geojson_value(properties)
 
 
 def _content_bytes(content):
@@ -64,7 +96,8 @@ def _extract_vector(filename, content):
         if layer is None:
             raise ValueError("矿山文件不包含可用图层")
         definition = layer.GetLayerDefn()
-        field_names = [definition.GetFieldDefn(index).GetName() for index in range(definition.GetFieldCount())]
+        raw_field_names = [definition.GetFieldDefn(index).GetName() for index in range(definition.GetFieldCount())]
+        field_names = [name for name in raw_field_names if _is_public_geojson_property_key(name)]
         source_crs = layer.GetSpatialRef()
         target_crs = osr.SpatialReference()
         target_crs.ImportFromEPSG(4326)
@@ -99,7 +132,9 @@ def _extract_vector(filename, content):
                     max(bounds[2], item_bounds[2]),
                     max(bounds[3], item_bounds[3]),
                 ]
-            properties = {name: source_feature.GetField(name) for name in field_names}
+            properties = sanitize_public_geojson_properties(
+                {name: source_feature.GetField(name) for name in raw_field_names}
+            )
             features.append(
                 {
                     "type": "Feature",
@@ -163,16 +198,13 @@ def _serialize_resource(resource):
         "resource_type": resource.resource_type,
         "version": resource.version,
         "status": resource.status,
-        "source_path": resource.source_path,
-        "normalized_path": resource.normalized_path,
-        "tile_path": resource.tile_path,
         "source_format": resource.source_format,
         "feature_count": resource.feature_count,
         "crs": resource.crs,
         "bounds": json.loads(resource.bounds_json or "{}"),
         "min_zoom": resource.min_zoom,
         "max_zoom": resource.max_zoom,
-        "error_message": resource.error_message,
+        "error_message": _public_error_message(resource.error_message),
     }
 
 
@@ -185,8 +217,18 @@ def _serialize_job(job):
         "status": job.status,
         "stage": job.stage,
         "progress": job.progress,
-        "error_message": job.error_message,
+        "error_message": _public_error_message(job.error_message),
     }
+
+
+def _public_error_message(value):
+    text = str(value or "").strip()
+    normalized = text.replace("\\", "/")
+    if not text:
+        return None
+    if "/" in normalized or normalized.casefold().startswith("file:"):
+        return "空间资源处理失败"
+    return text
 
 
 def _mapped_value(properties, mapping, target):
@@ -217,20 +259,49 @@ def _binding_rows(features, mapping):
     return rows
 
 
-def _activity(project_id, event_type, payload):
+def _canonicalize_mine_features(features, fid_field):
+    fids = _validate_fids(features, fid_field)
+    return [
+        {
+            **feature,
+            "properties": {**feature["properties"], "FID_1": fid},
+        }
+        for feature, fid in zip(features, fids)
+    ]
+
+
+def _activity(
+    project_id,
+    event_type,
+    payload=None,
+    actor="system",
+    target=None,
+    result="success",
+):
+    event_payload = dict(payload or {})
+    event_payload.setdefault("target", target or {})
+    event_payload.setdefault("result", result)
     db.session.add(
         ProjectActivityLog(
             project_id=project_id,
             event_type=event_type,
-            payload_json=json.dumps(payload, ensure_ascii=False),
+            actor=actor or "system",
+            payload_json=json.dumps(event_payload, ensure_ascii=False),
         )
     )
 
 
-def import_mine_vector(project_id, filename, content, field_mapping=None):
+def _editable_project(project_id):
     project = Project.query.filter_by(id=project_id, deleted_at=None).first()
     if project is None:
         raise ValueError(f"项目不存在: {project_id}")
+    if project.status == "archived":
+        raise ValueError("归档项目不允许修改空间资源")
+    return project
+
+
+def import_mine_vector(project_id, filename, content, field_mapping=None, actor="system"):
+    project = _editable_project(project_id)
 
     extracted = _extract_vector(filename, content)
     suggested = _suggest_fields(extracted["field_names"])
@@ -240,6 +311,7 @@ def import_mine_vector(project_id, filename, content, field_mapping=None):
         if field_name and field_name not in valid_fields:
             raise ValueError(f"字段映射不存在: {target}={field_name}")
     bindings = _binding_rows(extracted["features"], mapping)
+    normalized_features = _canonicalize_mine_features(extracted["features"], mapping.get("fid"))
     raw = _content_bytes(content)
 
     latest_version = (
@@ -273,7 +345,7 @@ def import_mine_vector(project_id, filename, content, field_mapping=None):
     try:
         resource_dir.mkdir(parents=True, exist_ok=False)
         (storage_root / source_relative).write_bytes(raw)
-        normalized = {"type": "FeatureCollection", "features": extracted["features"]}
+        normalized = {"type": "FeatureCollection", "features": normalized_features}
         (storage_root / normalized_relative).write_text(
             json.dumps(normalized, ensure_ascii=False),
             encoding="utf-8",
@@ -307,6 +379,8 @@ def import_mine_vector(project_id, filename, content, field_mapping=None):
                 project_id,
                 "spatial_resource_removed",
                 {"resource_id": obsolete.id, "resource_type": obsolete.resource_type, "version": obsolete.version},
+                actor=actor,
+                target={"type": "spatial_resource", "id": str(obsolete.id)},
             )
             db.session.delete(obsolete)
         _activity(
@@ -318,6 +392,8 @@ def import_mine_vector(project_id, filename, content, field_mapping=None):
                 "version": resource.version,
                 "feature_count": resource.feature_count,
             },
+            actor=actor,
+            target={"type": "spatial_resource", "id": str(resource.id)},
         )
         db.session.commit()
         for obsolete_path in removed_paths:
@@ -451,10 +527,8 @@ def list_basemap_candidates(project_id):
     return items
 
 
-def register_basemap(project_id, candidate, min_zoom=8, max_zoom=15):
-    project = Project.query.filter_by(id=project_id, deleted_at=None).first()
-    if project is None:
-        raise ValueError(f"项目不存在: {project_id}")
+def register_basemap(project_id, candidate, min_zoom=8, max_zoom=15, actor="system"):
+    project = _editable_project(project_id)
     candidate_relative = _candidate_relative_path(candidate)
     storage_root = ensure_storage_layout()
     source = resolve_storage_path(storage_root, candidate_relative)
@@ -512,6 +586,8 @@ def register_basemap(project_id, candidate, min_zoom=8, max_zoom=15):
         project_id,
         "spatial_job_queued",
         {"job_id": job.id, "resource_id": resource.id, "resource_type": "basemap"},
+        actor=actor,
+        target={"type": "spatial_job", "id": str(job.id)},
     )
     db.session.commit()
     return {"resource": _serialize_resource(resource), "job": _serialize_job(job)}
@@ -537,7 +613,8 @@ def get_spatial_job(project_id, job_id):
     return _serialize_job(job)
 
 
-def retry_spatial_job(project_id, job_id):
+def retry_spatial_job(project_id, job_id, actor="system"):
+    _editable_project(project_id)
     job = ProjectSpatialJob.query.filter_by(id=job_id, project_id=project_id).first()
     if job is None:
         raise ValueError("空间处理任务不存在")
@@ -555,12 +632,19 @@ def retry_spatial_job(project_id, job_id):
     job.heartbeat_at = None
     resource.status = "pending"
     resource.error_message = None
-    _activity(project_id, "spatial_job_retried", {"job_id": job.id, "resource_id": resource.id})
+    _activity(
+        project_id,
+        "spatial_job_retried",
+        {"job_id": job.id, "resource_id": resource.id},
+        actor=actor,
+        target={"type": "spatial_job", "id": str(job.id)},
+    )
     db.session.commit()
     return _serialize_job(job)
 
 
-def cancel_spatial_job(project_id, job_id):
+def cancel_spatial_job(project_id, job_id, actor="system"):
+    _editable_project(project_id)
     job = ProjectSpatialJob.query.filter_by(id=job_id, project_id=project_id).first()
     if job is None:
         raise ValueError("空间处理任务不存在")
@@ -574,6 +658,12 @@ def cancel_spatial_job(project_id, job_id):
             resource.status = "retained"
     else:
         job.cancel_requested = True
-    _activity(project_id, "spatial_job_cancel_requested", {"job_id": job.id})
+    _activity(
+        project_id,
+        "spatial_job_cancel_requested",
+        {"job_id": job.id},
+        actor=actor,
+        target={"type": "spatial_job", "id": str(job.id)},
+    )
     db.session.commit()
     return _serialize_job(job)

@@ -229,6 +229,10 @@ vector_revision | report | export | backup_snapshot
 
 嵌套 `capabilities` 的固定键为 `preview`、`download`、`activate`、`retry`；v1 不增加 `restore` 或其他未冻结键。既有空间资源状态映射统一按第 4.3 节执行。
 
+`POST /datasets` 的成功响应是安全登记回执，仅含 `id`、`asset_id` 和 `status`；页面随后通过 `/assets` 读取公开资产。配置快照恢复成功返回 `ProjectOverviewView`，不得复用旧项目详情 DTO。历史 `GET /api/projects/{project_id}` 为兼容接口，可能仍保留旧字段；新 Miner 工作台不得调用它或把其响应转发给浏览器。GeoJSON/SHP 导出未传 `features` 时，由 Flask 从当前公开矿山边界、项目绑定和数据集生成导出要素，BFF 只转发请求且不得读取旧详情；兼容的显式 `features` 同样必须过滤保留路径键、覆盖 `project_id`，并校验矿山/数据集引用只属于当前项目。
+
+空间矿山预览和公开 GeoJSON 输出可以保留用户定义的业务属性，但必须递归剔除属性名为 `file_path`、`source_path`、`normalized_path`、`tile_path`、`manifest_path`、`output_dir` 的字段（大小写不敏感）。这些是存储保留名，不能作为可映射的矿山字段，也不能作为浏览器可读属性输出。导入时必须将用户所选 FID 映射写入规范化 GeoJSON 的 `FID_1`，使后续地图、矿山选择和自动导出不依赖临时字段映射。
+
 ## 7. 工作流与前端数据流
 
 工作流卡是能力检查与导航，不是一次性的强制状态机：
@@ -268,23 +272,25 @@ ProjectDataManagement/
 
 ## 8. 活动记录与审计
 
-数据库保存机器可读事件，UI 在展示层映射中文：
+数据库保存机器可读事件，UI 在展示层映射中文。`GET /api/projects/{project_id}/timeline` 对当前和历史记录统一输出下列时间线 DTO：
 
 ```json
 {
-  "action_code": "BASEMAP_ACTIVATED",
-  "actor_id": "admin",
-  "actor_type": "user",
-  "target_type": "basemap",
-  "target_id": "17",
+  "id": 17,
+  "event_type": "spatial_job_queued",
+  "action_code": "SPATIAL_JOB_QUEUED",
+  "actor": "admin",
+  "target": {"type": "spatial_job", "id": "uuid"},
   "result": "success",
-  "job_id": null,
-  "payload": {"previous_basemap_id": "16"},
-  "created_at": "2026-09-04T10:00:00"
+  "payload": {"resource_id": 16},
+  "created_at": "2026-09-04T10:00:00",
+  "timestamp": "2026-09-04T10:00:00"
 }
 ```
 
-兼容期可复用现有 `ProjectActivityLog` 的 `event_type`、`actor` 和 `payload_json`；不要因为 v1 目标而一次性重写历史日志。新增事件须同时提供 action code、筛选语义和 UI 文案映射。
+`ProjectOverviewView.recent_activity` 在兼容期维持紧凑审计 DTO：`action_code`、`actor_id`、`actor_type`、`target_type`、`target_id`、`result`、`job_id`、`payload`、`created_at`。读取器同时兼容旧的结构化 payload 和当前的 `event_type + actor + target + result` 记录；不合格或包含物理路径的历史 payload 必须整条忽略或脱敏，不能传给浏览器。
+
+兼容期可复用现有 `ProjectActivityLog` 的 `event_type`、`actor` 和 `payload_json`；不要因为 v1 目标而一次性重写历史日志。新增事件须同时提供稳定事件类型、action code 映射、目标类型/ID 和 UI 文案映射。
 
 ## 9. 项目存储、导出与快照
 
@@ -297,15 +303,16 @@ PROJECT_STORAGE_ROOT/projects/{project_id}/
   inference/
   revisions/
   exports/{export_id}/
-  snapshots/
+  snapshots/{snapshot_id}/
 ```
 
 约束：
 
-1. 客户端只能提交业务参数与可引用资产 ID，不能提交 `output_dir`、绝对路径或相对路径穿越片段。
-2. 服务端由项目 ID 和导出 ID 生成目标目录，并用 allowlist/路径解析保证结果仍在项目 sandbox 内。
+1. 客户端只能提交业务参数与可引用资产 ID，不能提交 `output_dir`、绝对路径或相对路径穿越片段。v1 的导出请求仅允许 `format` 和可选 `features`；对于 GeoJSON/SHP，未传 `features` 时由导出服务从当前项目资源生成，配置快照仅允许 `scope=metadata_index`；其他字段或值一律拒绝。
+2. 服务端由项目 ID、导出 ID 或快照 ID 生成目标目录，并用 allowlist/路径解析保证结果仍在项目 sandbox 内。目录的每个既有层级以及制品、清单文件本身都不得是 symlink、junction 或其他 reparse point；不得仅因目标仍位于总存储根下而跨项目跟随链接。
 3. 每个导出写入 `manifest.json`，至少包含 `project_id`、创建时间、来源资产 ID、版本和可用校验值。
-4. 页面把当前元数据备份称作“项目配置快照”；完整灾备仍由数据库、原始数据、瓦片和成果文件的运维恢复流程负责。
+4. 每个项目配置快照写入 `snapshots/{snapshot_id}/manifest.json`，清单必须包含 `snapshot_version`、`project_id` 和 `backup_id`。恢复仅接受与当前项目和快照记录精确匹配、状态为 completed 且 restorable 的普通清单文件；旧的无身份字段清单需要重新生成快照后才能恢复。
+5. 页面把当前元数据备份称作“项目配置快照”；完整灾备仍由数据库、原始数据、瓦片和成果文件的运维恢复流程负责。
 
 ## 10. 实施顺序与门禁
 

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
@@ -593,6 +594,233 @@ class TestProjectReadModels(unittest.TestCase):
         ):
             with self.subTest(path=path, client="authenticated"):
                 self.assertEqual(self.client.get(path).status_code, 404)
+
+    def test_timeline_normalizes_legacy_activity_without_fabricating_target(self):
+        self._seed_blocked_project()
+
+        response = self.client.get(f"/api/projects/{self.PROJECT_ID}/timeline")
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        item = self.json_body(response)["data"]["items"][0]
+        self.assertEqual(item["event_type"], "project_seeded")
+        self.assertEqual(item["action_code"], "PROJECT_SEEDED")
+        self.assertEqual(item["actor"], "system")
+        self.assertEqual(item["target"], {})
+        self.assertEqual(item["result"], "success")
+        self.assertEqual(item["payload"], {})
+        self.assertEqual(item["created_at"], item["timestamp"])
+
+    def test_timeline_hides_unsafe_legacy_activity_payload(self):
+        self._seed_blocked_project()
+        activity = ProjectActivityLog.query.filter_by(
+            project_id=self.PROJECT_ID,
+            event_type="project_seeded",
+        ).one()
+        activity.payload_json = json.dumps(
+            {"file_path": str(self.storage_root / "private" / "input.tif")}
+        )
+        db.session.commit()
+
+        response = self.client.get(f"/api/projects/{self.PROJECT_ID}/timeline")
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        item = self.json_body(response)["data"]["items"][0]
+        self.assertEqual(item["payload"], {})
+        self._assert_no_physical_path_keys(item)
+
+    def test_overview_serializes_current_activity_shape(self):
+        self._seed_blocked_project()
+        from applications.project_hub.service import _append_activity
+
+        _append_activity(
+            self.PROJECT_ID,
+            "dataset_created",
+            {"dataset_id": 7},
+            actor="admin",
+            target={"type": "dataset", "id": "7"},
+        )
+        db.session.commit()
+
+        response = self.client.get(f"/api/projects/{self.PROJECT_ID}/overview")
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        activity = self.json_body(response)["data"]["recent_activity"][0]
+        self.assertEqual(activity["action_code"], "DATASET_REGISTERED")
+        self.assertEqual(activity["actor_id"], "admin")
+        self.assertEqual(activity["actor_type"], "user")
+        self.assertEqual(activity["target_type"], "dataset")
+        self.assertEqual(activity["target_id"], "7")
+        self.assertEqual(activity["result"], "success")
+        self.assertIsNone(activity["job_id"])
+        self.assertEqual(activity["payload"], {"dataset_id": 7})
+
+    def test_spatial_response_hides_storage_paths(self):
+        self._seed_partial_project()
+
+        response = self.client.get(f"/api/projects/{self.PROJECT_ID}/spatial")
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self._assert_no_physical_path_keys(self.json_body(response))
+
+    def test_archived_project_rejects_spatial_mutation(self):
+        self._seed_blocked_project()
+        project = db.session.get(Project, self.PROJECT_ID)
+        project.status = "archived"
+        db.session.commit()
+        geojson = json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"FID_1": 101, "name": "归档矿山"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [[100.0, 25.0], [100.1, 25.0], [100.1, 25.1], [100.0, 25.0]]
+                            ],
+                        },
+                    }
+                ],
+            }
+        )
+        from applications.project_hub.spatial_service import import_mine_vector
+
+        with self.assertRaisesRegex(ValueError, "归档项目"):
+            import_mine_vector(self.PROJECT_ID, "archived.geojson", geojson)
+
+    def test_spatial_task_queue_activity_uses_machine_readable_payload(self):
+        self._seed_blocked_project()
+        self._seed_mine_boundary()
+        incoming_path = self.storage_root / "incoming" / "audit-basemap.tif"
+        incoming_path.parent.mkdir(parents=True, exist_ok=True)
+        incoming_path.touch()
+        metadata = {
+            "crs": "EPSG:4326",
+            "bounds": [99.9, 24.9, 100.2, 25.2],
+            "width": 10,
+            "height": 10,
+        }
+        from applications.project_hub.spatial_service import register_basemap
+
+        with patch(
+            "applications.project_hub.spatial_service._raster_metadata",
+            return_value=metadata,
+        ):
+            queued = register_basemap(
+                self.PROJECT_ID,
+                "incoming/audit-basemap.tif",
+                actor="admin",
+            )
+
+        response = self.client.get(f"/api/projects/{self.PROJECT_ID}/timeline")
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        item = next(
+            item
+            for item in self.json_body(response)["data"]["items"]
+            if item["event_type"] == "spatial_job_queued"
+        )
+        self.assertEqual(item["action_code"], "SPATIAL_JOB_QUEUED")
+        self.assertEqual(item["actor"], "admin")
+        self.assertEqual(
+            item["target"],
+            {"type": "spatial_job", "id": queued["job"]["id"]},
+        )
+        self.assertEqual(item["result"], "success")
+        self.assertIsInstance(item["payload"], dict)
+        self.assertEqual(item["created_at"], item["timestamp"])
+
+    def test_overview_filters_unsafe_structured_activity_payloads(self):
+        self._seed_blocked_project()
+        base_event = {
+            "action_code": "BASEMAP_ACTIVATED",
+            "actor_id": "admin",
+            "actor_type": "user",
+            "target_type": "basemap",
+            "target_id": "102",
+            "result": "success",
+            "job_id": None,
+            "payload": {"previous_basemap_id": "101"},
+        }
+        unsafe_events = (
+            (
+                "forbidden_key",
+                {"payload": {"nested": [{" File_Path ": "safe.txt"}]}},
+            ),
+            (
+                "storage_root",
+                {"payload": {"note": f"source={self.storage_root}/private/input.tif"}},
+            ),
+            (
+                "windows_path",
+                {"payload": {"note": r"  C:\outside\input.tif"}},
+            ),
+            (
+                "posix_path",
+                {"payload": {"note": "/srv/private/input.tif"}},
+            ),
+            (
+                "unc_path",
+                {"payload": {"note": r"\\server\share\input.tif"}},
+            ),
+            (
+                "file_uri",
+                {"payload": {"note": "file:///tmp/input.tif"}},
+            ),
+            ("list_target_id", {"target_id": ["102"]}),
+            ("dict_target_id", {"target_id": {"id": "102"}}),
+        )
+        for offset, (name, override) in enumerate(unsafe_events, start=1):
+            event = dict(base_event)
+            event.update(override)
+            db.session.add(
+                ProjectActivityLog(
+                    project_id=self.PROJECT_ID,
+                    event_type=f"audit_{name}",
+                    actor="admin",
+                    payload_json=json.dumps(event),
+                    create_time=self._timestamp(f"2026-09-01T08:{30 + offset:02d}:00Z"),
+                )
+            )
+        db.session.add(
+            ProjectActivityLog(
+                project_id=self.PROJECT_ID,
+                event_type="audit_safe",
+                actor="admin",
+                payload_json=json.dumps(base_event),
+                create_time=self._timestamp("2026-09-01T08:40:00Z"),
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(f"/api/projects/{self.PROJECT_ID}/overview")
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        recent_activity = self.json_body(response)["data"]["recent_activity"]
+        self.assertEqual(
+            recent_activity,
+            [
+                {
+                    **base_event,
+                    "created_at": "2026-09-01T08:40:00Z",
+                }
+            ],
+        )
+        self.assertEqual(
+            set(recent_activity[0]),
+            {
+                "action_code",
+                "actor_id",
+                "actor_type",
+                "target_type",
+                "target_id",
+                "result",
+                "job_id",
+                "payload",
+                "created_at",
+            },
+        )
 
     def test_assets_maps_all_existing_sources_and_hides_physical_paths(self):
         self._seed_assets_read_model_sources()

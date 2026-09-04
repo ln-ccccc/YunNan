@@ -1,14 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-
 import express from 'express';
 
 import { createProjectRoutes } from '../routes/projects.js';
 
-async function withServer(handler) {
+async function withServer(handler, requestPath = '', options = {}) {
   const app = express();
   app.use(express.json({ limit: '20mb' }));
   app.use('/api/projects', handler);
@@ -17,7 +13,7 @@ async function withServer(handler) {
   });
   const { port } = server.address();
   try {
-    return await fetch(`http://127.0.0.1:${port}`);
+    return await fetch(`http://127.0.0.1:${port}/api/projects${requestPath}`, options);
   } finally {
     await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   }
@@ -35,7 +31,6 @@ test('createProjectRoutes proxies list requests to backend client', async () => 
         };
       },
     },
-    getMinesData: () => [],
   });
 
   const app = express();
@@ -55,115 +50,267 @@ test('createProjectRoutes proxies list requests to backend client', async () => 
   }
 });
 
-test('createProjectRoutes enriches geojson exports with live mine geometries', async () => {
+test('createProjectRoutes transparently proxies project overview id, cookie, status, and body', async () => {
+  const calls = [];
+  const upstreamBody = {
+    success: true,
+    code: 0,
+    data: { project_id: 42, readiness: { status: 'partial' } },
+  };
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectOverview(projectId, cookie) {
+        calls.push({ projectId, cookie });
+        return { status: 200, body: upstreamBody };
+      },
+    },
+  });
+
+  const response = await withServer(router, '/42/overview', {
+    headers: { cookie: 'admin_user_id=7' },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), upstreamBody);
+  assert.deepEqual(calls, [{ projectId: '42', cookie: 'admin_user_id=7' }]);
+});
+
+test('createProjectRoutes transparently proxies project asset filters without rewriting the query', async () => {
+  const calls = [];
+  const upstreamBody = {
+    success: true,
+    code: 0,
+    data: { items: [{ id: 'imagery:201', status: 'failed' }], count: 1 },
+  };
+  const router = createProjectRoutes({
+    projectApi: {
+      async listProjectAssets(projectId, query, cookie) {
+        calls.push({ projectId, query, cookie });
+        return { status: 200, body: upstreamBody };
+      },
+    },
+  });
+
+  const response = await withServer(router, '/42/assets?type=imagery&status=failed', {
+    headers: { cookie: 'admin_user_id=7' },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), upstreamBody);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].projectId, '42');
+  assert.equal(calls[0].query.type, 'imagery');
+  assert.equal(calls[0].query.status, 'failed');
+  assert.deepEqual(Object.keys(calls[0].query), ['type', 'status']);
+  assert.equal(calls[0].cookie, 'admin_user_id=7');
+});
+
+test('createProjectRoutes rejects encoded project traversal before any backend call', async () => {
+  const calls = [];
+  const projectApi = new Proxy({}, {
+    get(_target, property) {
+      calls.push(String(property));
+      return async () => ({ status: 200, body: { success: true, code: 0, data: {} } });
+    },
+  });
+  const router = createProjectRoutes({ projectApi });
+  const invalidBody = { success: false, code: 1, msg: '项目参数不合法' };
+
+  for (const requestPath of [
+    '/%2e%2e%2fadmin/overview',
+    '/%2e%2e%2fadmin/assets',
+  ]) {
+    const response = await withServer(router, requestPath, {
+      headers: { cookie: 'admin_user_id=7' },
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), invalidBody);
+  }
+
+  assert.deepEqual(calls, []);
+});
+
+test('createProjectRoutes rejects non-positive job and backup identifiers before any backend call', async () => {
+  const calls = [];
+  const projectApi = new Proxy({}, {
+    get(_target, property) {
+      calls.push(String(property));
+      return async () => ({ status: 200, body: { success: true, code: 0, data: {} } });
+    },
+  });
+  const router = createProjectRoutes({ projectApi });
+  const invalidBody = { success: false, code: 1, msg: '项目参数不合法' };
+
+  for (const requestPath of [
+    '/42/spatial/jobs/0/retry',
+    '/42/backups/0/restore',
+  ]) {
+    const response = await withServer(router, requestPath, {
+      method: 'POST',
+      headers: { cookie: 'admin_user_id=7', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), invalidBody);
+  }
+
+  assert.deepEqual(calls, []);
+});
+
+test('createProjectRoutes accepts a spatial job UUID and forwards it unchanged', async () => {
+  const calls = [];
+  const jobId = 'dce7d49f-0e48-4e4d-a29c-5f0b6356e8fe';
+  const router = createProjectRoutes({
+    projectApi: {
+      async request(method, path, options) {
+        calls.push({ method, path, options });
+        return { status: 200, body: { success: true, code: 0, data: { id: jobId } } };
+      },
+    },
+  });
+
+  const response = await withServer(router, `/42/spatial/jobs/${jobId}/retry`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [{
+    method: 'POST',
+    path: `/api/projects/42/spatial/jobs/${jobId}/retry`,
+    options: { body: {}, cookie: '' },
+  }]);
+});
+
+test('createProjectRoutes relays upstream overview 404 status and body unchanged', async () => {
+  const upstreamBody = { success: false, code: 1, msg: '项目不存在' };
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectOverview() {
+        return { status: 404, body: upstreamBody };
+      },
+    },
+  });
+
+  const response = await withServer(router, '/999/overview');
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), upstreamBody);
+});
+
+test('createProjectRoutes relays upstream asset filter 400 status and body unchanged', async () => {
+  const upstreamBody = { success: false, code: 1, msg: '资产类型不合法' };
+  const router = createProjectRoutes({
+    projectApi: {
+      async listProjectAssets() {
+        return { status: 400, body: upstreamBody };
+      },
+    },
+  });
+
+  const response = await withServer(router, '/42/assets?type=unsupported');
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), upstreamBody);
+});
+
+test('createProjectRoutes rejects browser output_dir before calling export upstream', async () => {
+  const calls = {
+    getProjectDetail: 0,
+    request: 0,
+    createProjectExport: 0,
+  };
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectDetail() {
+        calls.getProjectDetail += 1;
+        return { status: 200, body: { success: true, code: 0, data: { summary: { id: 8 } } } };
+      },
+      async request() {
+        calls.request += 1;
+        return { status: 200, body: { success: true, code: 0, data: { features: [] } } };
+      },
+      async createProjectExport() {
+        calls.createProjectExport += 1;
+        return { status: 200, body: { success: true, code: 0, data: { id: 11 } } };
+      },
+    },
+  });
+
+  const response = await withServer(router, '/8/exports', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ format: 'geojson', output_dir: 'D:/tmp' }),
+  });
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), {
+    success: false,
+    code: 1,
+    msg: '不支持指定服务端输出目录，请移除 output_dir',
+  });
+  assert.deepEqual(calls, {
+    getProjectDetail: 0,
+    request: 0,
+    createProjectExport: 0,
+  });
+});
+
+test('createProjectRoutes relays vector exports without BFF domain assembly', async () => {
+  const calls = { detail: 0, request: 0, export: 0 };
   let exportPayload = null;
   const router = createProjectRoutes({
     projectApi: {
       async request() {
-        return {
-          status: 200,
-          body: {
-            success: true,
-            code: 0,
-            data: {
-              type: 'FeatureCollection',
-              features: [
-                {
-                  type: 'Feature',
-                  geometry: {
-                    type: 'Polygon',
-                    coordinates: [[[102, 24], [102.1, 24], [102.1, 24.1], [102, 24.1], [102, 24]]],
-                  },
-                  properties: { FID_1: 201, mine_name: '矿山C' },
-                },
-              ],
-            },
-          },
-        };
+        calls.request += 1;
+        return { status: 200, body: { success: true, code: 0, data: {} } };
       },
       async getProjectDetail() {
-        return {
-          status: 200,
-          body: {
-            success: true,
-            code: 0,
-            data: {
-              summary: { id: 8 },
-              mines: [{ mine_fid: 201, mine_name_snapshot: '矿山C' }],
-              datasets: [{ id: 3001, mine_fid: 201, dataset_kind: 'report', year_start: 2024, year_end: 2025 }],
-            },
-          },
-        };
+        calls.detail += 1;
+        return { status: 200, body: { success: true, code: 0, data: {} } };
       },
       async createProjectExport(projectId, payload) {
+        calls.export += 1;
         exportPayload = { projectId, payload };
+        return { status: 200, body: { success: true, code: 0, data: { id: 11, format: 'geojson' } } };
+      },
+    },
+  });
+
+  const response = await withServer(router, '/8/exports', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ format: 'geojson' }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).data.id, 11);
+  assert.deepEqual(exportPayload, { projectId: 8, payload: { format: 'geojson' } });
+  assert.deepEqual(calls, { detail: 0, request: 0, export: 1 });
+});
+
+test('createProjectRoutes proxies project inference images through the backend', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectInferenceOutput(projectId, fid, filename, cookie) {
+        calls.push({ projectId, fid, filename, cookie });
         return {
           status: 200,
-          body: { success: true, code: 0, data: { id: 11, format: 'geojson' } },
+          contentType: 'image/png',
+          body: Buffer.from('project-image'),
         };
       },
     },
-    getMinesData: () => [
-      {
-        type: 'Feature',
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[[102, 24], [102.1, 24], [102.1, 24.1], [102, 24.1], [102, 24]]],
-        },
-        properties: { FID_1: 201, mine_name: '矿山C' },
-      },
-    ],
   });
 
-  const app = express();
-  app.use(express.json({ limit: '20mb' }));
-  app.use('/api/projects', router);
-  const server = await new Promise((resolve) => {
-    const instance = app.listen(0, () => resolve(instance));
+  const response = await withServer(router, '/7/outputs/inference/101/101+2022.png', {
+    headers: { cookie: 'admin_user_id=7' },
   });
-  const { port } = server.address();
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/projects/8/exports`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ format: 'geojson', output_dir: 'D:/tmp' }),
-    });
-    const body = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(body.data.id, 11);
-    assert.equal(exportPayload.projectId, 8);
-    assert.equal(exportPayload.payload.features.length, 1);
-    assert.equal(exportPayload.payload.features[0].properties.project_id, 8);
-    assert.equal(exportPayload.payload.features[0].properties.dataset_id, 3001);
-  } finally {
-    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
-  }
-});
 
-test('createProjectRoutes serves project inference images from scoped storage', async () => {
-  const storageRoot = await mkdtemp(path.join(tmpdir(), 'project-output-'));
-  const outputDir = path.join(storageRoot, 'projects', '7', 'outputs', 'inference', '101');
-  await mkdir(outputDir, { recursive: true });
-  await writeFile(path.join(outputDir, '101+2022.png'), Buffer.from('project-image'));
-  const router = createProjectRoutes({
-    projectStorageRoot: storageRoot,
-    projectApi: {},
-  });
-  const app = express();
-  app.use('/api/projects', router);
-  const server = await new Promise((resolve) => {
-    const instance = app.listen(0, () => resolve(instance));
-  });
-  const { port } = server.address();
-  try {
-    const response = await fetch(
-      `http://127.0.0.1:${port}/api/projects/7/outputs/inference/101/101+2022.png`,
-    );
-    assert.equal(response.status, 200);
-    assert.equal(await response.text(), 'project-image');
-    assert.match(response.headers.get('content-type') || '', /^image\/png/);
-  } finally {
-    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
-    await rm(storageRoot, { recursive: true, force: true });
-  }
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'project-image');
+  assert.match(response.headers.get('content-type') || '', /^image\/png/);
+  assert.deepEqual(calls, [{
+    projectId: '7',
+    fid: '101',
+    filename: '101+2022.png',
+    cookie: 'admin_user_id=7',
+  }]);
 });

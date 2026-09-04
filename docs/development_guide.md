@@ -96,6 +96,36 @@ Response 至少包含：
 
 趋势统计必须来自真实 `class_ratio_percent.json` 等结果文件；无数据时返回空表和覆盖率信息，不伪造全 0 趋势。
 
+### 项目工作台存储迁移
+
+- 运行时通过 `PROJECT_STORAGE_ROOT` 指定项目受控存储根；项目导出写入 `projects/{project_id}/exports/{export_id}/`，项目配置快照写入 `projects/{project_id}/snapshots/{snapshot_id}/`。
+- `POST /api/projects/{project_id}/datasets` 不再接受浏览器传入的 `file_path`。仅登记已由离线导入流程放入 `incoming/` 的相对 `storage_key`，格式只能是 `.tif` 或 `.tiff`；绝对路径、`..` 片段和其他格式返回 `422`。成功仅返回 `id`、`asset_id`、`status` 登记回执；资产详情需通过 `/assets` 读取。
+- `POST /api/projects/{project_id}/exports` 与 `POST /api/projects/{project_id}/backups` 不接受 `output_dir`，传入时返回 `422`。导出请求只允许 `format` 和可选 `features`；GeoJSON/SHP 未提供 `features` 时由 Flask 根据当前项目矿山边界、绑定和数据集生成，BFF 只转发请求。即使是兼容的显式 `features`，服务端也会过滤保留路径键、覆盖 `project_id`，并只保留当前项目可验证的矿山/数据集引用。快照请求只允许 `scope=metadata_index`；其余字段或取值均返回 `422`。导出公开响应使用 `artifact_name`，快照公开响应使用“项目配置快照”名称；两者都不返回服务器物理路径。
+- 恢复配置快照只接受与当前项目和快照记录精确匹配、状态为 `completed` 且 `restorable=true` 的受控 `manifest.json`。没有 `snapshot_version`、`project_id`、`backup_id` 身份字段的旧快照需要重新生成，不能直接恢复；成功响应为公开 `ProjectOverviewView`，不返回旧详情中的数据集路径。
+- `GET /api/projects/{project_id}/overview` 和 `GET /api/projects/{project_id}/assets` 是 Project Hub 的公开只读聚合入口；浏览器经 Miner BFF 调用，不能根据底层表名或存储路径自行推断资源状态。
+- 旧 `GET /api/projects/{project_id}` 仅用于兼容历史客户端；新 Miner 工作台不得调用或转发其详情响应，BFF 也不得为导出读取该旧详情。
+- 矿山矢量预览和 `GET /api/projects/{project_id}/geojson` 会保留普通业务属性，但会递归过滤属性名为 `file_path`、`source_path`、`normalized_path`、`tile_path`、`manifest_path`、`output_dir` 的字段（大小写不敏感）；禁止把这些保留名当作矿山字段映射。导入时会把用户选定的 FID 映射规范为公开 `FID_1`，供地图、资产和自动导出使用。
+
+### 项目工作台验证
+
+Project Hub 改动需要同时验证 BFF、浏览器侧数据装配和后端 Read Model。Miner 侧执行：
+
+```powershell
+cd miner
+node --check routes/projects.js
+node --check services/projectBackend.js
+node --test test/projectWorkspaceApi.test.js test/projectWorkspaceViewModel.test.js test/projectWorkspaceHelpers.test.js test/projectRoutes.test.js test/projectBackend.test.js
+npm test
+npm run build
+```
+
+后端测试必须使用项目固定的 Python 3.10/GDAL 运行环境（或对应运行镜像），避免将宿主机缺失 Flask/GDAL 依赖误判为代码问题：
+
+```powershell
+cd backend
+python -m unittest test_project_api test_project_read_models test_project_spatial -v
+```
+
 ## 5. 前端规范
 
 - 主界面文案默认使用中文，按钮文案必须与实际行为一致，例如导出 CSV 时写“导出 CSV”。
