@@ -140,11 +140,15 @@ class TestProjectAPI(unittest.TestCase):
         body = self._json(response)
         self.assertEqual(body["code"], 0)
         self.assertEqual(body["data"]["status"], "archived")
+        response = self.client.get(f"/api/projects/{project_id}")
+        self.assertEqual(self._json(response)["data"]["summary"]["status"], "archived")
 
         response = self.client.post(f"/api/projects/{project_id}/restore", json={})
         body = self._json(response)
         self.assertEqual(body["code"], 0)
         self.assertEqual(body["data"]["status"], "active")
+        response = self.client.get(f"/api/projects/{project_id}")
+        self.assertEqual(self._json(response)["data"]["summary"]["status"], "active")
 
     def test_project_export_and_backup_restore(self):
         self.login_as_admin()
