@@ -60,6 +60,7 @@ def create_inference_job_api():
         storage_root = get_storage_root()
         project_root = resolve_storage_path(storage_root, f"projects/{project_id}")
         payload["project_id"] = project_id
+        payload["mine_resource_id"] = mine_resource.id
         payload["kml_path"] = str(resolve_storage_path(storage_root, mine_resource.normalized_path))
         payload["output_root"] = str(project_root / "outputs" / "inference")
         requested_fids = payload.get("mine_fids") or ([] if payload.get("fid") in (None, "") else [payload.get("fid")])

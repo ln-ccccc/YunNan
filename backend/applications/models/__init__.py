@@ -4,6 +4,9 @@ from importlib import import_module
 _MODEL_EXPORTS = {
     "Analysis": (".analysis", "Analysis"),
     "AdminUser": (".admin_user", "AdminUser"),
+    "ClassificationEditAudit": (".classification_result", "ClassificationEditAudit"),
+    "ClassificationResult": (".classification_result", "ClassificationResult"),
+    "ClassificationRevision": (".classification_result", "ClassificationRevision"),
     "Photo": (".photo", "Photo"),
     "InferenceJob": (".inference_job", "InferenceJob"),
     "InferenceWorkerState": (".inference_job", "InferenceWorkerState"),

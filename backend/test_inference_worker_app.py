@@ -35,7 +35,7 @@ def parse_json_output(process):
 
 
 class TestInferenceWorkerApp(unittest.TestCase):
-    def test_worker_app_cold_start_only_loads_inference_database_dependencies(self):
+    def test_worker_app_cold_start_creates_project_result_database_dependencies(self):
         process = run_isolated_python(
             """
             import json
@@ -50,24 +50,10 @@ class TestInferenceWorkerApp(unittest.TestCase):
             with app.app_context():
                 tables = sorted(inspect(db.engine).get_table_names())
 
-            unwanted_modules = [
-                "applications.api",
-                "applications.common.scripts",
-                "applications.extensions.init_dotenv",
-                "applications.extensions.init_upload",
-                "flask_cors",
-                "flask_marshmallow",
-                "applications.models.analysis",
-                "applications.models.admin_user",
-                "applications.models.photo",
-                "applications.models.project",
-            ]
             print(json.dumps({
                 "database_uri": app.config["SQLALCHEMY_DATABASE_URI"],
                 "endpoints": sorted(app.view_functions),
-                "loaded_unwanted_modules": [
-                    name for name in unwanted_modules if name in sys.modules
-                ],
+                "loaded_result_model": "applications.models.classification_result" in sys.modules,
                 "tables": tables,
             }))
             """,
@@ -77,10 +63,15 @@ class TestInferenceWorkerApp(unittest.TestCase):
         result = parse_json_output(process)
         self.assertEqual("sqlite:///:memory:", result["database_uri"])
         self.assertEqual(["static"], result["endpoints"])
-        self.assertEqual([], result["loaded_unwanted_modules"])
-        self.assertEqual(
-            ["inference_jobs", "inference_worker_states"],
-            result["tables"],
+        self.assertTrue(result["loaded_result_model"])
+        self.assertTrue(
+            {
+                "classification_results",
+                "classification_revisions",
+                "classification_edit_audits",
+                "inference_jobs",
+                "inference_worker_states",
+            }.issubset(result["tables"]),
         )
 
     def test_extension_function_exports_are_callable_before_submodule_imports(self):

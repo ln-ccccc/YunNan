@@ -47,8 +47,12 @@ test('buildProjectInferenceCards uses backend result URLs', () => {
       year: 2022,
       before_img: '/api/projects/7/outputs/inference/101/101+2022_src.png',
       after_img: '/api/projects/7/outputs/inference/101/101+2022.png',
+      result_id: 29,
+      vector_status: 'ready',
+      vector_error: null,
     }],
     'http://127.0.0.1:5008/',
+    7,
   );
 
   assert.equal(cards[0].record_id, '101|2022');
@@ -60,6 +64,14 @@ test('buildProjectInferenceCards uses backend result URLs', () => {
     cards[0].before_img,
     'http://127.0.0.1:5008/api/projects/7/outputs/inference/101/101+2022_src.png',
   );
+  assert.deepEqual(cards[0].data, {
+    fid: 101,
+    year: 2022,
+    project_id: 7,
+    result_id: 29,
+    vector_status: 'ready',
+    vector_error: null,
+  });
 });
 
 test('buildInterpretationHistoryCards keeps standalone classifications visible', () => {

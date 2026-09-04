@@ -82,6 +82,22 @@
                    <div style="display: flex; align-items: center;"><span style="width: 20px; height: 20px; background-color: rgb(255, 0, 255); margin-right: 8px;"></span> <span>裸地 (Bareground)</span></div>
                    <div style="display: flex; align-items: center;"><span style="width: 20px; height: 20px; background-color: rgb(0, 191, 255); margin-right: 8px;"></span> <span>水体 (Water)</span></div>
                 </div>
+                <el-button
+                  v-if="canEditClassificationResult(item)"
+                  type="primary"
+                  plain
+                  size="small"
+                  style="margin-top: 14px;"
+                  @click="openClassificationEditor(item)"
+                >
+                  编辑矢量成果
+                </el-button>
+                <div
+                  v-else-if="item?.data?.vector_status === 'vector_failed'"
+                  class="vector-status"
+                >
+                  矢量成果不可编辑：{{ item.data.vector_error || '自动矢量化失败' }}
+                </div>
               </div>
             </div>
           </div>
@@ -99,6 +115,7 @@
 
 <script>
 import { downloadimgWithWords } from "@/utils/download.js";
+import { buildClassificationResultRoute } from "@/utils/classificationResultContext.mjs";
 
 export default {
   name: "Imgshow",
@@ -125,6 +142,23 @@ export default {
   },
   methods: {
     downloadimgWithWords,
+    canEditClassificationResult(item) {
+      const data = item?.data || {};
+      return Number.isSafeInteger(Number(data.project_id))
+        && Number(data.project_id) > 0
+        && Number.isSafeInteger(Number(data.result_id))
+        && Number(data.result_id) > 0
+        && (data.vector_status === 'ready' || data.vector_status === 'ready_empty');
+    },
+    openClassificationEditor(item) {
+      const data = item?.data || {};
+      const target = buildClassificationResultRoute(data.project_id, data.result_id);
+      if (!target) {
+        this.$message.error('当前分类记录缺少可编辑的矢量成果');
+        return;
+      }
+      this.$router.push(target);
+    },
     formatNumber(value) {
       if (value === null || value === undefined || Number.isNaN(Number(value))) {
         return "暂无";
@@ -167,6 +201,13 @@ export default {
   text-align: left;
   font-size: 15px;
   color: #303133;
+}
+.vector-status {
+  width: 210px;
+  margin-top: 14px;
+  color: #d97706;
+  font-size: 13px;
+  line-height: 1.55;
 }
 .img-infor {
   text-align: center;

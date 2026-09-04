@@ -5,15 +5,20 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
+import rasterio
+from rasterio.transform import from_origin
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
 from applications import create_app
 from applications.extensions import db
+from applications.models.classification_result import ClassificationResult, ClassificationRevision
 from applications.models.project import ProjectDataset, ProjectMineBinding
+from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.service import create_project
 
 
@@ -64,6 +69,66 @@ class TestProjectInferenceResults(unittest.TestCase):
         self.assertTrue(cv2.imwrite(str(fid_dir / f"{fid}+{year}_src.png"), image))
         self.assertTrue(cv2.imwrite(str(fid_dir / f"{fid}+{year}_mask.png"), mask))
         return stage_root
+
+    def _add_mine_resource(self, project_id, fid=101):
+        relative_path = Path("projects") / str(project_id) / "resources" / "mine-vector-1" / "mines.geojson"
+        resource = ProjectSpatialResource(
+            project_id=project_id,
+            resource_type="mine_vector",
+            version=1,
+            status="active",
+            source_path=relative_path.as_posix(),
+            normalized_path=relative_path.as_posix(),
+            source_format="geojson",
+            feature_count=1,
+            crs="EPSG:4326",
+            bounds_json=json.dumps([0.0, 0.0, 16.0, 16.0]),
+        )
+        db.session.add(resource)
+        db.session.commit()
+        path = Path(os.environ["PROJECT_STORAGE_ROOT"]) / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {"FID_1": fid},
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [
+                                    [[0.0, 0.0], [16.0, 0.0], [16.0, 16.0], [0.0, 16.0], [0.0, 0.0]]
+                                ],
+                            },
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return resource
+
+    def _write_label(self, stage_root, fid, year):
+        labels = np.full((16, 16), 255, dtype=np.uint8)
+        labels[0:4, 0:4] = 0
+        path = stage_root / str(fid) / f"{fid}+{year}_label.tif"
+        with rasterio.open(
+            path,
+            "w",
+            driver="GTiff",
+            height=16,
+            width=16,
+            count=1,
+            dtype="uint8",
+            nodata=255,
+            crs="EPSG:4326",
+            transform=from_origin(0.0, 16.0, 1.0, 1.0),
+        ) as dataset:
+            dataset.write(labels, 1)
+        return path
 
     def _publish(self, project_id, fid, year, mask_values=None):
         from applications.project_hub.inference_results import publish_project_inference_result
@@ -155,6 +220,118 @@ class TestProjectInferenceResults(unittest.TestCase):
             year_end=2022,
         ).all()
         self.assertEqual(len(rows), 1)
+
+    def test_project_publication_creates_vector_baseline_without_changing_png_success(self):
+        from applications.project_hub.inference_results import publish_project_inference_result
+
+        project_id = self._create_project()
+        resource = self._add_mine_resource(project_id)
+        stage_root = self._stage_year(101, 2024)
+        self._write_label(stage_root, 101, 2024)
+
+        result = publish_project_inference_result(
+            project_id,
+            {
+                "year": "2024",
+                "mine_fids": [101],
+                "mine_resource_id": resource.id,
+                "inference_job_id": "job-vector-success",
+                "output_root": str(
+                    Path(os.environ["PROJECT_STORAGE_ROOT"])
+                    / f"projects/{project_id}/outputs/inference"
+                ),
+            },
+            {"written_fid_list": ["101"], "output_root": str(stage_root)},
+        )
+
+        self.assertEqual(result["synced_fids"], [101])
+        self.assertEqual(result["classification_results"][0]["vector_status"], "ready")
+        vector = ClassificationResult.query.one()
+        self.assertEqual(result["display_results"][0]["result_id"], vector.id)
+        self.assertEqual(result["display_results"][0]["vector_status"], "ready")
+        dataset = ProjectDataset.query.filter_by(
+            project_id=project_id,
+            dataset_kind="inference_result",
+            mine_fid=101,
+            year_start=2024,
+            year_end=2024,
+        ).one()
+        self.assertEqual(
+            json.loads(dataset.slice_config_json)["classification_result_id"],
+            vector.id,
+        )
+        self.assertEqual(vector.current_revision_no, 0)
+        self.assertEqual(ClassificationRevision.query.filter_by(result_id=vector.id).count(), 1)
+        published_png = (
+            Path(os.environ["PROJECT_STORAGE_ROOT"])
+            / f"projects/{project_id}/outputs/inference/101/101+2024.png"
+        )
+        self.assertTrue(published_png.is_file())
+
+    def test_project_publication_keeps_png_when_label_is_missing(self):
+        from applications.project_hub.inference_results import publish_project_inference_result
+
+        project_id = self._create_project()
+        resource = self._add_mine_resource(project_id)
+        stage_root = self._stage_year(101, 2024)
+
+        result = publish_project_inference_result(
+            project_id,
+            {
+                "year": "2024",
+                "mine_fids": [101],
+                "mine_resource_id": resource.id,
+                "inference_job_id": "job-vector-missing-label",
+                "output_root": str(
+                    Path(os.environ["PROJECT_STORAGE_ROOT"])
+                    / f"projects/{project_id}/outputs/inference"
+                ),
+            },
+            {"written_fid_list": ["101"], "output_root": str(stage_root)},
+        )
+
+        self.assertEqual(result["synced_fids"], [101])
+        self.assertEqual(result["classification_results"][0]["vector_status"], "vector_failed")
+        self.assertEqual(ClassificationResult.query.one().vector_error, "label_missing")
+        published_png = (
+            Path(os.environ["PROJECT_STORAGE_ROOT"])
+            / f"projects/{project_id}/outputs/inference/101/101+2024.png"
+        )
+        self.assertTrue(published_png.is_file())
+
+    def test_project_publication_rolls_back_vector_failure_without_losing_png_result(self):
+        from applications.project_hub.inference_results import publish_project_inference_result
+
+        project_id = self._create_project()
+        resource = self._add_mine_resource(project_id)
+        stage_root = self._stage_year(101, 2024)
+        with patch(
+            "applications.project_hub.classification_results.publish_classification_result",
+            side_effect=RuntimeError("simulated vector database failure"),
+        ), patch.object(db.session, "rollback", wraps=db.session.rollback) as rollback:
+            result = publish_project_inference_result(
+                project_id,
+                {
+                    "year": "2024",
+                    "mine_fids": [101],
+                    "mine_resource_id": resource.id,
+                    "inference_job_id": "job-vector-db-failure",
+                    "output_root": str(
+                        Path(os.environ["PROJECT_STORAGE_ROOT"])
+                        / f"projects/{project_id}/outputs/inference"
+                    ),
+                },
+                {"written_fid_list": ["101"], "output_root": str(stage_root)},
+            )
+
+        self.assertEqual(result["synced_fids"], [101])
+        self.assertEqual(result["classification_results"], [])
+        self.assertEqual(rollback.call_count, 1)
+        published_png = (
+            Path(os.environ["PROJECT_STORAGE_ROOT"])
+            / f"projects/{project_id}/outputs/inference/101/101+2024.png"
+        )
+        self.assertTrue(published_png.is_file())
 
     def test_rejects_cross_project_fids_without_writing_other_project(self):
         project_a = self._create_project(name="Dali", fid=101)

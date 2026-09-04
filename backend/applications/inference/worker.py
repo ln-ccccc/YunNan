@@ -315,7 +315,10 @@ class InferenceWorker:
                     )
 
                     publisher = publish_project_inference_result
-                publication = publisher(payload["project_id"], payload, summary)
+                publication_payload = dict(payload)
+                publication_payload["inference_job_id"] = str(job.id)
+                publication_payload["model_id"] = "cc-ln/CUGRS"
+                publication = publisher(payload["project_id"], publication_payload, summary)
                 summary["routing"] = {
                     "mode": "project",
                     "project_id": payload["project_id"],
@@ -323,6 +326,7 @@ class InferenceWorker:
                     "synced_fids": publication["synced_fids"],
                 }
                 summary["display_results"] = publication["display_results"]
+                summary["classification_results"] = publication["classification_results"]
             status = summary.get("status", "failed")
             if status in {"completed", "no_features"}:
                 status = "succeeded"

@@ -1,10 +1,22 @@
+import json
+import logging
+from io import BytesIO
 from pathlib import Path
 
-from flask import Blueprint, request, send_from_directory
+from flask import Blueprint, request, send_file, send_from_directory, session
 
 from applications.auth.guard import login_required
 from applications.common.utils.http import fail_api, success_api
 from applications.models.project import Project
+from applications.models.project_spatial import ProjectSpatialResource
+from applications.project_hub.classification_results import (
+    ClassificationConflictError,
+    ClassificationValidationError,
+    export_current_classification_result,
+    get_classification_result,
+    list_classification_revisions,
+    save_classification_revision,
+)
 from applications.project_hub.service import (
     archive_project,
     create_backup,
@@ -43,6 +55,27 @@ from applications.project_hub.project_map import (
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 project_api = Blueprint("project_api", __name__, url_prefix="/api/projects")
+LOGGER = logging.getLogger(__name__)
+
+
+def _is_label_geotiff_filename(fid, filename):
+    prefix = f"{fid}+"
+    suffix = "_label.tif"
+    if not filename.startswith(prefix) or not filename.endswith(suffix):
+        return False
+    year = filename[len(prefix):-len(suffix)]
+    return len(year) == 4 and year.isdigit()
+
+
+def _classification_error_response(error):
+    if isinstance(error, ClassificationConflictError):
+        return fail_api(str(error), status=409, details=error.details)
+    if isinstance(error, ClassificationValidationError):
+        return fail_api(str(error), status=422, details=error.details)
+    if isinstance(error, ValueError):
+        return fail_api(str(error), status=404)
+    LOGGER.error("分类成果接口发生内部错误", exc_info=error)
+    return fail_api("分类成果服务暂时不可用", status=500)
 
 
 @project_api.get("/<int:project_id>/outputs/inference/<int:fid>/<filename>")
@@ -55,7 +88,10 @@ def project_inference_output_api(project_id, fid, filename):
         return fail_api("矿山不属于当前项目"), 404
     if Path(filename).name != filename or not filename.startswith(f"{fid}+"):
         return fail_api("结果文件名非法"), 400
-    if Path(filename).suffix.lower() not in {".png", ".json", ".csv"}:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".png", ".json", ".csv", ".tif"}:
+        return fail_api("结果文件类型非法"), 400
+    if suffix == ".tif" and not _is_label_geotiff_filename(fid, filename):
         return fail_api("结果文件类型非法"), 400
     try:
         target = resolve_storage_path(
@@ -66,6 +102,35 @@ def project_inference_output_api(project_id, fid, filename):
         return fail_api(str(error)), 400
     if not target.is_file():
         return fail_api("项目推理结果不存在"), 404
+    return send_from_directory(str(target.parent), target.name)
+
+
+@project_api.get("/<int:project_id>/map-resources/<int:resource_id>/tiles/<int:z>/<int:x>/<int:y>.png")
+@login_required
+def project_map_tile_api(project_id, resource_id, z, x, y):
+    resource = ProjectSpatialResource.query.filter_by(
+        id=resource_id,
+        project_id=project_id,
+        resource_type="basemap",
+        status="active",
+    ).first()
+    if resource is None or not resource.tile_path:
+        return fail_api("项目底图资源不存在"), 404
+    if z < 0 or x < 0 or y < 0:
+        return fail_api("瓦片坐标非法"), 404
+    if resource.min_zoom is not None and z < resource.min_zoom:
+        return fail_api("项目底图瓦片不存在"), 404
+    if resource.max_zoom is not None and z > resource.max_zoom:
+        return fail_api("项目底图瓦片不存在"), 404
+    try:
+        target = resolve_storage_path(
+            get_storage_root(),
+            Path(resource.tile_path) / str(z) / str(x) / f"{y}.png",
+        )
+    except ValueError:
+        return fail_api("瓦片坐标非法"), 404
+    if not target.is_file():
+        return fail_api("项目底图瓦片不存在"), 404
     return send_from_directory(str(target.parent), target.name)
 
 
@@ -213,6 +278,70 @@ def project_map_manifest_api(project_id):
         return success_api(data=get_project_map_manifest(project_id))
     except Exception as exc:
         return fail_api(str(exc), status=404)
+
+
+@project_api.get("/<int:project_id>/classification-results/<int:result_id>")
+@login_required
+def classification_result_api(project_id, result_id):
+    try:
+        return success_api(data=get_classification_result(project_id, result_id))
+    except Exception as error:
+        return _classification_error_response(error)
+
+
+@project_api.get("/<int:project_id>/classification-results/<int:result_id>/revisions")
+@login_required
+def classification_revision_list_api(project_id, result_id):
+    try:
+        return success_api(data=list_classification_revisions(project_id, result_id))
+    except Exception as error:
+        return _classification_error_response(error)
+
+
+@project_api.post("/<int:project_id>/classification-results/<int:result_id>/revisions")
+@login_required
+def classification_revision_save_api(project_id, result_id):
+    raw_body = request.get_data(cache=True)
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return fail_api(
+            "分类成果保存数据不合法",
+            status=422,
+            details={"field": "body", "reason": "必须提交 JSON"},
+        )
+    try:
+        return success_api(
+            data=save_classification_revision(
+                project_id,
+                result_id,
+                payload,
+                actor=session.get("admin_user_id"),
+                body_size=len(raw_body),
+            )
+        )
+    except Exception as error:
+        return _classification_error_response(error)
+
+
+@project_api.post("/<int:project_id>/classification-results/<int:result_id>/export")
+@login_required
+def classification_result_export_api(project_id, result_id):
+    if request.get_data(cache=False):
+        return fail_api(
+            "分类成果导出不接受请求体",
+            status=422,
+            details={"field": "body", "reason": "导出仅使用服务器当前版本"},
+        )
+    try:
+        result, feature_collection = export_current_classification_result(project_id, result_id)
+    except Exception as error:
+        return _classification_error_response(error)
+    return send_file(
+        BytesIO(json.dumps(feature_collection, ensure_ascii=False).encode("utf-8")),
+        mimetype="application/geo+json",
+        as_attachment=True,
+        download_name=f"classification-result-{result.id}-revision-{result.current_revision_no}.geojson",
+    )
 
 
 @project_api.get("/<int:project_id>/geojson")

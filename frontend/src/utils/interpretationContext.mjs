@@ -35,7 +35,11 @@ function backendAssetUrl(backendBaseUrl, value) {
   return new URL(String(value).replace(/^\//, ''), base).toString();
 }
 
-export function buildProjectInferenceCards(displayResults = [], backendBaseUrl = '') {
+export function buildProjectInferenceCards(displayResults = [], backendBaseUrl = '', projectId = null) {
+  const validProjectId = Number(projectId);
+  const cardProjectId = Number.isSafeInteger(validProjectId) && validProjectId > 0
+    ? validProjectId
+    : null;
   return displayResults
     .filter((item) => item?.after_img)
     .map((item, index) => ({
@@ -44,7 +48,14 @@ export function buildProjectInferenceCards(displayResults = [], backendBaseUrl =
       type: '地物分类',
       before_img: backendAssetUrl(backendBaseUrl, item.before_img),
       after_img: backendAssetUrl(backendBaseUrl, item.after_img),
-      data: { fid: item.fid, year: item.year },
+      data: {
+        fid: item.fid,
+        year: item.year,
+        project_id: cardProjectId,
+        result_id: item.result_id ?? null,
+        vector_status: item.vector_status ?? null,
+        vector_error: item.vector_error ?? null,
+      },
     }));
 }
 

@@ -1,3 +1,5 @@
+from contextlib import suppress
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -12,7 +14,10 @@ from applications.kml_roi.raster_ops import (
     crop_prediction_by_polygon,
     draw_polygon_boundary_on_prediction,
     tif_to_png,
+    write_label_geotiff,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 def parse_year(v: Optional[str]) -> Optional[int]:
@@ -135,6 +140,7 @@ def cleanup_output_dir(fid: str, fid_dir: Path, keep_last_years: int = 3) -> int
             keep.add(img_path.name)
             keep.add(Path(mask_path).name)
             keep.add(f"{img_path.stem}_src.png")
+            keep.add(f"{img_path.stem}_label.tif")
         keep.update(
             {
                 "change_matrix_pixels.csv",
@@ -149,6 +155,8 @@ def cleanup_output_dir(fid: str, fid_dir: Path, keep_last_years: int = 3) -> int
                 f"{fid}_new.png",
                 f"{fid}_old_mask.png",
                 f"{fid}_new_mask.png",
+                f"{fid}_old_label.tif",
+                f"{fid}_new_label.tif",
                 "change_matrix_pixels.csv",
                 "change_matrix_percent_rownorm.csv",
                 "class_ratio_percent.json",
@@ -261,6 +269,40 @@ def distribute_outputs(
                     out_image_path=dst_img,
                     out_mask_path=dst_mask,
                 )
+            if spec.get("already_cropped") and ok_crop and tile_dir is not None:
+                label_path = write_dir / f"{dst_base}_label.tif"
+                temporary_label_path = write_dir / f".{dst_base}_label.tif.tmp"
+                try:
+                    geom_4326 = spec.get("geom")
+                    if geom_4326 is None:
+                        raise ValueError("缺少矿山 ROI，无法生成地理参考标签")
+                    raw_labels = cv2.imread(str(src_mask), cv2.IMREAD_UNCHANGED)
+                    if raw_labels is None:
+                        raise RuntimeError(f"无法读取模型分类掩膜: {src_mask}")
+                    if raw_labels.ndim == 3:
+                        raw_labels = raw_labels[:, :, 0]
+                    write_label_geotiff(
+                        raw_labels,
+                        tile_dir / f"{src_base}.tif",
+                        geom_4326,
+                        temporary_label_path,
+                    )
+                    os.replace(temporary_label_path, label_path)
+                except Exception as error:
+                    for stale_path in (
+                        temporary_label_path,
+                        label_path,
+                        fid_dir / f"{dst_base}_label.tif",
+                    ):
+                        with suppress(OSError):
+                            stale_path.unlink()
+                    LOGGER.warning(
+                        "标签 GeoTIFF 副产物生成失败，已保留 PNG 推理结果: fid=%s src=%s error=%s",
+                        fid,
+                        src_base,
+                        error,
+                        exc_info=True,
+                    )
             copied_any = copied_any or ok_crop
 
         if not copied_any:

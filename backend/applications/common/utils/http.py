@@ -8,9 +8,12 @@ def success_api(msg: str="成功", data={}):
     return jsonify(success=True, code=SUCCESS, msg=msg, data=data)
 
 
-def fail_api(msg: str="失败", code_id: int=FAIL, status=None):
+def fail_api(msg: str="失败", code_id: int=FAIL, status=None, details=None):
     """ 失败响应 默认值”失败“ """
-    response = jsonify(success=False, code=code_id, msg=msg)
+    payload = {"success": False, "code": code_id, "msg": msg}
+    if details is not None:
+        payload["data"] = {"details": details}
+    response = jsonify(**payload)
     if status is not None:
         return response, int(status)
     return response

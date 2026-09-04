@@ -20,7 +20,9 @@ def create_worker_app(config_name=None):
     db.init_app(app)
 
     with app.app_context():
-        from applications.models.inference_job import InferenceJob, InferenceWorkerState  # noqa: F401
+        from applications import models
+
+        models.load_all_models()
 
         db.create_all()
         from applications.runtime_schema import ensure_runtime_schema

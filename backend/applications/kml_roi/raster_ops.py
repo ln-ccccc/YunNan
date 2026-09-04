@@ -1,6 +1,8 @@
+import math
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from affine import Affine
 import cv2
 import numpy as np
 import rasterio
@@ -12,6 +14,107 @@ from rasterio.windows import Window, from_bounds
 
 WGS84 = "EPSG:4326"
 UI_SEGMENT_SIZE = (512, 512)
+
+
+def has_valid_geotransform(transform: Affine) -> bool:
+    """Return whether a raster transform is finite, invertible, and non-identity."""
+    coefficients = (transform.a, transform.b, transform.c, transform.d, transform.e, transform.f)
+    if not all(math.isfinite(value) for value in coefficients):
+        return False
+    if transform == Affine.identity():
+        return False
+    return (transform.a * transform.e) - (transform.b * transform.d) != 0
+
+
+def label_transform_for_shape(
+    crop_transform: Affine,
+    crop_width: int,
+    crop_height: int,
+    label_shape: Tuple[int, int],
+) -> Affine:
+    """Return the transform for a label grid that covers the crop TIFF exactly."""
+    label_height, label_width = label_shape
+    if crop_width <= 0 or crop_height <= 0:
+        raise ValueError("裁剪 TIFF 的宽高必须为正数")
+    if label_width <= 0 or label_height <= 0:
+        raise ValueError("分类标签的宽高必须为正数")
+    return crop_transform * Affine.scale(crop_width / label_width, crop_height / label_height)
+
+
+def rasterize_roi_for_label(
+    geom_4326: Dict,
+    crop_crs,
+    label_transform: Affine,
+    label_shape: Tuple[int, int],
+) -> np.ndarray:
+    """Rasterize an EPSG:4326 ROI onto the label grid without UI-size resizing."""
+    label_height, label_width = label_shape
+    if crop_crs is None:
+        raise RuntimeError("裁剪 TIFF 缺少 CRS，无法生成地理参考标签")
+    if label_width <= 0 or label_height <= 0:
+        raise ValueError("分类标签的宽高必须为正数")
+    geom_src = transform_geom(WGS84, crop_crs, geom_4326, precision=6)
+    return geometry_mask(
+        [geom_src],
+        out_shape=(label_height, label_width),
+        transform=label_transform,
+        invert=True,
+    )
+
+
+def write_label_geotiff(
+    labels: np.ndarray,
+    crop_tif_path: Path,
+    geom_4326: Dict,
+    out_path: Path,
+) -> bool:
+    """Write model labels as a georeferenced, ROI-clipped single-band GeoTIFF."""
+    label_array = np.asarray(labels)
+    if label_array.ndim != 2:
+        raise ValueError("分类标签必须是二维数组")
+    if not np.issubdtype(label_array.dtype, np.integer):
+        raise ValueError("分类标签必须是整数数组")
+    if np.any((label_array < 0) | ((label_array > 5) & (label_array != 255))):
+        raise ValueError("分类标签包含不支持的类别代码")
+
+    with rasterio.open(crop_tif_path) as crop:
+        if crop.crs is None:
+            raise RuntimeError(f"裁剪 TIFF 缺少 CRS: {crop_tif_path}")
+        if not has_valid_geotransform(crop.transform):
+            raise RuntimeError(f"裁剪 TIFF 缺少有效地理变换: {crop_tif_path}")
+        label_transform = label_transform_for_shape(
+            crop.transform,
+            crop.width,
+            crop.height,
+            label_array.shape,
+        )
+        roi_mask = rasterize_roi_for_label(
+            geom_4326,
+            crop.crs,
+            label_transform,
+            label_array.shape,
+        )
+        profile = crop.profile.copy()
+        profile.update(
+            {
+                "driver": "GTiff",
+                "height": label_array.shape[0],
+                "width": label_array.shape[1],
+                "count": 1,
+                "dtype": "uint8",
+                "nodata": 255,
+                "transform": label_transform,
+                "compress": "lzw",
+                "photometric": "minisblack",
+            }
+        )
+
+    output = label_array.astype(np.uint8, copy=True)
+    output[~roi_mask] = 255
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dataset:
+        dataset.write(output, 1)
+    return True
 
 
 def raster_bounds_4326(raster_path: Path) -> Tuple[float, float, float, float]:

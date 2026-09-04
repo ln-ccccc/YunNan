@@ -6,6 +6,7 @@ const Home = () => import("@/views/Home.vue");
 const Login = () => import("@/views/Login.vue");
 const Segmentation = () => import("@/views/mainfun/Segmentation.vue");
 const SpectralIndices = () => import("@/views/mainfun/SpectralIndices.vue");
+const ClassificationResultEditor = () => import("@/views/mainfun/ClassificationResultEditor.vue");
 const NotFound = () => import("@/views/NotFound.vue");
 
 const routes = [
@@ -32,6 +33,11 @@ const routes = [
         path: "/spectralindices",
         name: "SpectralIndices",
         component: SpectralIndices,
+      },
+      {
+        path: "/classification-results/editor",
+        name: "ClassificationResultEditor",
+        component: ClassificationResultEditor,
       },
     ],
   },

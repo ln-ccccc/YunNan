@@ -26,6 +26,18 @@ def _active_resource(project_id, resource_type):
     )
 
 
+def _has_available_basemap_tiles(resource):
+    if resource is None or not resource.tile_path:
+        return False
+    try:
+        tile_dir = resolve_storage_path(get_storage_root(), resource.tile_path)
+        if not tile_dir.is_dir() or not (tile_dir / ".active").is_file():
+            return False
+        return next(tile_dir.rglob("*.png"), None) is not None
+    except (OSError, ValueError):
+        return False
+
+
 def get_project_geojson(project_id):
     _project(project_id)
     resource = _active_resource(project_id, "mine_vector")
@@ -49,8 +61,10 @@ def get_project_map_manifest(project_id):
     mines = _active_resource(project_id, "mine_vector")
     basemap = _active_resource(project_id, "basemap")
     tile_url = None
-    if basemap is not None:
+    api_tile_url = None
+    if _has_available_basemap_tiles(basemap):
         tile_url = f"/tiles/projects/{project_id}/{basemap.id}/{{z}}/{{x}}/{{y}}.png"
+        api_tile_url = f"/api/projects/{project_id}/map-resources/{basemap.id}/tiles/{{z}}/{{x}}/{{y}}.png"
     return {
         "project_id": project_id,
         **state,
@@ -58,6 +72,7 @@ def get_project_map_manifest(project_id):
         "mine_resource_id": mines.id if mines else None,
         "basemap_resource_id": basemap.id if basemap else None,
         "tile_url": tile_url,
+        "api_tile_url": api_tile_url,
         "min_zoom": basemap.min_zoom if basemap else None,
         "max_zoom": basemap.max_zoom if basemap else None,
         "tile_scheme": "xyz" if basemap else None,

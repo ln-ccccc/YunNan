@@ -160,7 +160,11 @@ function upload(type, funUrl) {
             }
           }
           (payload?.routing?.synced_fids || []).forEach((fid) => syncedFids.add(fid));
-          buildProjectInferenceCards(payload.display_results || [], global.BASEURL).forEach((card) => {
+          buildProjectInferenceCards(
+            payload.display_results || [],
+            global.BASEURL,
+            this.projectId || payload?.routing?.project_id,
+          ).forEach((card) => {
             flashCards.push({ ...card, id: seq++ });
           });
         });

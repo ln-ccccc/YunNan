@@ -1,5 +1,7 @@
 import csv
+from contextlib import suppress
 import json
+import logging
 import math
 import os
 import shutil
@@ -13,11 +15,44 @@ from applications.models.project import Project, ProjectDataset
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 def _parse_year(value):
     text = str(value or "").strip()
     if len(text) != 4 or not text.isdigit():
         raise ValueError("项目推理结果缺少有效年份")
     return int(text)
+
+
+def _is_year_image(fid, filename):
+    prefix = f"{fid}+"
+    if not filename.startswith(prefix) or not filename.endswith(".png"):
+        return False
+    try:
+        _parse_year(filename[len(prefix):-len(".png")])
+    except ValueError:
+        return False
+    return True
+
+
+def _is_label_geotiff(fid, filename):
+    prefix = f"{fid}+"
+    suffix = "_label.tif"
+    if not filename.startswith(prefix) or not filename.endswith(suffix):
+        return False
+    try:
+        _parse_year(filename[len(prefix):-len(suffix)])
+    except ValueError:
+        return False
+    return True
+
+
+def _is_publishable_inference_asset(fid, filename):
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".png", ".json", ".csv"}:
+        return True
+    return suffix == ".tif" and _is_label_geotiff(fid, filename)
 
 
 def _parse_matrix(path):
@@ -74,6 +109,25 @@ def _upsert_inference_dataset(project_id, fid, year, output_dir, files):
         {"year": year, "files": sorted(files)},
         ensure_ascii=False,
     )
+    return dataset
+
+
+def _link_inference_dataset_to_classification_result(dataset, classification_result):
+    try:
+        metadata = json.loads(dataset.slice_config_json or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata.update(
+        {
+            "classification_result_id": classification_result["result_id"],
+            "vector_status": classification_result["vector_status"],
+            "vector_error": classification_result["vector_error"],
+        }
+    )
+    dataset.slice_config_json = json.dumps(metadata, ensure_ascii=False)
+    db.session.commit()
 
 
 def _prepare_fid_publication(project_id, fid, stage_dir, target_dir):
@@ -89,10 +143,23 @@ def _prepare_fid_publication(project_id, fid, stage_dir, target_dir):
             continue
         if not source.name.startswith(f"{fid}+"):
             continue
-        if source.suffix.lower() not in {".png", ".json", ".csv"}:
+        if not _is_publishable_inference_asset(fid, source.name):
             continue
         shutil.copy2(source, publication_dir / source.name)
         copied.append(source.name)
+
+    for source in stage_dir.iterdir():
+        if not source.is_file() or not _is_year_image(fid, source.name):
+            continue
+        label_name = f"{source.stem}_label.tif"
+        if not (stage_dir / label_name).is_file():
+            with suppress(OSError):
+                (publication_dir / label_name).unlink()
+
+    for published in publication_dir.iterdir():
+        if published.is_file() and published.suffix.lower() == ".tif" and not _is_label_geotiff(fid, published.name):
+            with suppress(OSError):
+                published.unlink()
     if not copied:
         shutil.rmtree(publication_dir, ignore_errors=True)
         raise ValueError(f"FID {fid} 没有可发布的推理文件")
@@ -140,6 +207,7 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
 
     display_results = []
     synced_fids = []
+    classification_results = []
     for fid in written_fids:
         stage_dir = stage_root / str(fid)
         if not stage_dir.is_dir():
@@ -175,6 +243,7 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
         summary_backup = summary_root / f".{fid}.backup-{uuid.uuid4().hex}.json"
         had_directory = target_dir.exists()
         had_summary = summary_target.exists()
+        inference_dataset = None
         try:
             if had_directory:
                 os.replace(target_dir, directory_backup)
@@ -182,7 +251,7 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
             if had_summary:
                 os.replace(summary_target, summary_backup)
             os.replace(summary_temp, summary_target)
-            _upsert_inference_dataset(project.id, fid, year, target_dir, copied)
+            inference_dataset = _upsert_inference_dataset(project.id, fid, year, target_dir, copied)
             db.session.commit()
         except Exception:
             db.session.rollback()
@@ -203,17 +272,68 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
 
         current_image = target_dir / f"{fid}+{year}.png"
         current_source = target_dir / f"{fid}+{year}_src.png"
-        display_results.append({
+        display_result = {
             "fid": fid,
             "year": year,
             "before_img": _asset_url(project.id, fid, current_source.name)
             if current_source.is_file() else None,
             "after_img": _asset_url(project.id, fid, current_image.name)
             if current_image.is_file() else None,
-        })
+            "result_id": None,
+            "vector_status": None,
+            "vector_error": None,
+        }
+        display_results.append(display_result)
+        if request_payload.get("inference_job_id") and request_payload.get("mine_resource_id"):
+            try:
+                from applications.project_hub.classification_results import publish_classification_result
+
+                classification_result = publish_classification_result(
+                    project_id=project.id,
+                    fid=fid,
+                    year=year,
+                    inference_job_id=request_payload["inference_job_id"],
+                    mine_resource_id=request_payload["mine_resource_id"],
+                    model_id=request_payload.get("model_id") or "cc-ln/CUGRS",
+                    label_path=target_dir / f"{fid}+{year}_label.tif",
+                )
+            except Exception:
+                db.session.rollback()
+                LOGGER.warning(
+                    "分类成果矢量化发布失败，已保留 PNG 推理结果: project_id=%s fid=%s",
+                    project.id,
+                    fid,
+                    exc_info=True,
+                )
+            else:
+                classification_results.append(classification_result)
+                display_result.update(
+                    {
+                        "result_id": classification_result["result_id"],
+                        "vector_status": classification_result["vector_status"],
+                        "vector_error": classification_result["vector_error"],
+                    }
+                )
+                try:
+                    _link_inference_dataset_to_classification_result(
+                        inference_dataset,
+                        classification_result,
+                    )
+                except Exception:
+                    db.session.rollback()
+                    LOGGER.warning(
+                        "分类成果历史关联写入失败，分类成果仍可通过项目成果查询: project_id=%s fid=%s",
+                        project.id,
+                        fid,
+                        exc_info=True,
+                    )
         synced_fids.append(fid)
 
-    return {"synced_fids": synced_fids, "display_results": display_results}
+    return {
+        "synced_fids": synced_fids,
+        "display_results": display_results,
+        "classification_results": classification_results,
+    }
 
 
 def _index_summary(points):

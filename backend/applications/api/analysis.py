@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from flask import Blueprint, request, send_from_directory
@@ -16,7 +17,8 @@ from applications.inference.interpretation import prepare_geoview_interpretation
 from applications.inference.jobs import serialize_job
 from applications.inference.routing import resolve_interpretation_scope
 from applications.models.analysis import Analysis
-from applications.models.project import Project
+from applications.models.classification_result import ClassificationResult
+from applications.models.project import Project, ProjectDataset
 from applications.project_hub.inference_results import upsert_project_index_results
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 from applications.schemas import AnalysisSchema
@@ -97,6 +99,39 @@ def _iter_project_records(project_id):
             })
     records.sort(key=lambda item: item["mtime"], reverse=True)
     return records
+
+
+def _classification_history_metadata(project_id, fid, year):
+    default = {
+        "result_id": None,
+        "vector_status": None,
+        "vector_error": None,
+    }
+    dataset = ProjectDataset.query.filter_by(
+        project_id=project_id,
+        dataset_kind="inference_result",
+        mine_fid=int(fid),
+        year_start=int(year),
+        year_end=int(year),
+    ).first()
+    if dataset is None:
+        return default
+    try:
+        metadata = json.loads(dataset.slice_config_json or "{}")
+        result_id = metadata.get("classification_result_id") if isinstance(metadata, dict) else None
+        result_id = int(result_id)
+    except (TypeError, ValueError):
+        return default
+    if result_id <= 0:
+        return default
+    result = ClassificationResult.query.filter_by(id=result_id, project_id=project_id).first()
+    if result is None:
+        return default
+    return {
+        "result_id": result.id,
+        "vector_status": result.vector_status,
+        "vector_error": result.vector_error,
+    }
 
 
 @analysis_api.get('/show/<analysis_type>')
@@ -318,6 +353,7 @@ def kml_roi_history_list():
                 "fid": fid,
                 "year": rec["year"],
                 "file": filename,
+                **_classification_history_metadata(rec["project_id"], fid, rec["year"]),
             }
         else:
             img_url = f"/api/analysis/kml_roi_output/{fid}/{filename}"
