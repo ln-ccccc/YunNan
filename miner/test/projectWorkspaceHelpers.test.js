@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildMineSelectionSet, filterProjects } from '../src/projectWorkspace/projectWorkspaceHelpers.js';
+import {
+  buildMineSelectionSet,
+  filterProjects,
+  isSafeIncomingTiffStorageKey,
+} from '../src/projectWorkspace/projectWorkspaceHelpers.js';
 
 test('filterProjects matches by name, region, year and status', () => {
   const items = [
@@ -29,4 +33,13 @@ test('buildMineSelectionSet returns bound mine fid values as strings', () => {
   const selected = buildMineSelectionSet(detail);
 
   assert.deepEqual(Array.from(selected.values()), ['101', '102']);
+});
+
+test('isSafeIncomingTiffStorageKey allows only relative TIF/TIFF files below incoming', () => {
+  assert.equal(isSafeIncomingTiffStorageKey('incoming/2024/spring.tif'), true);
+  assert.equal(isSafeIncomingTiffStorageKey('incoming\\2024\\spring.TIFF'), true);
+  assert.equal(isSafeIncomingTiffStorageKey('incoming/../escape.tif'), false);
+  assert.equal(isSafeIncomingTiffStorageKey('incoming//spring.tif'), false);
+  assert.equal(isSafeIncomingTiffStorageKey('uploads/spring.tif'), false);
+  assert.equal(isSafeIncomingTiffStorageKey('incoming/spring.img'), false);
 });

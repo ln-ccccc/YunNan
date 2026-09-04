@@ -37,3 +37,14 @@ export function buildMineSelectionSet(projectDetail) {
       .map((mineFid) => String(mineFid)),
   );
 }
+
+
+export function isSafeIncomingTiffStorageKey(value) {
+  const segments = String(value || '').trim().replaceAll('\\', '/').split('/');
+  return (
+    segments.length >= 2
+    && segments[0] === 'incoming'
+    && segments.slice(1).every((segment) => segment && segment !== '.' && segment !== '..')
+    && /\.tiff?$/i.test(segments.at(-1))
+  );
+}
