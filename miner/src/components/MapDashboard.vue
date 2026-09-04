@@ -73,9 +73,12 @@
     <InferenceModal
       :visible="showInferenceModal"
       :running="inferenceRunning"
-      :error="inferenceError"
+      :error="imageryAssetsError || inferenceError"
       :result="inferenceResult"
+      :imagery-assets="imageryAssets"
+      :assets-loading="imageryAssetsLoading"
       @close="showInferenceModal = false"
+      @load-imagery="loadInferenceImagery"
       @submit="handleInferenceSubmit"
     />
 
@@ -105,6 +108,7 @@ import TrendReportModal from './TrendReportModal.vue';
 
 import { useWeather } from '../composables/useWeather';
 import { useMineData } from '../composables/useMineData';
+import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
 
 const props = defineProps({
   projectId: {
@@ -122,6 +126,10 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['back-to-projects', 'logout']);
+const rawMinerApiBase = import.meta.env.VITE_MINER_API_BASE_URL;
+const projectApi = createProjectWorkspaceApi({
+  baseUrl: rawMinerApiBase ? String(rawMinerApiBase).replace(/\/$/, '') : '',
+});
 
 const showMineDetail = ref(false);
 const showInferenceModal = ref(false);
@@ -129,6 +137,9 @@ const showTrendReportModal = ref(false);
 const selectedMine = ref({});
 const selectedTab = ref('NDVI');
 const mapContainerRef = ref(null);
+const imageryAssets = ref([]);
+const imageryAssetsLoading = ref(false);
+const imageryAssetsError = ref('');
 
 const {
   currentDate, currentTime, temperature, weatherIcon, airQuality, getAqiClass, fetchRealtimeEnvironmentAt,
@@ -164,7 +175,7 @@ const {
   inferenceRunning,
   inferenceResult,
   inferenceError,
-  runKmlRoiInference,
+  runProjectInference,
   trendReportLoading,
   trendReportError,
   trendReport,
@@ -172,6 +183,20 @@ const {
   exportTrendReport,
   mapManifest,
 } = useMineData(() => props.projectId);
+
+const loadInferenceImagery = async () => {
+  imageryAssetsLoading.value = true;
+  imageryAssetsError.value = '';
+  try {
+    const response = await projectApi.loadAssets(props.projectId, { type: 'imagery', status: 'ready' });
+    imageryAssets.value = response?.items || [];
+  } catch (error) {
+    imageryAssets.value = [];
+    imageryAssetsError.value = error?.message || '推理影像加载失败';
+  } finally {
+    imageryAssetsLoading.value = false;
+  }
+};
 
 const performSearch = () => {
   if (!searchMineId.value) return;
@@ -224,35 +249,24 @@ const focusByFid = (fid) => {
 };
 
 const handleInferenceSubmit = async (formData) => {
-  if (!formData.oldTifPath) return;
+  if (!Number.isSafeInteger(formData?.datasetId) || formData.datasetId <= 0) return;
   try {
-    const result = await runKmlRoiInference({
-      oldTifPath: formData.oldTifPath,
-      newTifPath: formData.newTifPath || formData.oldTifPath,
-      kmlPath: formData.kmlPath,
-      year: formData.singleYear,
-      oldYear: formData.oldYear,
-      newYear: formData.newYear,
-      device: formData.device || 'auto',
-      limit: 0,
-      syncIndices: true,
-      indexTypes: ['ndvi', 'ndbi', 'ndwi', 'ndsi'],
-    });
-
-    const writtenCount = Array.isArray(result?.written_fid_list) ? result.written_fid_list.length : 0;
-    const kmlChangedCount = Number(result?.kml_update?.updated || 0) + Number(result?.kml_update?.inserted || 0);
-    if (writtenCount > 0 || kmlChangedCount > 0) {
+    const result = await runProjectInference(formData);
+    const writtenFids = Array.isArray(result?.result?.written_fid_list)
+      ? result.result.written_fid_list
+      : [];
+    if (['succeeded', 'succeeded_with_fallback', 'partial_failed'].includes(result?.status)) {
       await loadData();
-    }
-    if (writtenCount > 0) {
       showInferenceModal.value = false;
-      focusByFid(result.written_fid_list[0]);
-    } else if (kmlChangedCount > 0) {
-      showInferenceModal.value = false;
+      if (writtenFids.length > 0) focusByFid(writtenFids[0]);
     }
   } catch (_) {
     // 错误文案通过 useMineData 暴露给弹窗
   }
+};
+
+const openInferenceModal = () => {
+  showInferenceModal.value = true;
 };
 
 const openTrendReport = async () => {
@@ -289,6 +303,7 @@ onMounted(() => {
 
 defineExpose({
   focusByFid,
+  openInferenceModal,
 });
 </script>
 

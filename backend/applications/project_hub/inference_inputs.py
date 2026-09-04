@@ -1,6 +1,7 @@
 """Resolve browser-safe project inference references into private worker inputs."""
 
 from collections.abc import Mapping
+import re
 from pathlib import Path, PureWindowsPath
 
 from rasterio.errors import RasterioError
@@ -13,6 +14,9 @@ from applications.project_hub.spatial_storage import get_storage_root, resolve_s
 
 class ProjectInferenceInputError(ValueError):
     """Raised when a project reference cannot safely start an inference job."""
+
+
+_YEAR_VALUE = re.compile(r"^\d{4}$")
 
 
 def _positive_integer(value, field_name):
@@ -53,6 +57,15 @@ def _resolve_registered_tif(storage_root, file_path):
     if not tif_path.is_file():
         raise ProjectInferenceInputError("数据集影像文件不存在或不是普通文件")
     return tif_path
+
+
+def _resolve_inference_year(value, dataset):
+    candidate = value
+    if candidate is None or (isinstance(candidate, str) and not candidate.strip()):
+        candidate = dataset.year_end if dataset.year_end not in (None, "") else dataset.year_start
+    if isinstance(candidate, bool) or not _YEAR_VALUE.fullmatch(str(candidate or "").strip()):
+        raise ProjectInferenceInputError("year 必须是四位年份，或数据集必须登记年份")
+    return str(candidate).strip()
 
 
 def _normalize_fids(values, field_name):
@@ -106,6 +119,8 @@ def resolve_project_inference_inputs(
     if str(dataset.dataset_kind or "").strip().lower() != "imagery":
         raise ProjectInferenceInputError("当前仅支持使用影像数据集启动推理")
 
+    normalized_year = _resolve_inference_year(year, dataset)
+
     storage_root = get_storage_root()
     tif_path = _resolve_registered_tif(storage_root, dataset.file_path)
     overview = get_project_overview(project.id)
@@ -156,6 +171,6 @@ def resolve_project_inference_inputs(
         "new_tif_path": str(tif_path),
         "kml_path": str(vector_path),
         "output_root": str(output_root),
-        "year": str(year or ""),
+        "year": normalized_year,
         "device": device,
     }

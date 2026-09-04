@@ -24,10 +24,12 @@ test('createInferenceJob forwards payload and cookie to Flask', async () => {
     backendBaseUrl: 'http://backend:5008',
   });
 
-  const result = await client.createJob({ old_tif_path: '/data/a.tif' }, 'session=x');
+  const payload = { project_id: 7, dataset_id: 12, year: '2024', device: 'auto' };
+  const result = await client.createJob(payload, 'session=x');
 
   assert.equal(result.status, 201);
   assert.equal(calls[0].url, 'http://backend:5008/api/inference/jobs');
   assert.equal(calls[0].options.headers.cookie, 'session=x');
-  assert.deepEqual(JSON.parse(calls[0].options.body), { old_tif_path: '/data/a.tif' });
+  assert.deepEqual(JSON.parse(calls[0].options.body), payload);
+  assert.doesNotMatch(JSON.stringify(payload), /tif_path|kml_path|output_root|storage_key/);
 });

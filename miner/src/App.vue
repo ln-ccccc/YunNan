@@ -75,7 +75,7 @@ const applyPendingMineFocus = async () => {
   pendingFocusMineFid.value = null;
 };
 
-const openMapView = async (projectId, mineFid = null) => {
+const openMapView = async (projectId, mineFid = null, options = {}) => {
   if (!sessionState.value.authenticated) {
     navigateToLogin();
     return;
@@ -85,6 +85,8 @@ const openMapView = async (projectId, mineFid = null) => {
   pendingFocusMineFid.value = mineFid;
   currentView.value = 'map';
   syncHash('map');
+  await nextTick();
+  if (options?.openInference) mapDashboardRef.value?.openInferenceModal?.();
   await applyPendingMineFocus();
 };
 

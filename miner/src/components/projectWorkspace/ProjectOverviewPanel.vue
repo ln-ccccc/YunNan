@@ -23,6 +23,15 @@
             打开矿山地图
           </button>
           <button
+            v-if="overview.capabilities?.can_start_inference"
+            class="secondary-btn"
+            type="button"
+            :disabled="busy"
+            @click="$emit('start-inference')"
+          >
+            开始地物分类
+          </button>
+          <button
             v-if="overview.lifecycle_status !== 'archived'"
             class="ghost-btn"
             type="button"
@@ -112,7 +121,7 @@ defineProps({
   },
 });
 
-defineEmits(['edit', 'refresh', 'archive', 'restore', 'open-map', 'run-action']);
+defineEmits(['edit', 'refresh', 'archive', 'restore', 'open-map', 'start-inference', 'run-action']);
 
 function formatLifecycleStatus(status) {
   return {

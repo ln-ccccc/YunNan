@@ -100,6 +100,7 @@ Response 至少包含：
 
 - 运行时通过 `PROJECT_STORAGE_ROOT` 指定项目受控存储根；项目导出写入 `projects/{project_id}/exports/{export_id}/`，项目配置快照写入 `projects/{project_id}/snapshots/{snapshot_id}/`。
 - `POST /api/projects/{project_id}/datasets` 不再接受浏览器传入的 `file_path`。仅登记已由离线导入流程放入 `incoming/` 的相对 `storage_key`，格式只能是 `.tif` 或 `.tiff`；绝对路径、`..` 片段和其他格式返回 `422`。成功仅返回 `id`、`asset_id`、`status` 登记回执；资产详情需通过 `/assets` 读取。
+- 项目化地物分类使用 `POST /api/inference/jobs`。操作顺序是：将 TIF/TIFF 放入 `PROJECT_STORAGE_ROOT/incoming/`，在工作台登记为影像，待资产为 ready 后从项目或地图打开“开始地物分类”。浏览器只提交项目、影像数据集、可选年份和设备；不得填写服务器路径。年份未填写时使用影像登记年份。
 - `POST /api/projects/{project_id}/exports` 与 `POST /api/projects/{project_id}/backups` 不接受 `output_dir`，传入时返回 `422`。导出请求只允许 `format` 和可选 `features`；GeoJSON/SHP 未提供 `features` 时由 Flask 根据当前项目矿山边界、绑定和数据集生成，BFF 只转发请求。即使是兼容的显式 `features`，服务端也会过滤保留路径键、覆盖 `project_id`，并只保留当前项目可验证的矿山/数据集引用。快照请求只允许 `scope=metadata_index`；其余字段或取值均返回 `422`。导出公开响应使用 `artifact_name`，快照公开响应使用“项目配置快照”名称；两者都不返回服务器物理路径。
 - 恢复配置快照只接受与当前项目和快照记录精确匹配、状态为 `completed` 且 `restorable=true` 的受控 `manifest.json`。没有 `snapshot_version`、`project_id`、`backup_id` 身份字段的旧快照需要重新生成，不能直接恢复；成功响应为公开 `ProjectOverviewView`，不返回旧详情中的数据集路径。
 - `GET /api/projects/{project_id}/overview` 和 `GET /api/projects/{project_id}/assets` 是 Project Hub 的公开只读聚合入口；浏览器经 Miner BFF 调用，不能根据底层表名或存储路径自行推断资源状态。

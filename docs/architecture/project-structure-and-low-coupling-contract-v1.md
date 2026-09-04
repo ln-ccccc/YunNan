@@ -231,6 +231,8 @@ vector_revision | report | export | backup_snapshot
 
 `POST /datasets` 的成功响应是安全登记回执，仅含 `id`、`asset_id` 和 `status`；页面随后通过 `/assets` 读取公开资产。配置快照恢复成功返回 `ProjectOverviewView`，不得复用旧项目详情 DTO。历史 `GET /api/projects/{project_id}` 为兼容接口，可能仍保留旧字段；新 Miner 工作台不得调用它或把其响应转发给浏览器。GeoJSON/SHP 导出未传 `features` 时，由 Flask 从当前公开矿山边界、项目绑定和数据集生成导出要素，BFF 只转发请求且不得读取旧详情；兼容的显式 `features` 同样必须过滤保留路径键、覆盖 `project_id`，并校验矿山/数据集引用只属于当前项目。
 
+项目化地物分类统一调用 `POST /api/inference/jobs`。Miner 只提交 `project_id`、`dataset_id`、可选 `year` 和 `device`；后端确认数据集属于当前项目、是已就绪的 `imagery`，再解析受控 `incoming/*.tif(f)`、矿山边界和项目输出目录。浏览器不得提交或接收推理输入、KML、输出目录等服务器物理路径。省略 `year` 时使用影像登记年份；两者都没有时，后端直接提示补充年份。
+
 空间矿山预览和公开 GeoJSON 输出可以保留用户定义的业务属性，但必须递归剔除属性名为 `file_path`、`source_path`、`normalized_path`、`tile_path`、`manifest_path`、`output_dir` 的字段（大小写不敏感）。这些是存储保留名，不能作为可映射的矿山字段，也不能作为浏览器可读属性输出。导入时必须将用户所选 FID 映射写入规范化 GeoJSON 的 `FID_1`，使后续地图、矿山选择和自动导出不依赖临时字段映射。
 
 ## 7. 工作流与前端数据流

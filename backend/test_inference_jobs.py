@@ -244,6 +244,7 @@ class TestInferenceJobPayload(unittest.TestCase):
             result_json=json.dumps(
                 {
                     "written_fid_list": ["101"],
+                    "before_img": "/api/projects/7/outputs/inference/101/before.png",
                     "output_dir": "/secret/outputs/101",
                     "nested": {
                         "manifest_path": "/secret/manifest.json",
@@ -273,6 +274,10 @@ class TestInferenceJobPayload(unittest.TestCase):
             },
         )
         self.assertEqual(result["result"]["written_fid_list"], ["101"])
+        self.assertEqual(
+            result["result"]["before_img"],
+            "/api/projects/7/outputs/inference/101/before.png",
+        )
         self.assertEqual(result["result"]["nested"], {"count": 1})
         self.assertNotIn("/secret", public_json)
         self.assertNotIn("old_tif_path", public_json)
@@ -488,6 +493,21 @@ class TestInferenceJobAPI(unittest.TestCase):
             },
         )
         self.assertNotIn(str(self.storage_root), json.dumps(public_job, ensure_ascii=False))
+
+    def test_create_job_uses_dataset_year_when_request_omits_year(self):
+        from applications.models.inference_job import InferenceJob
+
+        self.login()
+        seed = self.seed_ready_project()
+
+        response = self.post_safe_job(
+            seed,
+            {"project_id": seed.project.id, "dataset_id": seed.dataset.id},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        private_payload = json.loads(InferenceJob.query.one().request_payload_json)
+        self.assertEqual(private_payload["year"], "2024")
 
     def test_create_job_rejects_unknown_fields_without_creating_job(self):
         self.login()

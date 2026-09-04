@@ -35,6 +35,9 @@ _PRIVATE_PATH_FIELDS = {
 _DROP_PUBLIC_VALUE = object()
 _URL_VALUE = re.compile(r"(?i)\b(?:https?|ftp)://[^\s]+")
 _ABSOLUTE_PATH_VALUE = re.compile(r"(?<![A-Za-z0-9+.\-])(?:[A-Za-z]:[\\/]|[\\/]{1,2})")
+_PUBLIC_PROJECT_RESULT_URL = re.compile(
+    r"^/api/projects/[1-9]\d*/outputs/inference/[1-9]\d*/[A-Za-z0-9._+\-]+$"
+)
 
 
 def _is_within(path_obj, root_obj):
@@ -191,10 +194,13 @@ def _contains_absolute_path(value):
     normalized = value.strip()
     if not normalized:
         return False
+    if _PUBLIC_PROJECT_RESULT_URL.fullmatch(normalized):
+        return False
+    if _URL_VALUE.search(normalized):
+        return True
     if "file:" in normalized.casefold():
         return True
-    without_urls = _URL_VALUE.sub("", normalized)
-    return bool(_ABSOLUTE_PATH_VALUE.search(without_urls))
+    return bool(_ABSOLUTE_PATH_VALUE.search(normalized))
 
 
 def _sanitize_public_value(value):

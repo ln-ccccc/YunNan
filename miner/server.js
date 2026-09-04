@@ -785,9 +785,8 @@ app.get('/api/mines/ndvi', (req, res) => {
   });
 });
 
-// KML ROI inference for one image that may contain multiple mines.
 app.use('/api/inference', authGuard);
-app.post('/api/inference/kml-roi', async (req, res) => {
+const relayInferenceJobCreate = async (req, res) => {
   try {
     return relayBackendResponse(
       res,
@@ -796,7 +795,9 @@ app.post('/api/inference/kml-roi', async (req, res) => {
   } catch (err) {
     return res.status(502).json({ success: false, code: 1, msg: err?.message || String(err) });
   }
-});
+};
+app.post('/api/inference/jobs', relayInferenceJobCreate);
+app.post('/api/inference/kml-roi', relayInferenceJobCreate);
 
 app.get('/api/inference/jobs/:jobId', async (req, res) => {
   relayBackendResponse(res, await inferenceBackend.getJob(req.params.jobId, req.headers.cookie || ''));

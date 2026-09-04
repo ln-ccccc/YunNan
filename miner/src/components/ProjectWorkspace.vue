@@ -51,6 +51,7 @@
             @archive="archiveProject"
             @restore="restoreProject"
             @open-map="openMap"
+            @start-inference="startInference"
             @run-action="runNextAction"
           />
 
@@ -469,6 +470,11 @@ function runNextAction(action) {
 function openMap(mineFid = null) {
   if (!currentProjectId.value || !overview.value?.capabilities?.can_open_map) return;
   emit('open-map', currentProjectId.value, mineFid === null ? null : Number(mineFid));
+}
+
+function startInference() {
+  if (!currentProjectId.value || !overview.value?.capabilities?.can_start_inference) return;
+  emit('open-map', currentProjectId.value, null, { openInference: true });
 }
 
 async function archiveProject() {

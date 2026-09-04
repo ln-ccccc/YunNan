@@ -235,32 +235,18 @@ export function useMineData(projectId) {
     throw new Error('当前 miner 后端不支持删除矿山');
   };
 
-  const runKmlRoiInference = async ({
-    oldTifPath,
-    newTifPath,
-    kmlPath = '',
-    device = 'auto',
-    limit = 0,
-    year = '',
-    oldYear = '',
-    newYear = ''
-  } = {}) => {
+  const runProjectInference = async ({ datasetId, year = '', device = 'auto' } = {}) => {
     inferenceRunning.value = true;
     inferenceError.value = '';
     inferenceResult.value = null;
     try {
       const payload = {
         project_id: resolveProjectId(),
-        old_tif_path: oldTifPath,
-        new_tif_path: newTifPath || oldTifPath,
+        dataset_id: Number(datasetId),
         device,
-        limit
       };
-      if (kmlPath) payload.kml_path = kmlPath;
       if (year) payload.year = year;
-      if (oldYear) payload.old_year = oldYear;
-      if (newYear) payload.new_year = newYear;
-      const res = await axios.post(apiUrl('/api/inference/kml-roi'), payload);
+      const res = await axios.post(apiUrl('/api/inference/jobs'), payload);
       const createdJob = res?.data?.data;
       if (!createdJob?.id) throw new Error('推理任务创建后未返回任务编号');
       inferenceResult.value = createdJob;
@@ -337,7 +323,7 @@ export function useMineData(projectId) {
     resetFilters,
     fetchIndices,
     fetchChangeMatrix,
-    runKmlRoiInference,
+    runProjectInference,
     fetchTrendReport,
     exportTrendReport,
     deleteMines,
