@@ -1,0 +1,75 @@
+{
+  "success": true,
+  "code": 0,
+  "data": {
+    "project_id": 42,
+    "lifecycle_status": "active",
+    "summary": {
+      "id": 42,
+      "name": "云南矿山生态修复示例项目",
+      "region": "云南省",
+      "manager": "项目管理员",
+      "remark": "项目已具备地图浏览、推理与成果复核条件。",
+      "status": "active",
+      "monitor_start_year": 2024,
+      "monitor_end_year": 2024,
+      "mine_count": 1,
+      "dataset_count": 3,
+      "spatial_status": "ready",
+      "map_ready": true,
+      "missing_resources": [],
+      "latest_activity_at": "2026-09-01T08:20:00Z",
+      "create_time": "2026-09-01T08:00:00Z",
+      "update_time": "2026-09-01T08:20:00Z"
+    },
+    "readiness": {
+      "status": "ready",
+      "passed": 5,
+      "total": 5,
+      "checks": [
+        {
+          "code": "PROJECT_PROFILE",
+          "status": "passed",
+          "reason_code": null
+        },
+        {
+          "code": "MINE_BOUNDARY",
+          "status": "passed",
+          "reason_code": null
+        },
+        {
+          "code": "ACTIVE_BASEMAP",
+          "status": "passed",
+          "reason_code": null
+        },
+        {
+          "code": "INFERENCE_INPUT",
+          "status": "passed",
+          "reason_code": null
+        },
+        {
+          "code": "REVIEWABLE_RESULT",
+          "status": "passed",
+          "reason_code": null
+        }
+      ]
+    },
+    "capabilities": {
+      "can_configure_spatial": true,
+      "can_open_map": true,
+      "can_start_inference": true,
+      "can_review_result": true,
+      "can_export": true
+    },
+    "blockers": [],
+    "next_actions": [],
+    "counts": {
+      "mines": 1,
+      "assets": 5,
+      "queued_jobs": 0,
+      "running_jobs": 0,
+      "failed_assets": 0
+    },
+    "recent_activity": []
+  }
+}

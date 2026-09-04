@@ -1,0 +1,110 @@
+{
+  "success": true,
+  "code": 0,
+  "data": {
+    "project_id": 42,
+    "lifecycle_status": "draft",
+    "summary": {
+      "id": 42,
+      "name": "云南矿山生态修复示例项目",
+      "region": "云南省",
+      "manager": "项目管理员",
+      "remark": "仅完成项目基础信息登记。",
+      "status": "draft",
+      "monitor_start_year": 2024,
+      "monitor_end_year": 2024,
+      "mine_count": 0,
+      "dataset_count": 0,
+      "spatial_status": "unconfigured",
+      "map_ready": false,
+      "missing_resources": [
+        "mine_boundary",
+        "active_basemap",
+        "inference_input",
+        "reviewable_result"
+      ],
+      "latest_activity_at": "2026-09-01T08:00:00Z",
+      "create_time": "2026-09-01T08:00:00Z",
+      "update_time": "2026-09-01T08:00:00Z"
+    },
+    "readiness": {
+      "status": "blocked",
+      "passed": 1,
+      "total": 5,
+      "checks": [
+        {
+          "code": "PROJECT_PROFILE",
+          "status": "passed",
+          "reason_code": null
+        },
+        {
+          "code": "MINE_BOUNDARY",
+          "status": "blocked",
+          "reason_code": "NO_MINE_BOUNDARY"
+        },
+        {
+          "code": "ACTIVE_BASEMAP",
+          "status": "blocked",
+          "reason_code": "NO_ACTIVE_BASEMAP"
+        },
+        {
+          "code": "INFERENCE_INPUT",
+          "status": "blocked",
+          "reason_code": "NO_INFERENCE_INPUT"
+        },
+        {
+          "code": "REVIEWABLE_RESULT",
+          "status": "blocked",
+          "reason_code": "NO_REVIEWABLE_RESULT"
+        }
+      ]
+    },
+    "capabilities": {
+      "can_configure_spatial": true,
+      "can_open_map": false,
+      "can_start_inference": false,
+      "can_review_result": false,
+      "can_export": false
+    },
+    "blockers": [
+      {
+        "code": "NO_MINE_BOUNDARY",
+        "severity": "warning"
+      },
+      {
+        "code": "NO_ACTIVE_BASEMAP",
+        "severity": "warning"
+      },
+      {
+        "code": "NO_INFERENCE_INPUT",
+        "severity": "warning"
+      },
+      {
+        "code": "NO_REVIEWABLE_RESULT",
+        "severity": "warning"
+      }
+    ],
+    "next_actions": [
+      {
+        "action_code": "IMPORT_MINE_BOUNDARY",
+        "target": "spatial_resource"
+      },
+      {
+        "action_code": "CONFIGURE_BASEMAP",
+        "target": "spatial_resource"
+      },
+      {
+        "action_code": "REGISTER_INFERENCE_INPUT",
+        "target": "dataset"
+      }
+    ],
+    "counts": {
+      "mines": 0,
+      "assets": 0,
+      "queued_jobs": 0,
+      "running_jobs": 0,
+      "failed_assets": 0
+    },
+    "recent_activity": []
+  }
+}

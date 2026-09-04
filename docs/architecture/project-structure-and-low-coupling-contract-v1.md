@@ -63,17 +63,19 @@ draft -> active -> completed -> archived
 blocked | partial | ready
 ```
 
-首期采用可解释的检查项，不做没有业务依据的百分制或权重评分。建议固定五项：
+首期采用可解释的检查项，不做没有业务依据的百分制或权重评分。`total` 固定为 `5`，`checks` 必须按下表顺序返回五项，且每项只包含 `code`、`status`、`reason_code`：
 
 | 检查 code | 通过条件 | 典型 blocker |
 | --- | --- | --- |
 | `PROJECT_PROFILE` | 项目名称与监测期有效 | `PROJECT_PROFILE_INCOMPLETE` |
 | `MINE_BOUNDARY` | 存在可用矿山边界资源 | `NO_MINE_BOUNDARY` |
 | `ACTIVE_BASEMAP` | 存在已激活且可读的项目底图 | `NO_ACTIVE_BASEMAP` |
-| `INFERENCE_INPUT` | 存在符合推理输入契约的数据资源 | `NO_INFERENCE_INPUT` |
-| `REVIEWABLE_RESULT` | 存在可审阅的成果或人工修订版本 | `NO_REVIEWABLE_RESULT` |
+| `INFERENCE_INPUT` | 存在已验证的相对 `storage_key`，且影像格式为 `tif` 或 `tiff` | `NO_INFERENCE_INPUT` |
+| `REVIEWABLE_RESULT` | 任一 `ClassificationResult.vector_status` 为 `ready` 或 `ready_empty` | `NO_REVIEWABLE_RESULT` |
 
-`passed/total` 只表示工作流覆盖度。是否可执行某个具体操作（如“启动推理”或“导出”）由后端返回对应 capability，不能用总分猜测，也不能让前端自行放宽条件。
+历史绝对 `file_path` 记录最多只能公开为 `registered` 资产，不能通过 `INFERENCE_INPUT` 检查；只有经验证的相对 `storage_key` 和 `tif`/`tiff` 格式组合才是可推理输入。
+
+`passed/total` 只表示工作流覆盖度。`readiness` 独立于 `lifecycle_status` 计算，项目归档不改变五项检查的计算结果。是否可执行某个具体操作（如“启动推理”或“导出”）由后端返回对应 capability，不能用总分猜测，也不能让前端自行放宽条件。
 
 ### 4.3 资产状态
 
@@ -85,6 +87,8 @@ registered | processing | ready | failed | superseded
 
 该状态属于单条资产。它允许底图处理失败而项目仍为 `active`，也允许旧版本底图为 `superseded` 而新版本继续使用。
 
+对既有空间资源的公开映射固定为：`pending → registered`、`processing → processing`、`active → ready`、`failed → failed`、`retained → superseded`。该映射只影响 `ProjectAssetView.status`，不改变原始空间资源状态或项目生命周期。
+
 ### 4.4 任务状态
 
 任务状态属于具体 Worker。当前空间任务已使用 `queued`、`running`、`succeeded`、`failed`、`cancelled` 等语义；v1 明确保留该词汇，**不**把它机械改为 `pending`。若未来需要统一展示，由 Read Model 映射展示标签，但原始任务 API 保持兼容。
@@ -93,47 +97,85 @@ registered | processing | ready | failed | superseded
 
 目标接口：`GET /api/projects/{project_id}/overview`。
 
+HTTP 响应沿用标准 envelope：`{success, code, data}`。`data` 是完整的 `ProjectOverviewView`，必须包含 `project_id`、`lifecycle_status`、`summary`、`readiness`、`capabilities`、`blockers`、`next_actions`、`counts` 和 `recent_activity`，不得由页面额外拼接同一项目的状态。
+
 ```json
 {
-  "project_id": 42,
-  "lifecycle_status": "active",
-  "summary": {
-    "name": "大理一期监测",
-    "region": "大理州",
-    "manager": "张三",
-    "monitor_start_year": 2024,
-    "monitor_end_year": 2025
-  },
-  "readiness": {
-    "status": "partial",
-    "passed": 3,
-    "total": 5,
-    "checks": [
-      {"code": "MINE_BOUNDARY", "status": "passed", "reason_code": null},
-      {"code": "ACTIVE_BASEMAP", "status": "blocked", "reason_code": "NO_ACTIVE_BASEMAP"}
-    ]
-  },
-  "capabilities": {
-    "can_configure_spatial": true,
-    "can_start_inference": false,
-    "can_review_result": false,
-    "can_export": false
-  },
-  "blockers": [
-    {"code": "NO_ACTIVE_BASEMAP", "severity": "warning"}
-  ],
-  "next_actions": [
-    {"action_code": "CONFIGURE_BASEMAP", "target": "spatial_resource"}
-  ],
-  "counts": {
-    "mines": 12,
-    "assets": 8,
-    "running_jobs": 1,
-    "failed_assets": 0
-  },
-  "recent_activity": []
+  "success": true,
+  "code": 0,
+  "data": {
+    "project_id": 42,
+    "lifecycle_status": "active",
+    "summary": {
+      "id": 42,
+      "name": "合成项目示例",
+      "region": "示例区域",
+      "manager": "项目管理员",
+      "remark": "仅用于契约说明。",
+      "status": "active",
+      "monitor_start_year": 2024,
+      "monitor_end_year": 2025,
+      "mine_count": 1,
+      "dataset_count": 1,
+      "spatial_status": "partial",
+      "map_ready": false,
+      "missing_resources": ["active_basemap", "reviewable_result"],
+      "latest_activity_at": "2026-09-01T08:00:00Z",
+      "create_time": "2026-09-01T08:00:00Z",
+      "update_time": "2026-09-01T08:00:00Z"
+    },
+    "readiness": {
+      "status": "partial",
+      "passed": 3,
+      "total": 5,
+      "checks": [
+        {"code": "PROJECT_PROFILE", "status": "passed", "reason_code": null},
+        {"code": "MINE_BOUNDARY", "status": "passed", "reason_code": null},
+        {"code": "ACTIVE_BASEMAP", "status": "blocked", "reason_code": "NO_ACTIVE_BASEMAP"},
+        {"code": "INFERENCE_INPUT", "status": "passed", "reason_code": null},
+        {"code": "REVIEWABLE_RESULT", "status": "blocked", "reason_code": "NO_REVIEWABLE_RESULT"}
+      ]
+    },
+    "capabilities": {
+      "can_open_map": false,
+      "can_configure_spatial": true,
+      "can_start_inference": false,
+      "can_review_result": false,
+      "can_export": false
+    },
+    "blockers": [
+      {"code": "NO_ACTIVE_BASEMAP", "severity": "warning"},
+      {"code": "NO_REVIEWABLE_RESULT", "severity": "warning"}
+    ],
+    "next_actions": [
+      {"action_code": "CONFIGURE_BASEMAP", "target": "spatial_resource"},
+      {"action_code": "REVIEW_RESULT", "target": "classification_result"}
+    ],
+    "counts": {
+      "mines": 1,
+      "assets": 2,
+      "queued_jobs": 0,
+      "running_jobs": 0,
+      "failed_assets": 0
+    },
+    "recent_activity": []
+  }
 }
 ```
+
+`summary` 复用现有 `ProjectSummary`，完整字段固定为 `id`、`name`、`region`、`manager`、`remark`、`status`、`monitor_start_year`、`monitor_end_year`、`mine_count`、`dataset_count`、`spatial_status`、`map_ready`、`missing_resources`、`latest_activity_at`、`create_time`、`update_time`。
+
+`readiness` 固定为 `{status, passed, total, checks}`，其 `checks` 的顺序、代码和字段由第 4.2 节定义。`lifecycle_status` 与 `readiness` 是分离状态；归档项目仍照常计算 readiness。
+
+`capabilities` 只能包含下列五项，全部由后端计算：
+
+- `can_configure_spatial = lifecycle_status != archived`。
+- `can_open_map` 要求存在可用矿山边界且存在已激活、可读的底图；归档项目若这两类资源仍在，允许只读打开地图。
+- `can_start_inference = lifecycle_status != archived`，且 `PROJECT_PROFILE`、`MINE_BOUNDARY`、`ACTIVE_BASEMAP`、`INFERENCE_INPUT` 四项检查均通过。
+- `can_review_result` 仅在任一 `ClassificationResult.vector_status` 为 `ready` 或 `ready_empty` 时为真。
+- `can_export = can_review_result`。
+
+`blockers` 的元素形状固定为 `{code, severity}`。`next_actions` 由后端按检查顺序输出领域 `{action_code, target}`；它不得返回 Vue 路由、页面标签或其他前端实现细节。`counts` 必须且只能包含 `mines`、`assets`、`queued_jobs`、`running_jobs`、`failed_assets`；其中 `queued_jobs` 单列原始任务状态 `queued`，`running_jobs` 只统计原始任务状态 `running`。
 
 规则所有权：
 
@@ -182,6 +224,10 @@ vector_revision | report | export | backup_snapshot
 ```
 
 `ProjectAssetView` 是稳定的**读取契约**，而不是立即新建的通用资产数据库表。v1 由适配器聚合现有 `ProjectSpatialResource`、`ProjectDataset`、成果记录、导出记录和配置快照；前端不得依赖这些底层表名或路径。
+
+每个公开 asset 只能拥有 DTO 示例中列出的字段：`id`、`source_type`、`source_id`、`asset_type`、`name`、`format`、`status`、`version`、`created_at`、`updated_at`、`spatial`、`temporal`、`provenance`、`error`、`capabilities`。`source_type` 与 `source_id` 仅是不透明的溯源标识；Web 不得据此对底层表名分支、拼接 URL 或访问物理路径。公开 DTO 绝不可返回 `file_path`、`source_path`、`normalized_path`、`tile_path`、`manifest_path` 或 `output_dir`。
+
+嵌套 `capabilities` 的固定键为 `preview`、`download`、`activate`、`retry`；v1 不增加 `restore` 或其他未冻结键。既有空间资源状态映射统一按第 4.3 节执行。
 
 ## 7. 工作流与前端数据流
 

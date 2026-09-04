@@ -1,0 +1,387 @@
+{
+  "success": true,
+  "code": 0,
+  "data": {
+    "items": [
+      {
+        "id": "mine_boundary:101",
+        "source_type": "spatial_resource",
+        "source_id": 101,
+        "asset_type": "mine_boundary",
+        "name": "矿山边界",
+        "format": "geojson",
+        "status": "ready",
+        "version": 1,
+        "created_at": "2026-09-01T08:00:00Z",
+        "updated_at": "2026-09-01T08:05:00Z",
+        "spatial": {
+          "crs": "EPSG:4326",
+          "bbox": [100.0, 25.0, 100.1, 25.1]
+        },
+        "temporal": null,
+        "provenance": {
+          "source": "offline_import",
+          "parent_asset_ids": []
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": true,
+          "download": false,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "basemap:102",
+        "source_type": "spatial_resource",
+        "source_id": 102,
+        "asset_type": "basemap",
+        "name": "待登记底图",
+        "format": "tif",
+        "status": "registered",
+        "version": 1,
+        "created_at": "2026-09-01T08:10:00Z",
+        "updated_at": "2026-09-01T08:10:00Z",
+        "spatial": null,
+        "temporal": null,
+        "provenance": {
+          "source": "offline_import",
+          "parent_asset_ids": [],
+          "raw_status": "pending"
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": false,
+          "download": false,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "basemap:103",
+        "source_type": "spatial_resource",
+        "source_id": 103,
+        "asset_type": "basemap",
+        "name": "正在处理底图",
+        "format": "tif",
+        "status": "processing",
+        "version": 1,
+        "created_at": "2026-09-01T08:15:00Z",
+        "updated_at": "2026-09-01T08:20:00Z",
+        "spatial": null,
+        "temporal": null,
+        "provenance": {
+          "source": "offline_import",
+          "parent_asset_ids": [],
+          "raw_status": "processing"
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": false,
+          "download": false,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "basemap:104",
+        "source_type": "spatial_resource",
+        "source_id": 104,
+        "asset_type": "basemap",
+        "name": "当前激活底图",
+        "format": "cog",
+        "status": "ready",
+        "version": 2,
+        "created_at": "2026-09-01T08:25:00Z",
+        "updated_at": "2026-09-01T08:30:00Z",
+        "spatial": {
+          "crs": "EPSG:4326",
+          "bbox": [99.9, 24.9, 100.2, 25.2]
+        },
+        "temporal": {
+          "start": "2024-01-01",
+          "end": "2024-12-31"
+        },
+        "provenance": {
+          "source": "offline_import",
+          "parent_asset_ids": [],
+          "raw_status": "active"
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": true,
+          "download": false,
+          "activate": true,
+          "retry": false
+        }
+      },
+      {
+        "id": "basemap:105",
+        "source_type": "spatial_resource",
+        "source_id": 105,
+        "asset_type": "basemap",
+        "name": "处理失败底图",
+        "format": "tif",
+        "status": "failed",
+        "version": 1,
+        "created_at": "2026-09-01T08:35:00Z",
+        "updated_at": "2026-09-01T08:40:00Z",
+        "spatial": null,
+        "temporal": null,
+        "provenance": {
+          "source": "offline_import",
+          "parent_asset_ids": [],
+          "raw_status": "failed"
+        },
+        "error": {
+          "code": "TILE_GENERATION_FAILED",
+          "message": "瓦片生成失败"
+        },
+        "capabilities": {
+          "preview": false,
+          "download": false,
+          "activate": false,
+          "retry": true
+        }
+      },
+      {
+        "id": "basemap:106",
+        "source_type": "spatial_resource",
+        "source_id": 106,
+        "asset_type": "basemap",
+        "name": "已替代底图",
+        "format": "tif",
+        "status": "superseded",
+        "version": 1,
+        "created_at": "2026-09-01T08:45:00Z",
+        "updated_at": "2026-09-01T08:50:00Z",
+        "spatial": {
+          "crs": "EPSG:4326",
+          "bbox": [99.9, 24.9, 100.2, 25.2]
+        },
+        "temporal": {
+          "start": "2023-01-01",
+          "end": "2023-12-31"
+        },
+        "provenance": {
+          "source": "offline_import",
+          "parent_asset_ids": [],
+          "raw_status": "retained"
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": true,
+          "download": false,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "imagery:201",
+        "source_type": "dataset",
+        "source_id": 201,
+        "asset_type": "imagery",
+        "name": "2024 年遥感影像",
+        "format": "tif",
+        "status": "ready",
+        "version": 1,
+        "created_at": "2026-09-01T09:00:00Z",
+        "updated_at": "2026-09-01T09:00:00Z",
+        "spatial": {
+          "crs": "EPSG:4326",
+          "bbox": [99.9, 24.9, 100.2, 25.2]
+        },
+        "temporal": {
+          "start": "2024-01-01",
+          "end": "2024-12-31"
+        },
+        "provenance": {
+          "source": "offline_import",
+          "parent_asset_ids": []
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": true,
+          "download": false,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "inference_result:301",
+        "source_type": "classification_result",
+        "source_id": 301,
+        "asset_type": "inference_result",
+        "name": "2024 年地物分类结果",
+        "format": "classification_dir",
+        "status": "ready",
+        "version": 1,
+        "created_at": "2026-09-01T09:10:00Z",
+        "updated_at": "2026-09-01T09:15:00Z",
+        "spatial": {
+          "crs": "EPSG:4326",
+          "bbox": [100.0, 25.0, 100.1, 25.1]
+        },
+        "temporal": {
+          "start": "2024-01-01",
+          "end": "2024-12-31"
+        },
+        "provenance": {
+          "source": "model_inference",
+          "parent_asset_ids": [
+            "imagery:201",
+            "mine_boundary:101"
+          ]
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": true,
+          "download": false,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "vector_revision:401",
+        "source_type": "classification_revision",
+        "source_id": 401,
+        "asset_type": "vector_revision",
+        "name": "分类矢量修订版",
+        "format": "geojson",
+        "status": "ready",
+        "version": 2,
+        "created_at": "2026-09-01T09:20:00Z",
+        "updated_at": "2026-09-01T09:25:00Z",
+        "spatial": {
+          "crs": "EPSG:4326",
+          "bbox": [100.0, 25.0, 100.1, 25.1]
+        },
+        "temporal": null,
+        "provenance": {
+          "source": "manual_edit",
+          "parent_asset_ids": [
+            "inference_result:301"
+          ]
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": true,
+          "download": false,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "report:501",
+        "source_type": "project_report",
+        "source_id": 501,
+        "asset_type": "report",
+        "name": "项目概览报告",
+        "format": "pdf",
+        "status": "ready",
+        "version": 1,
+        "created_at": "2026-09-01T09:30:00Z",
+        "updated_at": "2026-09-01T09:30:00Z",
+        "spatial": null,
+        "temporal": null,
+        "provenance": {
+          "source": "server_export",
+          "parent_asset_ids": []
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": true,
+          "download": true,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "export:601",
+        "source_type": "project_export",
+        "source_id": 601,
+        "asset_type": "export",
+        "name": "分类成果导出",
+        "format": "zip",
+        "status": "ready",
+        "version": 1,
+        "created_at": "2026-09-01T09:35:00Z",
+        "updated_at": "2026-09-01T09:35:00Z",
+        "spatial": null,
+        "temporal": null,
+        "provenance": {
+          "source": "server_export",
+          "parent_asset_ids": [
+            "vector_revision:401"
+          ]
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": false,
+          "download": true,
+          "activate": false,
+          "retry": false
+        }
+      },
+      {
+        "id": "backup_snapshot:701",
+        "source_type": "project_backup",
+        "source_id": 701,
+        "asset_type": "backup_snapshot",
+        "name": "项目配置快照",
+        "format": "json",
+        "status": "ready",
+        "version": 1,
+        "created_at": "2026-09-01T09:40:00Z",
+        "updated_at": "2026-09-01T09:40:00Z",
+        "spatial": null,
+        "temporal": null,
+        "provenance": {
+          "source": "configuration_snapshot",
+          "parent_asset_ids": []
+        },
+        "error": {
+          "code": null,
+          "message": null
+        },
+        "capabilities": {
+          "preview": true,
+          "download": false,
+          "activate": false,
+          "retry": false
+        }
+      }
+    ],
+    "count": 12
+  }
+}
