@@ -83,4 +83,6 @@ test('resolveSpatialWizardStep only locks the wizard for queued or running jobs'
   assert.equal(resolveSpatialWizardStep({ jobs: [{ status: 'cancelled' }], missing_resources: ['basemap'] }), 3);
   assert.equal(resolveSpatialWizardStep({ missing_resources: ['mine_vector', 'basemap'] }), 2);
   assert.equal(resolveSpatialWizardStep({ missing_resources: [] }), 4);
+  assert.equal(resolveSpatialWizardStep({}), 4);
+  assert.equal(resolveSpatialWizardStep(null), 4);
 });

@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -163,10 +164,18 @@ def _validate_fids(features, fid_field):
         value = feature["properties"].get(fid_field)
         if value in (None, ""):
             raise ValueError("FID 不能为空")
-        try:
+        if isinstance(value, bool):
+            raise ValueError("FID 必须是整数")
+        if isinstance(value, int):
+            normalized = value
+        elif isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError("FID 必须是整数")
             normalized = int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("FID 必须是整数") from exc
+        elif isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+            normalized = int(value)
+        else:
+            raise ValueError("FID 必须是整数")
         if normalized <= 0 or normalized > 2_147_483_647:
             raise ValueError("FID 必须在 1 到 2147483647 之间")
         values.append(normalized)

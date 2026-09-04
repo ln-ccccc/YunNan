@@ -92,7 +92,7 @@ export function resolveSpatialWizardStep(spatial = {}) {
   if (jobs.some((job) => ['queued', 'running'].includes(job?.status))) return 4;
 
   const missingResources = spatial?.missing_resources;
-  if (!Array.isArray(missingResources) || missingResources.includes('mine_vector')) return 2;
-  if (missingResources.includes('basemap')) return 3;
+  if (Array.isArray(missingResources) && missingResources.includes('mine_vector')) return 2;
+  if (Array.isArray(missingResources) && missingResources.includes('basemap')) return 3;
   return 4;
 }

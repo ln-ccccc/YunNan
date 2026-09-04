@@ -196,6 +196,37 @@ class TestProjectSpatialState(unittest.TestCase):
             {"status": "needs_selection", "message": "未识别到唯一 FID 字段，请手动选择"},
         )
 
+    def test_fractional_fid_is_invalid_in_preview_and_import(self):
+        from applications.project_hub.spatial_service import import_mine_vector, preview_mine_vector
+
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"FID_1": 1.5, "name": "小数 FID 矿山"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[102.0, 25.0], [102.1, 25.0], [102.1, 25.1], [102.0, 25.0]]],
+                    },
+                }
+            ],
+        }
+
+        preview = preview_mine_vector("fractional-fid.geojson", json.dumps(payload))
+        self.assertEqual(preview["suggested_fid_validation"]["status"], "invalid")
+        self.assertEqual(preview["suggested_fid_validation"]["message"], "FID 必须是整数")
+
+        created = create_project({"name": "小数 FID 项目", "region": "昆明"})
+        with self.assertRaisesRegex(ValueError, "FID 必须是整数"):
+            import_mine_vector(
+                created["id"],
+                "fractional-fid.geojson",
+                json.dumps(payload),
+                {"fid": "FID_1", "name": "name"},
+            )
+        self.assertEqual(len(Project.query.get(created["id"]).mines), 0)
+
     def test_import_mines_keeps_duplicate_fid_validation_strict(self):
         from applications.project_hub.spatial_service import import_mine_vector
 
