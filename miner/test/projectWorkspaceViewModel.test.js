@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
+import * as projectWorkspaceViewModel from '../src/projectWorkspace/projectWorkspaceViewModel.js';
+
+const {
   ACTIVITY_LABELS,
   actionTarget,
   createSelectionGate,
@@ -9,8 +11,9 @@ import {
   formatActivityAction,
   formatActionLabel,
   INVALIDATION,
+  resolveSpatialWizardStep,
   toAssetRow,
-} from '../src/projectWorkspace/projectWorkspaceViewModel.js';
+} = projectWorkspaceViewModel;
 
 test('formatActivityAction maps audit action codes without inferring business state', () => {
   assert.deepEqual(ACTIVITY_LABELS, {
@@ -70,4 +73,14 @@ test('next actions map only to workspace navigation targets', () => {
   assert.equal(actionTarget('REGISTER_INFERENCE_INPUT'), 'dataset-registration');
   assert.equal(actionTarget('REVIEW_RESULT'), 'project-assets');
   assert.equal(actionTarget('UNKNOWN_ACTION'), null);
+});
+
+test('resolveSpatialWizardStep only locks the wizard for queued or running jobs', () => {
+  assert.equal(typeof resolveSpatialWizardStep, 'function');
+  assert.equal(resolveSpatialWizardStep({ jobs: [{ status: 'queued' }], missing_resources: ['basemap'] }), 4);
+  assert.equal(resolveSpatialWizardStep({ jobs: [{ status: 'running' }], missing_resources: ['basemap'] }), 4);
+  assert.equal(resolveSpatialWizardStep({ jobs: [{ status: 'failed' }], missing_resources: ['basemap'] }), 3);
+  assert.equal(resolveSpatialWizardStep({ jobs: [{ status: 'cancelled' }], missing_resources: ['basemap'] }), 3);
+  assert.equal(resolveSpatialWizardStep({ missing_resources: ['mine_vector', 'basemap'] }), 2);
+  assert.equal(resolveSpatialWizardStep({ missing_resources: [] }), 4);
 });

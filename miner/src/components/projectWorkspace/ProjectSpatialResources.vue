@@ -56,6 +56,17 @@
           <span class="muted-text">请先将 TIF/TIFF 及同名辅助文件准备到项目离线导入目录。</span>
         </div>
 
+        <article v-if="latestTerminalJob" class="job-item">
+          <p>上次任务：阶段 {{ latestTerminalJob.stage || '--' }} · 状态 {{ latestTerminalJob.status || '--' }}</p>
+          <p class="error-text">失败原因：{{ latestTerminalJob.error_message || '未提供' }}</p>
+          <button
+            class="secondary-btn"
+            type="button"
+            :disabled="busy || !canConfigure"
+            @click="$emit('retry-job', latestTerminalJob.id)"
+          >重试原任务</button>
+        </article>
+
         <p v-if="!basemapCandidates.length" class="muted-text">暂无可用底图候选。</p>
         <label v-for="item in basemapCandidates" :key="item.candidate" class="candidate-item">
           <input
@@ -138,6 +149,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue';
+import { resolveSpatialWizardStep } from '../../projectWorkspace/projectWorkspaceViewModel.js';
 
 const MAX_MINE_FILE_BYTES = 50 * 1024 * 1024;
 const mappingTargets = [
@@ -207,6 +219,9 @@ const localError = ref('');
 const mineFieldMapping = ref(createEmptyMapping());
 
 const spatialJobs = computed(() => Array.isArray(props.spatial?.jobs) ? props.spatial.jobs : []);
+const latestTerminalJob = computed(() => (
+  spatialJobs.value.find((job) => ['failed', 'cancelled'].includes(job?.status)) || null
+));
 const displayError = computed(() => localError.value || props.error);
 
 watch(
@@ -244,18 +259,7 @@ function toggleOpen() {
 }
 
 function syncWizardStep({ refreshCandidates = false } = {}) {
-  const missingResources = props.spatial?.missing_resources;
-  const hasActionableJob = spatialJobs.value.some((job) => (
-    ['queued', 'running', 'failed', 'cancelled'].includes(job?.status)
-  ));
-  let nextStep = 4;
-  if (hasActionableJob) {
-    nextStep = 4;
-  } else if (!Array.isArray(missingResources) || missingResources.includes('mine_vector')) {
-    nextStep = 2;
-  } else if (missingResources.includes('basemap')) {
-    nextStep = 3;
-  }
+  const nextStep = resolveSpatialWizardStep(props.spatial);
   const changedStep = wizardStep.value !== nextStep;
   wizardStep.value = nextStep;
   if (nextStep === 3 && (refreshCandidates || changedStep)) {

@@ -175,16 +175,28 @@ def _validate_fids(features, fid_field):
     return values
 
 
+def _suggested_fid_validation(features, fid_field):
+    if not fid_field:
+        return {"status": "needs_selection", "message": "未识别到唯一 FID 字段，请手动选择"}
+    try:
+        _validate_fids(features, fid_field)
+    except ValueError as exc:
+        return {"status": "invalid", "message": str(exc)}
+    return {"status": "valid", "message": None}
+
+
 def preview_mine_vector(filename, content):
     extracted = _extract_vector(filename, content)
     suggested_mapping = _suggest_fields(extracted["field_names"])
-    _validate_fids(extracted["features"], suggested_mapping["fid"])
     return {
         "filename": Path(filename).name,
         "source_format": "kml" if extracted["extension"] == ".kml" else "geojson",
         "feature_count": len(extracted["features"]),
         "field_names": extracted["field_names"],
         "suggested_mapping": suggested_mapping,
+        "suggested_fid_validation": _suggested_fid_validation(
+            extracted["features"], suggested_mapping["fid"]
+        ),
         "crs": "EPSG:4326",
         "bounds": extracted["bounds"],
         "sample": [feature["properties"] for feature in extracted["features"][:5]],
@@ -602,7 +614,12 @@ def get_project_spatial(project_id):
     return {
         **serialize_project_spatial_state(project),
         "resources": [_serialize_resource(item) for item in project.spatial_resources],
-        "jobs": [_serialize_job(item) for item in project.spatial_jobs],
+        "jobs": [
+            _serialize_job(item)
+            for item in ProjectSpatialJob.query.filter_by(project_id=project_id)
+            .order_by(ProjectSpatialJob.create_time.desc())
+            .all()
+        ],
     }
 
 

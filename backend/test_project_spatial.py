@@ -3,7 +3,9 @@ import sys
 import tempfile
 import unittest
 import json
+import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import inspect
 from osgeo import gdal, osr
@@ -107,7 +109,7 @@ class TestProjectSpatialState(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "必须使用相对路径"):
                 resolve_storage_path(temp_dir, os.path.abspath("outside.tif"))
 
-    def test_geojson_preview_detects_fields_and_rejects_duplicate_fid(self):
+    def test_geojson_preview_detects_fields_and_reports_invalid_suggested_fid(self):
         from applications.project_hub.spatial_service import (
             preview_mine_vector,
             sanitize_public_geojson_properties,
@@ -149,6 +151,7 @@ class TestProjectSpatialState(unittest.TestCase):
         self.assertEqual(preview["feature_count"], 2)
         self.assertEqual(preview["suggested_mapping"]["fid"], "FID_1")
         self.assertEqual(preview["suggested_mapping"]["name"], "name")
+        self.assertEqual(preview["suggested_fid_validation"], {"status": "valid", "message": None})
         self.assertEqual(preview["crs"], "EPSG:4326")
         reserved_keys = {"file_path", "source_path", "normalized_path", "tile_path", "manifest_path", "output_dir"}
         self.assertFalse(reserved_keys & {field.casefold() for field in preview["field_names"]})
@@ -161,8 +164,71 @@ class TestProjectSpatialState(unittest.TestCase):
         )
 
         payload["features"][1]["properties"]["FID_1"] = 7
+        preview = preview_mine_vector("kunming.geojson", json.dumps(payload))
+        self.assertEqual(
+            preview["suggested_fid_validation"],
+            {"status": "invalid", "message": "FID duplicate：FID 必须唯一"},
+        )
+
+    def test_geojson_preview_keeps_custom_fid_available_for_manual_selection(self):
+        from applications.project_hub.spatial_service import preview_mine_vector
+
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"mine_code": 301, "name": "自定义编码矿山"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[102.0, 25.0], [102.1, 25.0], [102.1, 25.1], [102.0, 25.0]]],
+                    },
+                }
+            ],
+        }
+
+        preview = preview_mine_vector("custom-fid.geojson", json.dumps(payload))
+
+        self.assertIn("mine_code", preview["field_names"])
+        self.assertIsNone(preview["suggested_mapping"]["fid"])
+        self.assertEqual(
+            preview["suggested_fid_validation"],
+            {"status": "needs_selection", "message": "未识别到唯一 FID 字段，请手动选择"},
+        )
+
+    def test_import_mines_keeps_duplicate_fid_validation_strict(self):
+        from applications.project_hub.spatial_service import import_mine_vector
+
+        created = create_project({"name": "重复 FID 项目", "region": "昆明"})
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"mine_code": 301},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[102.0, 25.0], [102.1, 25.0], [102.1, 25.1], [102.0, 25.0]]],
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "properties": {"mine_code": 301},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[102.2, 25.2], [102.3, 25.2], [102.3, 25.3], [102.2, 25.2]]],
+                    },
+                },
+            ],
+        }
+
         with self.assertRaisesRegex(ValueError, "FID.*duplicate"):
-            preview_mine_vector("kunming.geojson", json.dumps(payload))
+            import_mine_vector(
+                created["id"],
+                "duplicate-fid.geojson",
+                json.dumps(payload),
+                {"fid": "mine_code"},
+            )
 
     def test_import_mines_activates_project_resource_and_replaces_bindings(self):
         from applications.project_hub.spatial_service import import_mine_vector
@@ -228,12 +294,16 @@ class TestProjectSpatialState(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
             try:
-                import_mine_vector(
+                imported = import_mine_vector(
                     created["id"],
                     "custom-fid.geojson",
                     json.dumps(payload),
                     {"fid": "mine_code", "name": "name"},
                 )
+                resource = ProjectSpatialResource.query.get(imported["resource"]["id"])
+                with (Path(temp_dir) / resource.normalized_path).open("r", encoding="utf-8") as handle:
+                    normalized_geojson = json.load(handle)
+                self.assertEqual(normalized_geojson["features"][0]["properties"]["FID_1"], 301)
                 exported = create_export(created["id"], {"format": "geojson"})
                 artifact_path = Path(temp_dir) / "projects" / str(created["id"]) / "exports" / str(exported["id"]) / "artifact.geojson"
                 with artifact_path.open("r", encoding="utf-8") as handle:
@@ -245,6 +315,140 @@ class TestProjectSpatialState(unittest.TestCase):
                     os.environ.pop("PROJECT_STORAGE_ROOT", None)
                 else:
                     os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
+    def test_active_basemap_replacement_overrides_failed_history(self):
+        created = create_project({"name": "底图恢复项目", "region": "昆明"})
+        project = Project.query.get(created["id"])
+        project.spatial_resources.extend(
+            [
+                ProjectSpatialResource(
+                    resource_type="mine_vector",
+                    version=1,
+                    status="active",
+                    source_path="projects/1/mines/1/source.geojson",
+                    normalized_path="projects/1/mines/1/mines.geojson",
+                    source_format="geojson",
+                ),
+                ProjectSpatialResource(
+                    resource_type="basemap",
+                    version=1,
+                    status="failed",
+                    source_path="incoming/failed.tif",
+                    source_format="tif",
+                    error_message="切片失败",
+                ),
+                ProjectSpatialResource(
+                    resource_type="basemap",
+                    version=2,
+                    status="active",
+                    source_path="incoming/replacement.tif",
+                    tile_path="projects/1/tiles/3",
+                    source_format="tif",
+                ),
+            ]
+        )
+        db.session.commit()
+
+        from applications.project_hub.service import _serialize_summary
+
+        summary = _serialize_summary(project)
+        self.assertEqual(summary["spatial_status"], "ready")
+        self.assertTrue(summary["map_ready"])
+        self.assertEqual(summary["missing_resources"], [])
+
+    def test_failed_basemap_remains_failed_while_no_active_replacement_exists(self):
+        created = create_project({"name": "失败底图项目", "region": "昆明"})
+        project = Project.query.get(created["id"])
+        project.spatial_resources.extend(
+            [
+                ProjectSpatialResource(
+                    resource_type="mine_vector",
+                    version=1,
+                    status="active",
+                    source_path="projects/1/mines/1/source.geojson",
+                    normalized_path="projects/1/mines/1/mines.geojson",
+                    source_format="geojson",
+                ),
+                ProjectSpatialResource(
+                    resource_type="basemap",
+                    version=1,
+                    status="failed",
+                    source_path="incoming/failed.tif",
+                    source_format="tif",
+                    error_message="切片失败",
+                ),
+            ]
+        )
+        db.session.commit()
+
+        from applications.project_hub.service import _serialize_summary
+
+        summary = _serialize_summary(project)
+        self.assertEqual(summary["spatial_status"], "failed")
+        self.assertFalse(summary["map_ready"])
+        self.assertEqual(summary["missing_resources"], ["basemap"])
+
+    def test_pending_or_processing_resource_takes_precedence_over_failed_state(self):
+        from applications.project_hub.spatial_state import serialize_project_spatial_state
+
+        for status in ("pending", "processing"):
+            with self.subTest(status=status):
+                state = serialize_project_spatial_state(
+                    SimpleNamespace(
+                        spatial_resources=[
+                            SimpleNamespace(resource_type="mine_vector", status="active"),
+                            SimpleNamespace(resource_type="basemap", status="active"),
+                            SimpleNamespace(resource_type="basemap", status="failed"),
+                            SimpleNamespace(resource_type="basemap", status=status),
+                        ]
+                    )
+                )
+
+                self.assertEqual(state["spatial_status"], "processing")
+                self.assertTrue(state["map_ready"])
+                self.assertEqual(state["missing_resources"], [])
+
+    def test_get_project_spatial_orders_jobs_newest_first_for_terminal_recovery(self):
+        from applications.models.project_spatial import ProjectSpatialJob
+        from applications.project_hub.spatial_service import get_project_spatial
+
+        created = create_project({"name": "任务恢复排序项目", "region": "昆明"})
+        resource = ProjectSpatialResource(
+            project_id=created["id"],
+            resource_type="basemap",
+            version=1,
+            status="failed",
+            source_path="incoming/failed.tif",
+            source_format="tif",
+        )
+        db.session.add(resource)
+        db.session.flush()
+        db.session.add_all(
+            [
+                ProjectSpatialJob(
+                    id="job-older",
+                    project_id=created["id"],
+                    resource_id=resource.id,
+                    job_type="basemap_tiles",
+                    status="failed",
+                    stage="failed",
+                    create_time=datetime.datetime(2026, 1, 1, 10, 0, 0),
+                ),
+                ProjectSpatialJob(
+                    id="job-newer",
+                    project_id=created["id"],
+                    resource_id=resource.id,
+                    job_type="basemap_tiles",
+                    status="cancelled",
+                    stage="cancelled",
+                    create_time=datetime.datetime(2026, 1, 1, 11, 0, 0),
+                ),
+            ]
+        )
+        db.session.commit()
+
+        spatial = get_project_spatial(created["id"])
+        self.assertEqual([job["id"] for job in spatial["jobs"]], ["job-newer", "job-older"])
 
     def test_basemap_candidate_is_scoped_to_incoming_and_queues_job(self):
         from applications.project_hub.spatial_service import list_basemap_candidates, register_basemap

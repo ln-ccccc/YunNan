@@ -7,10 +7,10 @@ def serialize_project_spatial_state(project):
     missing = [item for item in RESOURCE_TYPES if item not in active_types]
     if any(item.status in {"pending", "processing"} for item in resources):
         status = "processing"
-    elif any(item.status == "failed" for item in resources):
-        status = "failed"
     elif not missing:
         status = "ready"
+    elif any(item.status == "failed" and item.resource_type in missing for item in resources):
+        status = "failed"
     else:
         status = "unconfigured"
     return {

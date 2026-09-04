@@ -85,3 +85,14 @@ export function toAssetRow(asset = {}) {
     error: asset.error || null,
   };
 }
+
+
+export function resolveSpatialWizardStep(spatial = {}) {
+  const jobs = Array.isArray(spatial?.jobs) ? spatial.jobs : [];
+  if (jobs.some((job) => ['queued', 'running'].includes(job?.status))) return 4;
+
+  const missingResources = spatial?.missing_resources;
+  if (!Array.isArray(missingResources) || missingResources.includes('mine_vector')) return 2;
+  if (missingResources.includes('basemap')) return 3;
+  return 4;
+}
