@@ -1,5 +1,7 @@
 # 云南矿山监测项目开发文档与规范
 
+> 本文档提供开发命令和存量接口说明。每次开发或修改前，必须先阅读项目级 [AGENTS.md](../AGENTS.md)；项目结构、状态模型、模块边界和跨模块契约以 [项目结构与低耦合契约 v1](./architecture/project-structure-and-low-coupling-contract-v1.md) 为准。
+
 ## 1. 项目结构
 
 - `miner/`：矿山监测主系统，包含 Vite/Vue 前端与 `server.js` 提供的 Miner API。

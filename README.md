@@ -2,6 +2,8 @@
 
 本仓库管理系统源码、部署配置、测试和项目文档。
 
+开发或修改前请先阅读项目级 [AGENTS.md](./AGENTS.md)。项目的模块边界、状态模型和低耦合契约见 [docs/architecture/project-structure-and-low-coupling-contract-v1.md](./docs/architecture/project-structure-and-low-coupling-contract-v1.md)。
+
 ## 目录
 
 - backend：Flask 后端、项目空间服务和推理任务。
