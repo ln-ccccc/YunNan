@@ -1,0 +1,193 @@
+FROM nvidia/cuda:12.8.0-base-ubuntu22.04 AS inference-base
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG PYTHON_VERSION=3.10
+
+RUN sed -i -E 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' /etc/apt/sources.list \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+       ca-certificates \
+       gdal-bin \
+       libgdal30 \
+       libgeos-c1v5 \
+       libgl1 \
+       libglib2.0-0 \
+       libgomp1 \
+       libsm6 \
+       libxext6 \
+       libxrender1 \
+       python3 \
+       python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/venv
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY docker/pip-install-with-retry.py docker/pip_network_retry.py /usr/local/bin/
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python /usr/local/bin/pip-install-with-retry.py --upgrade \
+      "pip==25.1.1" "setuptools==80.9.0" "wheel==0.45.1"
+
+RUN groupadd --gid 10001 inference \
+    && useradd --uid 10001 --gid inference --create-home --shell /usr/sbin/nologin inference \
+    && mkdir -p /app \
+    && chown inference:inference /app
+
+WORKDIR /app
+
+
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS mmcv-builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG PYTHON_VERSION=3.10
+ARG TORCH_VERSION=2.7.0
+ARG TORCHVISION_VERSION=0.22.0
+ARG CUDA_VERSION=12.8
+ARG MMCV_VERSION=2.1.0
+
+RUN sed -i -E 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' /etc/apt/sources.list \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+       build-essential \
+       ca-certificates \
+       git \
+       ninja-build \
+       python3 \
+       python3-dev \
+       python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/build-venv
+
+ENV PATH="/opt/build-venv/bin:${PATH}" \
+    CUDA_HOME=/usr/local/cuda \
+    FORCE_CUDA=1 \
+    MMCV_WITH_OPS=1 \
+    MAX_JOBS=2 \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX"
+
+COPY docker/pip-install-with-retry.py docker/pip_network_retry.py /usr/local/bin/
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python /usr/local/bin/pip-install-with-retry.py --upgrade \
+      "pip==25.1.1" "setuptools==80.9.0" "wheel==0.45.1" ninja psutil \
+    && python /usr/local/bin/pip-install-with-retry.py \
+      "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+      --index-url https://download.pytorch.org/whl/cu128 \
+      --extra-index-url https://pypi.org/simple
+
+COPY docker/requirements/inference-core.txt /tmp/requirements/inference-core.txt
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python /usr/local/bin/pip-install-with-retry.py \
+      -r /tmp/requirements/inference-core.txt
+
+# MMCV validation runtime libraries are deliberately installed after the
+# cached Torch and Python dependency layers so system-library fixes do not
+# invalidate those large downloads.
+RUN sed -i -E 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' /etc/apt/sources.list \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+       libgl1 \
+       libglib2.0-0 \
+       libgomp1 \
+       libsm6 \
+       libxext6 \
+       libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/build-mmcv-wheel.py /usr/local/bin/build-mmcv-wheel.py
+
+# The helper validates both cache hits and new wheels. A failed hit is removed,
+# rebuilt and validated before the key is atomically published in this same RUN.
+RUN --mount=type=cache,id=geoview-mmcv-wheels,target=/root/.cache/mmcv-wheels,sharing=locked \
+    --mount=type=cache,target=/root/.cache/pip \
+    python /usr/local/bin/build-mmcv-wheel.py \
+      --cache-root /root/.cache/mmcv-wheels \
+      --output-dir /tmp/mmcv-wheel \
+      --python-version "${PYTHON_VERSION}" \
+      --torch-version "${TORCH_VERSION}" \
+      --cuda-version "${CUDA_VERSION}" \
+      --mmcv-version "${MMCV_VERSION}" \
+      --arch-list "${TORCH_CUDA_ARCH_LIST}"
+
+
+FROM inference-base AS inference-core
+
+ARG TORCH_VERSION=2.7.0
+ARG TORCHVISION_VERSION=0.22.0
+ARG CUDA_VERSION=12.8
+ARG MMCV_VERSION=2.1.0
+
+COPY docker/requirements/inference-core.txt /tmp/requirements/inference-core.txt
+COPY docker/requirements/inference-worker.txt /tmp/requirements/inference-worker.txt
+COPY --from=mmcv-builder /tmp/mmcv-wheel /tmp/mmcv-wheel
+COPY docker/check-inference-image.py /usr/local/bin/check-inference-image.py
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python /usr/local/bin/pip-install-with-retry.py \
+      "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+      --index-url https://download.pytorch.org/whl/cu128 \
+      --extra-index-url https://pypi.org/simple \
+    && python /usr/local/bin/pip-install-with-retry.py \
+       -r /tmp/requirements/inference-core.txt \
+    && python /usr/local/bin/pip-install-with-retry.py \
+       -r /tmp/requirements/inference-worker.txt \
+    && wheel_path="$(find /tmp/mmcv-wheel -maxdepth 1 -type f -name "mmcv-${MMCV_VERSION}-*.whl" -print -quit)" \
+    && test -n "${wheel_path}" \
+    && python -m pip install --no-deps "${wheel_path}" \
+    && rm -rf /tmp/mmcv-wheel /tmp/requirements \
+    && rm -f /usr/local/bin/pip-install-with-retry.py /usr/local/bin/pip_network_retry.py \
+    && python -c "import cv2, mmcv, mmengine, mmseg, numpy, rasterio, shapely, torch; from mmcv.ops import roi_align; assert torch.version.cuda == '${CUDA_VERSION}'; print(roi_align)" \
+    && python /usr/local/bin/check-inference-image.py
+
+LABEL org.opencontainers.image.title="GeoView NVIDIA inference core" \
+      io.geoview.python.version="3.10" \
+      io.geoview.torch.version="2.7.0+cu128" \
+      io.geoview.mmcv.version="2.1.0"
+
+
+FROM inference-core AS inference-worker
+
+COPY backend/__init__.py backend/run_inference_worker.py /app/backend/
+COPY backend/applications/__init__.py /app/backend/applications/__init__.py
+COPY backend/applications/configs /app/backend/applications/configs
+COPY backend/applications/extensions/__init__.py backend/applications/extensions/database.py /app/backend/applications/extensions/
+COPY backend/applications/models/__init__.py backend/applications/models/inference_job.py /app/backend/applications/models/
+COPY backend/applications/inference /app/backend/applications/inference
+COPY backend/applications/kml_roi /app/backend/applications/kml_roi
+COPY backend/applications/interface/__init__.py backend/applications/interface/mmseg_inference_caller.py backend/applications/interface/mmseg_segmentation.py /app/backend/applications/interface/
+COPY backend/applications/common/__init__.py backend/applications/common/path_global.py /app/backend/applications/common/
+COPY backend/applications/common/utils/__init__.py backend/applications/common/utils/tiff_processor.py /app/backend/applications/common/utils/
+COPY backend/model/mmseg_config/dinov3_swinV1.py /app/backend/model/mmseg_config/dinov3_swinV1.py
+COPY backend/model/mmseg_config/dinov3_swinV1/mmseg /app/backend/model/mmseg_config/dinov3_swinV1/mmseg
+COPY docker/dinov3-hubconf.py /app/backend/model/mmseg_config/dinov3_swinV1/dinov3/hubconf.py
+COPY backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/__init__.py /app/backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/__init__.py
+COPY backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/hub/backbones.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/hub/utils.py /app/backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/hub/
+COPY backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/models/__init__.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/models/vision_transformer.py /app/backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/models/
+COPY backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/__init__.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/attention.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/block.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/ffn_layers.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/fp8_linear.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/layer_scale.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/patch_embed.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/rms_norm.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/rope_position_encoding.py /app/backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/layers/
+COPY backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/utils/__init__.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/utils/dtype.py backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/utils/utils.py /app/backend/model/mmseg_config/dinov3_swinV1/dinov3/dinov3/utils/
+COPY docker/start-inference-worker.sh docker/wait-for-mysql.py docker/check-inference-runtime.py docker/check-inference-image.py /app/docker/
+COPY config.yaml /app/config.yaml
+
+ENV PYTHONPATH="/app/backend/model/mmseg_config/dinov3_swinV1:/app/backend" \
+    INFERENCE_RUNTIME_ROOT="/app/backend/runtime/inference_jobs"
+
+RUN chmod 0755 /app/docker/start-inference-worker.sh /app/docker/check-inference-image.py \
+    && mkdir -p \
+       /app/backend/runtime/inference_jobs \
+       /app/backend/static \
+       /app/miner/change_matrix_outputs \
+       /app/miner/uploads \
+    && chown -R inference:inference /app \
+    && python /app/docker/check-inference-image.py
+
+WORKDIR /app/backend
+USER inference
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["/opt/venv/bin/python", "-c", "from pathlib import Path; assert 'run_inference_worker.py' in Path('/proc/1/cmdline').read_bytes().replace(b'\\x00', b' ').decode('utf-8', 'replace')"]
+
+ENTRYPOINT ["/bin/bash", "/app/docker/start-inference-worker.sh"]

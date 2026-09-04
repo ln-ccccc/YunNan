@@ -1,0 +1,60 @@
+# Runtime archives and restored Docker assets
+images/
+volumes/
+volume_backups_before_restore_*/
+logs/
+
+# Large runtime data
+maps/
+project_storage/
+backend/static/upload/
+miner/change_matrix_outputs/
+miner/public/tiles/
+
+# Model assets include multi-gigabyte weights and vendored third-party
+# frameworks. Track only the project-owned custom modules and active config.
+backend/model/*
+!backend/model/__init__.py
+!backend/model/custom_models/
+!backend/model/custom_models/*.py
+!backend/model/mmseg_config/
+backend/model/mmseg_config/*
+!backend/model/mmseg_config/dinov3_swinV1.py
+
+# Local Python environments, temporary visual checks and Windows download
+# metadata are reproducible artifacts, not source files.
+.venv/
+.venv*/
+venv/
+env/
+backend/.tmp_test_outputs/
+backend/.tmp_print_tiff_func.py
+backend/aircraft_4.jpg
+backend/test.tif
+backend/.flaskenv
+*Zone.Identifier*
+
+# Generated frontend artifacts and local caches
+frontend/dist/
+miner/dist/
+node_modules/
+__pycache__/
+*.pyc
+*.log
+*.out
+*.err
+
+# Local-only migration recovery and isolated feature workspaces
+.migration-backups/
+.worktrees/
+
+# Local business samples and generated index workbooks in the migrated Miner
+# workspace. Keep code and test fixtures, but do not publish business data.
+miner/*.xlsx
+miner/*.kml
+HOST_SHA256SUMS
+
+# Local environment files
+.env
+frontend/.env
+miner/.env

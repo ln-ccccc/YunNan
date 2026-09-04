@@ -1,0 +1,350 @@
+from pathlib import Path
+
+from flask import Blueprint, request, send_from_directory
+
+from applications.auth.guard import login_required
+from applications.common.utils.http import fail_api, success_api
+from applications.models.project import Project
+from applications.project_hub.service import (
+    archive_project,
+    create_backup,
+    create_dataset,
+    create_export,
+    create_project,
+    get_project_detail,
+    get_project_timeline,
+    list_backups,
+    list_exports,
+    list_projects,
+    replace_project_mines,
+    restore_backup,
+    restore_project,
+    update_project,
+)
+from applications.project_hub.spatial_service import (
+    cancel_spatial_job,
+    get_project_spatial,
+    get_spatial_job,
+    import_mine_vector,
+    list_basemap_candidates,
+    preview_mine_vector,
+    register_basemap,
+    retry_spatial_job,
+)
+from applications.project_hub.project_map import (
+    get_project_change_matrix,
+    get_project_geojson,
+    get_project_map_manifest,
+    get_project_mine_indices,
+    get_project_stats,
+    get_project_trend_report,
+    search_project_mines,
+)
+from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+
+project_api = Blueprint("project_api", __name__, url_prefix="/api/projects")
+
+
+@project_api.get("/<int:project_id>/outputs/inference/<int:fid>/<filename>")
+@login_required
+def project_inference_output_api(project_id, fid, filename):
+    project = Project.query.filter_by(id=project_id, deleted_at=None).first()
+    if project is None:
+        return fail_api("项目不存在"), 404
+    if not any(binding.mine_fid == fid for binding in project.mines):
+        return fail_api("矿山不属于当前项目"), 404
+    if Path(filename).name != filename or not filename.startswith(f"{fid}+"):
+        return fail_api("结果文件名非法"), 400
+    if Path(filename).suffix.lower() not in {".png", ".json", ".csv"}:
+        return fail_api("结果文件类型非法"), 400
+    try:
+        target = resolve_storage_path(
+            get_storage_root(),
+            Path("projects") / str(project_id) / "outputs" / "inference" / str(fid) / filename,
+        )
+    except ValueError as error:
+        return fail_api(str(error)), 400
+    if not target.is_file():
+        return fail_api("项目推理结果不存在"), 404
+    return send_from_directory(str(target.parent), target.name)
+
+
+@project_api.get("")
+@login_required
+def project_list_api():
+    filters = {
+        "name": request.args.get("name", type=str),
+        "region": request.args.get("region", type=str),
+        "status": request.args.get("status", type=str),
+        "monitor_year": request.args.get("monitor_year", type=int),
+    }
+    return success_api(data=list_projects(filters))
+
+
+@project_api.post("")
+@login_required
+def project_create_api():
+    try:
+        return success_api(data=create_project(request.json or {}))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.get("/<int:project_id>")
+@login_required
+def project_detail_api(project_id):
+    try:
+        return success_api(data=get_project_detail(project_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.patch("/<int:project_id>")
+@login_required
+def project_update_api(project_id):
+    try:
+        return success_api(data=update_project(project_id, request.json or {}))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.put("/<int:project_id>/mines")
+@login_required
+def project_replace_mines_api(project_id):
+    try:
+        return success_api(data=replace_project_mines(project_id, (request.json or {}).get("mines") or []))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.get("/<int:project_id>/spatial")
+@login_required
+def project_spatial_api(project_id):
+    try:
+        return success_api(data=get_project_spatial(project_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/spatial/mines/preview")
+@login_required
+def project_mines_preview_api(project_id):
+    try:
+        payload = request.json or {}
+        return success_api(data=preview_mine_vector(payload.get("filename"), payload.get("content")))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/spatial/mines")
+@login_required
+def project_mines_import_api(project_id):
+    try:
+        payload = request.json or {}
+        return success_api(
+            data=import_mine_vector(
+                project_id,
+                payload.get("filename"),
+                payload.get("content"),
+                payload.get("field_mapping") or {},
+            )
+        )
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.get("/<int:project_id>/spatial/basemap-candidates")
+@login_required
+def project_basemap_candidates_api(project_id):
+    try:
+        return success_api(data={"items": list_basemap_candidates(project_id)})
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/spatial/basemaps")
+@login_required
+def project_basemap_register_api(project_id):
+    try:
+        payload = request.json or {}
+        return success_api(
+            data=register_basemap(
+                project_id,
+                payload.get("candidate"),
+                payload.get("min_zoom", 8),
+                payload.get("max_zoom", 15),
+            )
+        )
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.get("/<int:project_id>/spatial/jobs/<string:job_id>")
+@login_required
+def project_spatial_job_api(project_id, job_id):
+    try:
+        return success_api(data=get_spatial_job(project_id, job_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/spatial/jobs/<string:job_id>/retry")
+@login_required
+def project_spatial_job_retry_api(project_id, job_id):
+    try:
+        return success_api(data=retry_spatial_job(project_id, job_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/spatial/jobs/<string:job_id>/cancel")
+@login_required
+def project_spatial_job_cancel_api(project_id, job_id):
+    try:
+        return success_api(data=cancel_spatial_job(project_id, job_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.get("/<int:project_id>/map/manifest")
+@login_required
+def project_map_manifest_api(project_id):
+    try:
+        return success_api(data=get_project_map_manifest(project_id))
+    except Exception as exc:
+        return fail_api(str(exc), status=404)
+
+
+@project_api.get("/<int:project_id>/geojson")
+@login_required
+def project_geojson_api(project_id):
+    try:
+        return success_api(data=get_project_geojson(project_id))
+    except Exception as exc:
+        return fail_api(str(exc), status=404)
+
+
+@project_api.get("/<int:project_id>/stats")
+@login_required
+def project_stats_api(project_id):
+    try:
+        return success_api(data=get_project_stats(project_id))
+    except Exception as exc:
+        return fail_api(str(exc), status=404)
+
+
+@project_api.get("/<int:project_id>/mines/search")
+@login_required
+def project_mines_search_api(project_id):
+    try:
+        return success_api(data=search_project_mines(project_id, request.args.get("q")))
+    except Exception as exc:
+        return fail_api(str(exc), status=404)
+
+
+@project_api.get("/<int:project_id>/mines/indices")
+@login_required
+def project_mines_indices_api(project_id):
+    try:
+        return success_api(data=get_project_mine_indices(project_id, request.args.get("fid")))
+    except Exception as exc:
+        return fail_api(str(exc), status=404)
+
+
+@project_api.get("/<int:project_id>/mines/change-matrix")
+@login_required
+def project_mines_change_matrix_api(project_id):
+    try:
+        return success_api(data=get_project_change_matrix(project_id, request.args.get("fid")))
+    except Exception as exc:
+        return fail_api(str(exc), status=404)
+
+
+@project_api.get("/<int:project_id>/mines/trend-report")
+@login_required
+def project_mines_trend_report_api(project_id):
+    try:
+        return success_api(data=get_project_trend_report(project_id, request.args.get("fid")))
+    except Exception as exc:
+        return fail_api(str(exc), status=404)
+
+
+@project_api.post("/<int:project_id>/datasets")
+@login_required
+def project_dataset_create_api(project_id):
+    try:
+        return success_api(data=create_dataset(project_id, request.json or {}))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.get("/<int:project_id>/timeline")
+@login_required
+def project_timeline_api(project_id):
+    try:
+        return success_api(data=get_project_timeline(project_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/archive")
+@login_required
+def project_archive_api(project_id):
+    try:
+        return success_api(data=archive_project(project_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/restore")
+@login_required
+def project_restore_api(project_id):
+    try:
+        return success_api(data=restore_project(project_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/exports")
+@login_required
+def project_export_create_api(project_id):
+    try:
+        return success_api(data=create_export(project_id, request.json or {}))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.get("/<int:project_id>/exports")
+@login_required
+def project_export_list_api(project_id):
+    try:
+        return success_api(data=list_exports(project_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/backups")
+@login_required
+def project_backup_create_api(project_id):
+    try:
+        return success_api(data=create_backup(project_id, request.json or {}))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.get("/<int:project_id>/backups")
+@login_required
+def project_backup_list_api(project_id):
+    try:
+        return success_api(data=list_backups(project_id))
+    except Exception as exc:
+        return fail_api(str(exc))
+
+
+@project_api.post("/<int:project_id>/backups/<int:backup_id>/restore")
+@login_required
+def project_backup_restore_api(project_id, backup_id):
+    try:
+        return success_api(data=restore_backup(project_id, backup_id))
+    except Exception as exc:
+        return fail_api(str(exc))

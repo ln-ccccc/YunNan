@@ -1,0 +1,221 @@
+name: yunnan
+
+x-app-env: &app-env
+  MYSQL_HOST: mysql
+  MYSQL_PORT: 3306
+  MYSQL_USERNAME: paddle_rs
+  MYSQL_PASSWORD: "${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}"
+  MYSQL_DATABASE: paddle_rs
+  ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+  ADMIN_PASSWORD: "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}"
+  SECRET_KEY: "${SECRET_KEY:?SECRET_KEY is required}"
+  FLASK_CONFIG: production
+  TRANSFORMERS_OFFLINE: "1"
+  HF_DATASETS_OFFLINE: "1"
+  HF_HUB_OFFLINE: "1"
+  FRONTEND_PORT: 3000
+  MINER_BACKEND_PORT: 8000
+  MINER_FRONTEND_PORT: 4000
+  MINER_MAP_PROVIDER: "${MINER_MAP_PROVIDER:-local}"
+  MINER_TDT_KEY: "${MINER_TDT_KEY:-}"
+  MINER_LOCAL_TILE_URL: "${MINER_LOCAL_TILE_URL:-http://localhost:8000/tiles/{z}/{x}/{y}.png}"
+  MINER_LOCAL_TMS: "${MINER_LOCAL_TMS:-0}"
+  INFERENCE_ACCELERATOR: "${INFERENCE_ACCELERATOR:-auto}"
+  INFERENCE_CPU_FALLBACK: "${INFERENCE_CPU_FALLBACK:-true}"
+  INFERENCE_GPU_DEVICE: "${INFERENCE_GPU_DEVICE:-0}"
+  INFERENCE_MAX_CONCURRENCY: "${INFERENCE_MAX_CONCURRENCY:-1}"
+  INFERENCE_JOB_TIMEOUT_SECONDS: "${INFERENCE_JOB_TIMEOUT_SECONDS:-3600}"
+  INFERENCE_KEEP_FAILED_WORKDIR: "${INFERENCE_KEEP_FAILED_WORKDIR:-true}"
+  INFERENCE_INPUT_ROOTS: "/app/backend/static,/app/backend/bianhua_2years,/app/miner"
+  INFERENCE_OUTPUT_ROOTS: "/app/miner/change_matrix_outputs"
+  INFERENCE_RUNTIME_ROOT: "/app/backend/runtime/inference_jobs"
+  PROJECT_STORAGE_ROOT: "/project_storage"
+  SPATIAL_TILE_PROCESSES: "${SPATIAL_TILE_PROCESSES:-4}"
+  AUTO_MIGRATE_YUNNAN_SPATIAL: "${AUTO_MIGRATE_YUNNAN_SPATIAL:-1}"
+  GDAL_DATA: "/opt/conda/envs/MMSeg310/share/gdal"
+  PROJ_LIB: "/opt/conda/envs/MMSeg310/share/proj"
+  PROJ_DATA: "/opt/conda/envs/MMSeg310/share/proj"
+
+x-runtime-base: &runtime-base
+  image: ${APP_IMAGE:-yunnan-runtime:current}
+  volumes:
+    - ./config.yaml:/app/config.yaml:ro
+    - ./docker:/app/docker:ro
+  restart: unless-stopped
+
+services:
+  backend:
+    <<: *runtime-base
+    container_name: yunnan-backend
+    entrypoint: ["/bin/bash", "/app/docker/start-backend.sh"]
+    environment:
+      <<: *app-env
+    ports:
+      - "5008:5008"
+    depends_on:
+      - mysql
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./docker:/app/docker:ro
+      - ./backend:/app/backend:ro
+      - ./miner/yunnan.kml:/app/miner/yunnan.kml:ro
+      - ./miner/NDVI_2year.xlsx:/app/miner/NDVI_2year.xlsx
+      - ./miner/NDBI_by_fid_2year_avg.xlsx:/app/miner/NDBI_by_fid_2year_avg.xlsx
+      - ./miner/NDWI_by_fid_2year_avg.xlsx:/app/miner/NDWI_by_fid_2year_avg.xlsx
+      - ./miner/NDSI_by_fid_2year_avg.xlsx:/app/miner/NDSI_by_fid_2year_avg.xlsx
+      - backend-static:/app/backend/static
+      - miner-uploads:/app/miner/uploads
+      - miner-outputs:/app/miner/change_matrix_outputs
+      - hf-cache:/root/.cache/huggingface
+      - ./project_storage:/project_storage
+      - ${OFFLINE_MAP_DIR:-./maps/dali}:/project_storage/incoming/dali:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5008/api/auth/session >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    <<: *runtime-base
+    container_name: yunnan-frontend
+    entrypoint: ["/bin/bash", "/app/docker/start-frontend.sh"]
+    environment:
+      <<: *app-env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./docker:/app/docker:ro
+      - ./frontend/src:/app/frontend/src:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  miner-api:
+    <<: *runtime-base
+    container_name: yunnan-miner-api
+    entrypoint: ["/bin/bash", "/app/docker/start-miner-api.sh"]
+    environment:
+      <<: *app-env
+      GEOVIEW_BACKEND_URL: "http://backend:5008"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - backend
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./docker:/app/docker:ro
+      - ./miner/server.js:/app/miner/server.js:ro
+      - ./miner/routes:/app/miner/routes:ro
+      - ./miner/services:/app/miner/services:ro
+      - ./miner/yunnan.kml:/app/miner/yunnan.kml:ro
+      - ./miner/NDVI_2year.xlsx:/app/miner/NDVI_2year.xlsx:ro
+      - ./miner/NDBI_by_fid_2year_avg.xlsx:/app/miner/NDBI_by_fid_2year_avg.xlsx:ro
+      - ./miner/NDWI_by_fid_2year_avg.xlsx:/app/miner/NDWI_by_fid_2year_avg.xlsx:ro
+      - ./miner/NDSI_by_fid_2year_avg.xlsx:/app/miner/NDSI_by_fid_2year_avg.xlsx:ro
+      - miner-outputs:/app/miner/change_matrix_outputs
+      - miner-uploads:/app/miner/uploads
+      - backend-static:/app/backend/static
+      - hf-cache:/root/.cache/huggingface
+      - ./project_storage:/project_storage:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/auth/session >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  inference-worker:
+    <<: *runtime-base
+    image: ${INFERENCE_IMAGE:-yunnan-inference-worker:current}
+    container_name: yunnan-inference-worker
+    entrypoint: ["/bin/bash", "/app/docker/start-inference-worker.sh"]
+    environment:
+      <<: *app-env
+      INFERENCE_IMAGE_BUILD: "${INFERENCE_IMAGE_BUILD:-unknown}"
+    depends_on:
+      - mysql
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./docker:/app/docker:ro
+      - ./backend:/app/backend:ro
+      - ./miner/yunnan.kml:/app/miner/yunnan.kml:ro
+      - backend-static:/app/backend/static:ro
+      - miner-uploads:/app/miner/uploads:ro
+      - miner-outputs:/app/miner/change_matrix_outputs
+      - inference-runtime:/app/backend/runtime/inference_jobs
+      - hf-cache:/root/.cache/huggingface
+      - ./project_storage:/project_storage
+
+  spatial-worker:
+    <<: *runtime-base
+    container_name: yunnan-spatial-worker
+    entrypoint: ["/bin/bash", "/app/docker/start-spatial-worker.sh"]
+    environment:
+      <<: *app-env
+    depends_on:
+      - mysql
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./docker:/app/docker:ro
+      - ./backend:/app/backend:ro
+      - ./project_storage:/project_storage
+      - ${OFFLINE_MAP_DIR:-./maps/dali}:/project_storage/incoming/dali:ro
+
+  miner-web:
+    <<: *runtime-base
+    container_name: yunnan-miner-web
+    entrypoint: ["/bin/bash", "/app/docker/start-miner-web.sh"]
+    environment:
+      <<: *app-env
+      VITE_MINER_API_BASE_URL: ""
+      PROXY_API_TARGET: "http://miner-api:8000"
+    ports:
+      - "4000:4000"
+    depends_on:
+      - miner-api
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./docker:/app/docker:ro
+      - ./miner/src:/app/miner/src:ro
+      - ./miner/vite.config.js:/app/miner/vite.config.js:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4000/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  mysql:
+    image: ${MYSQL_IMAGE:-registry.openanolis.cn/openanolis/mysql:8.0.30-8.6}
+    container_name: yunnan-mysql
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"
+      MYSQL_DATABASE: paddle_rs
+      MYSQL_USER: paddle_rs
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  backend-static:
+    name: yunnan_backend_static
+  mysql-data:
+    name: yunnan_mysql_data
+  hf-cache:
+    name: yunnan_hf_cache
+  miner-outputs:
+    name: yunnan_miner_outputs
+  miner-uploads:
+    name: yunnan_miner_uploads
+  inference-runtime:
+    name: yunnan_inference_runtime

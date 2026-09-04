@@ -1,0 +1,11 @@
+services:
+  inference-worker:
+    volumes: !override
+      - ./config.yaml:/app/config.yaml:ro
+      - ./backend:/app/backend:ro
+      - ./miner/yunnan.kml:/app/miner/yunnan.kml:ro
+      - backend-static:/app/backend/static:ro
+      - miner-uploads:/app/miner/uploads:ro
+      - miner-outputs:/app/miner/change_matrix_outputs
+      - inference-runtime:/app/backend/runtime/inference_jobs
+      - hf-cache:/root/.cache/huggingface

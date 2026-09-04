@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { buildMineSelectionSet, filterProjects } from '../src/projectWorkspace/projectWorkspaceHelpers.js';
+
+test('filterProjects matches by name, region, year and status', () => {
+  const items = [
+    { id: 1, name: '大理一期', region: '大理州', status: 'active', monitor_start_year: 2024, monitor_end_year: 2025 },
+    { id: 2, name: '曲靖归档', region: '曲靖市', status: 'archived', monitor_start_year: 2022, monitor_end_year: 2023 },
+  ];
+  const filtered = filterProjects(items, {
+    name: '大理',
+    region: '大理',
+    status: 'active',
+    monitorYear: '2024',
+  });
+
+  assert.deepEqual(filtered.map((item) => item.id), [1]);
+});
+
+test('buildMineSelectionSet returns bound mine fid values as strings', () => {
+  const detail = {
+    mines: [
+      { mine_fid: 101 },
+      { mine_fid: 102 },
+    ],
+  };
+
+  const selected = buildMineSelectionSet(detail);
+
+  assert.deepEqual(Array.from(selected.values()), ['101', '102']);
+});

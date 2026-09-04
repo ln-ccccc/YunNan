@@ -1,0 +1,13 @@
+port:
+  backend: 5008
+  frontend: 3000
+host:
+  backend: 0.0.0.0
+  frontend: 0.0.0.0
+baidu_map:
+  access_key: <ACCESS_KEY>
+debug: false
+miner:
+  enabled: true
+  frontend_port: 4000
+  backend_port: 8000

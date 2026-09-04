@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>矿山生态修复遥感解译系统｜本期实施范围建议</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #5c6b78;
+      --line: #dbe3e8;
+      --paper: #f7fafb;
+      --card: #ffffff;
+      --green: #167c63;
+      --green-bg: #e8f6f0;
+      --amber: #a76608;
+      --amber-bg: #fff5df;
+      --red: #a63f3f;
+      --red-bg: #fff0ef;
+      --blue: #1f5f91;
+      --blue-bg: #edf5fc;
+      --shadow: 0 12px 30px rgba(27, 47, 60, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 15px/1.7 "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif;
+    }
+    .page { max-width: 1180px; margin: 0 auto; padding: 34px 24px 64px; }
+    header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-end; margin-bottom: 22px; }
+    h1 { margin: 0 0 6px; font-size: clamp(25px, 4vw, 39px); letter-spacing: -.03em; line-height: 1.2; }
+    h2 { margin: 0 0 14px; font-size: 23px; letter-spacing: -.02em; }
+    h3 { margin: 0 0 8px; font-size: 17px; }
+    p { margin: 7px 0; }
+    .date { color: var(--muted); white-space: nowrap; font-size: 13px; }
+    .lead { background: #12374b; color: #f5fbff; border-radius: 18px; padding: 22px 25px; box-shadow: var(--shadow); margin-bottom: 26px; }
+    .lead strong { color: #a9e8cf; }
+    .lead p { max-width: 950px; }
+    .label { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #b9d7e5; }
+    .dot { width: 8px; height: 8px; border-radius: 100%; background: #64d7ae; display: inline-block; }
+    section { margin: 29px 0; }
+    .section-note { color: var(--muted); margin-top: -7px; margin-bottom: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: 0 5px 16px rgba(27, 47, 60, .035); }
+    .card p, .card li { color: #394956; }
+    .card ul { padding-left: 20px; margin: 9px 0 0; }
+    .status { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 700; margin-bottom: 9px; }
+    .do .status { color: var(--green); background: var(--green-bg); }
+    .maybe .status { color: var(--amber); background: var(--amber-bg); }
+    .dont .status { color: var(--red); background: var(--red-bg); }
+    .do { border-top: 4px solid #56b896; }
+    .maybe { border-top: 4px solid #e4ad54; }
+    .dont { border-top: 4px solid #dd7772; }
+    table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 13px; overflow: hidden; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); padding: 12px 13px; }
+    th { background: #edf3f5; font-size: 13px; color: #334b5a; }
+    tr:last-child td { border-bottom: 0; }
+    .tag { display: inline-block; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .tag.do { color: var(--green); background: var(--green-bg); border: 0; }
+    .tag.maybe { color: var(--amber); background: var(--amber-bg); border: 0; }
+    .tag.dont { color: var(--red); background: var(--red-bg); border: 0; }
+    .quote { background: var(--blue-bg); border-left: 4px solid #5b9dd0; padding: 15px 18px; border-radius: 8px; color: #24445a; }
+    .flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin-top: 15px; }
+    .flow-step { flex: 1 1 145px; min-width: 145px; background: var(--card); border: 1px solid var(--line); border-radius: 11px; padding: 13px; }
+    .flow-step b { display: block; color: var(--blue); margin-bottom: 3px; }
+    .arrow { align-self: center; color: #8da0ad; font-size: 20px; }
+    .callout { border: 1px solid #cfe2ee; background: #f2f8fc; border-radius: 12px; padding: 15px 18px; }
+    .callout.warning { border-color: #ead9ad; background: #fffaf0; }
+    code { background: #edf1f3; border-radius: 4px; padding: 1px 5px; font: 12px/1.4 Consolas, "Microsoft YaHei", monospace; color: #334957; }
+    .small { color: var(--muted); font-size: 13px; }
+    .timeline { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .phase { padding: 16px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); }
+    .phase .weeks { color: var(--blue); font-weight: 800; font-size: 20px; }
+    .roles td:first-child { width: 18%; font-weight: 700; color: #31586d; }
+    footer { border-top: 1px solid var(--line); margin-top: 34px; padding-top: 15px; color: var(--muted); font-size: 12px; }
+    a { color: var(--blue); }
+    @media (max-width: 800px) {
+      header { display: block; }
+      .date { margin-top: 8px; }
+      .grid, .timeline { grid-template-columns: 1fr; }
+      .flow { display: block; }
+      .flow-step { margin-bottom: 8px; }
+      .arrow { display: none; }
+      table { display: block; overflow-x: auto; }
+      th, td { min-width: 145px; }
+    }
+    @media print {
+      body { background: #fff; }
+      .page { max-width: none; padding: 0; }
+      .card, table, .phase { box-shadow: none; }
+      .lead { color: #102e3e; background: #eaf3f7; border: 1px solid #cfe2ee; }
+      section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div>
+        <div class="label"><span class="dot"></span>横向项目范围基线</div>
+        <h1>矿山生态修复遥感解译系统<br>本期实施范围建议</h1>
+      </div>
+      <div class="date">内部评估稿 · 2026-09-03</div>
+    </header>
+
+    <div class="lead">
+      <p><strong>建议的交付主线：</strong>离线部署 + TIF/TIFF 输入 + 部署端服务切片 + 现有模型推理 + 可追溯成果。</p>
+      <p>“一个终端完成”可以保留为用户体验目标，但不应解释成“浏览器上传并切片所有大文件”。用户在同一页面登记、启动、查看进度；原始底图通过部署端指定目录进入，重计算由空间 Worker 在后台完成。</p>
+    </div>
+
+    <section>
+      <h2>一、范围结论</h2>
+      <p class="section-note">按验收风险分为本期确定做、条件做和本期不做/暂缓。</p>
+      <div class="grid">
+        <article class="card do">
+          <span class="status">本期确定做 · P0</span>
+          <h3>1. 离线底图目录导入与服务端切片</h3>
+          <ul>
+            <li>指定目录导入 TIF/TIFF 及同名辅助文件。</li>
+            <li>页面刷新、选择、检查 CRS/范围、启动任务。</li>
+            <li>后台异步切片、进度、失败重试、完成后启用。</li>
+          </ul>
+        </article>
+        <article class="card do">
+          <span class="status">本期确定做 · P0</span>
+          <h3>2. 现有模型推理与基础项目功能</h3>
+          <ul>
+            <li>按已验证的输入规范运行现有模型和地类分类。</li>
+            <li>项目、矿山边界、数据登记、底图显示和基础统计。</li>
+            <li>保留模型版本、任务状态、输入文件标识。</li>
+          </ul>
+        </article>
+        <article class="card do">
+          <span class="status">本期确定做 · P0</span>
+          <h3>3. 离线发布与协作治理</h3>
+          <ul>
+            <li>源码、镜像、模型权重、数据分离管理。</li>
+            <li>发布清单绑定代码、镜像、模型和数据库版本。</li>
+            <li>保留部署校验、回滚和基础备份流程。</li>
+          </ul>
+        </article>
+        <article class="card maybe">
+          <span class="status">有条件做 · P1</span>
+          <h3>4. 自定义裁剪分析</h3>
+          <p>允许用户画矩形/多边形 ROI，后台按原始影像裁剪后推理。首期限定范围、大小和 CRS，不做浏览器端处理，不承诺任意大范围实时分析。</p>
+        </article>
+        <article class="card maybe">
+          <span class="status">有条件做 · P1</span>
+          <h3>5. 地类结果矢量化与地图查看</h3>
+          <p>先将推理标签保存为带 CRS 的 GeoTIFF，再生成 GeoJSON 地类面并在地图上查看。不能直接把现有彩色 PNG 当正式矢量成果。</p>
+        </article>
+        <article class="card maybe">
+          <span class="status">有条件做 · P1</span>
+          <h3>6. 最小人工编辑闭环</h3>
+          <p>支持选中、顶点编辑、改类别、删除、绘制替代面、保存新版本和导出。复杂拓扑、多用户实时协作、自由涂抹先暂缓。</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>二、逐项处理口径</h2>
+      <table>
+        <thead>
+          <tr><th>甲方要求/讨论点</th><th>本期判断</th><th>建议实施或对外口径</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>模型在线训练、用户上传 PTH 后继续训练</td>
+            <td><span class="tag dont">不做</span></td>
+            <td>4070 可以做受控的小规模离线实验，但不适合作为平台在线训练能力。只预留“离线模型包注册、验证、发布、回滚”接口；训练仍在我方受控环境完成，不承诺灾难性遗忘后的精度。</td>
+          </tr>
+          <tr>
+            <td>扩充 IMG 等影像导入格式</td>
+            <td><span class="tag dont">暂缓</span></td>
+            <td>模型按 TIF/TIFF、波段顺序、位深、分辨率、CRS 验证。若增加 IMG 或其他格式，必须另做样本适配和精度验证；未经验证的格式只能“功能可读”，不保证分类精度，作为增项报价。</td>
+          </tr>
+          <tr>
+            <td>大体积底图在一个终端完成</td>
+            <td><span class="tag do">做，但改架构</span></td>
+            <td>同一页面完成登记、启动和查看；文件进入部署端 <code>project_storage/incoming</code>，由 Worker 切片。若强制浏览器上传 GB 级文件，则需另做分块合并、校验、清理和恢复，不纳入当前基线。</td>
+          </tr>
+          <tr>
+            <td>新增底图切片</td>
+            <td><span class="tag do">做</span></td>
+            <td>显示瓦片可以由 GeoTIFF 在服务端生成 PNG/XYZ 瓦片；原始 GeoTIFF 必须保留，显示瓦片不作为模型输入。</td>
+          </tr>
+          <tr>
+            <td>自定义裁剪分析</td>
+            <td><span class="tag maybe">P1</span></td>
+            <td>定义为“用户选 ROI → 后台裁剪 → 按分析瓦片推理 → 拼接 → 输出结果”，不是简单的前端地图框选。首期只支持有限范围和单次任务。</td>
+          </tr>
+          <tr>
+            <td>地物分类推理生成矢量图</td>
+            <td><span class="tag maybe">P1</span></td>
+            <td>可实现，但必须先改为带地理参考的标签栅格，再做 Polygonize、边界裁剪、碎面过滤和属性写入。当前 PNG 结果和矿山边界 GeoJSON 不能直接称为分类矢量。</td>
+          </tr>
+          <tr>
+            <td>浏览器端编辑推理结果</td>
+            <td><span class="tag maybe">P1/增项</span></td>
+            <td>可接入地图编辑插件，首期做单人编辑、版本保存、操作审计和 GeoJSON/SHP 导出；分割/合并、多人并发、实时协同和复杂拓扑另行评估。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>三、推荐的底图操作流程</h2>
+      <div class="flow">
+        <div class="flow-step"><b>① 投放</b>复制 TIF/TIFF 和辅助文件到部署端导入目录。</div>
+        <span class="arrow">→</span>
+        <div class="flow-step"><b>② 校验</b>检查文件完整、可读、CRS、范围和磁盘空间。</div>
+        <span class="arrow">→</span>
+        <div class="flow-step"><b>③ 登记</b>页面刷新候选文件，用户选择并登记到项目。</div>
+        <span class="arrow">→</span>
+        <div class="flow-step"><b>④ 后台切片</b>Worker 运行 GDAL，记录进度，可取消/重试/续跑。</div>
+        <span class="arrow">→</span>
+        <div class="flow-step"><b>⑤ 发布</b>任务成功后原子启用新底图，旧底图仍可回退。</div>
+      </div>
+      <div class="callout" style="margin-top:15px">
+        <strong>建议的小改动：</strong>使用 <code>.staging</code> 或 <code>.part</code> 防止半文件被扫描；复制完成后写入 <code>.ready</code>；源文件复制使用临时文件再原子替换；单个坏文件显示错误而不是让整个候选列表失败；补齐取消和重试按钮。
+      </div>
+    </section>
+
+    <section>
+      <h2>四、必须澄清的 TIFF 与推理关系</h2>
+      <div class="grid">
+        <article class="card do">
+          <h3>无损的做法</h3>
+          <p>按像素窗口切割 GeoTIFF，并保留全部波段、数据类型、NoData、CRS 和仿射变换。LZW 等压缩不是问题；切片只是组织方式改变。</p>
+        </article>
+        <article class="card dont">
+          <h3>当前代码中的风险</h3>
+          <p>当前部分推理路径会把 TIFF 变成 3 波段 <code>uint8</code> RGB，再缩放到 <code>512×512</code> 后写 PNG。这一步会丢多光谱、位深和原始空间细节。</p>
+        </article>
+        <article class="card maybe">
+          <h3>实施原则</h3>
+          <p>显示瓦片和分析瓦片分开：PNG/XYZ 只负责浏览；模型读取原始或保留地理参考的分析瓦片；分类结果写成带坐标的标签 GeoTIFF。</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>五、推理结果编辑的合理设计</h2>
+      <div class="quote">正式成果链路：原始 GeoTIFF → 原始像素窗口推理 → 带 CRS 的标签 GeoTIFF → 矢量化与拓扑处理 → 浏览器复核/编辑 → 版本化导出。</div>
+      <table style="margin-top:15px">
+        <thead><tr><th>阶段</th><th>应保存的数据</th><th>首期边界</th></tr></thead>
+        <tbody>
+          <tr><td>推理任务</td><td>项目、矿山、年份、源文件 SHA、模型版本、类别表、CRS、窗口和任务状态</td><td>固定模型、固定类别，不在线训练</td></tr>
+          <tr><td>自动成果</td><td>标签 GeoTIFF、原始 PNG/预览图、GeoJSON 地类面、来源=自动</td><td>按矿山边界裁剪，过滤碎面，保留原始结果</td></tr>
+          <tr><td>人工复核</td><td>选中、顶点编辑、改类别、删除、新增替代面</td><td>单人编辑；不做自由涂抹和实时多人协同</td></tr>
+          <tr><td>保存/导出</td><td>revision、操作者、时间、原因、前后几何、最终 GeoJSON/SHP</td><td>自动结果不可覆盖；服务器按版本导出</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warning" style="margin-top:15px"><strong>重要限制：</strong>现有 512×512 PNG 可以反算近似坐标用于演示，但不建议作为验收级 GIS 成果。正式矢量应在改造后的带地理参考推理链路上重新生成。</div>
+    </section>
+
+    <section>
+      <h2>六、实施顺序与工期</h2>
+      <div class="timeline">
+        <div class="phase"><div class="weeks">1–2 人周</div><h3>P0 运行链路加固</h3><p>目录导入、就绪标记、校验、磁盘预检、切片任务、取消/重试、离线发布清单。</p></div>
+        <div class="phase"><div class="weeks">2–3 人周</div><h3>P1 地理结果链路</h3><p>分析瓦片坐标记录、标签 GeoTIFF、矢量化、矿山边界裁剪、地图查看和基础导出。</p></div>
+        <div class="phase"><div class="weeks">3–5 人周</div><h3>P1 编辑闭环</h3><p>地图编辑、版本审计、并发保护、结果发布和 GeoJSON/SHP 正式导出。</p></div>
+      </div>
+      <p class="small" style="margin-top:13px">合计按 6–10 人周规划；两人并行时可压缩日历工期，但真实 TIFF 端到端回归、空间坐标正确性和编辑审计不能省略。若加入浏览器 GB 级断点上传、在线训练或复杂多人 GIS，则需重新报价和排期。</p>
+    </section>
+
+    <section>
+      <h2>七、后续多人协作的最小分工</h2>
+      <table class="roles">
+        <thead><tr><th>角色</th><th>负责范围</th><th>交付物/验收点</th></tr></thead>
+        <tbody>
+          <tr><td>项目/业务负责人</td><td>地类口径、输入约束、验收样例、甲方边界</td><td>需求基线和版本签字</td></tr>
+          <tr><td>GIS/后端</td><td>目录导入、GDAL 切片、ROI、栅格/矢量服务、数据库</td><td>空间任务可恢复，坐标和面积可复核</td></tr>
+          <tr><td>前端地图</td><td>工作台、底图状态、结果图层、编辑交互</td><td>编辑版本和错误状态清晰可见</td></tr>
+          <tr><td>算法</td><td>模型输入规范、类别表、推理窗口、精度评测</td><td>模型包、评测报告和适用范围</td></tr>
+          <tr><td>DevOps/测试</td><td>镜像/权重清单、离线部署、恢复演练、真实 TIFF 回归</td><td>可复现发布包和回滚记录</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>八、建议锁定的四份接口约定</h2>
+      <div class="grid">
+        <article class="card"><h3>输入影像规范 v1</h3><p>仅 TIF/TIFF；波段顺序、位深、分辨率、CRS、NoData、最大尺寸和命名规则。</p></article>
+        <article class="card"><h3>推理与输出规范 v1</h3><p>任务状态、类别 ID、标签 GeoTIFF、预览图、模型版本、源文件哈希和失败原因。</p></article>
+        <article class="card"><h3>矢量与编辑规范 v1</h3><p>字段、面积单位、最小面阈值、版本号、操作者、审计字段和导出格式。</p></article>
+      </div>
+    </section>
+
+    <section>
+      <h2>给甲方的简短说明</h2>
+      <div class="quote">
+        本期交付采用离线部署模式：用户可在一个终端完成底图登记、切片启动、进度查看和结果浏览。大体积底图通过部署端指定目录导入，由后台空间服务执行切片并保留原始影像，保证任务可恢复和成果可追溯。模型在线训练、未经验证的影像格式扩展、浏览器端 GB 级上传/切片以及复杂多人 GIS 编辑不纳入本期验收；如需增加，应单独进行适配、精度验证和报价。
+      </div>
+    </section>
+
+    <footer>
+      代码依据：<code>miner/src/components/ProjectWorkspace.vue</code>（导入工作台）、<code>backend/applications/project_hub/spatial_service.py</code>（候选扫描与登记）、<code>backend/applications/project_hub/spatial_worker.py</code>（GDAL 切片与续跑）、<code>backend/applications/kml_roi/raster_ops.py</code> 和 <code>backend/applications/interface/mmseg_segmentation.py</code>（当前 TIFF/RGB/PNG 推理路径）。本文件是范围与验收建议，不替代正式合同条款和精度报告。
+    </footer>
+  </main>
+</body>
+</html>

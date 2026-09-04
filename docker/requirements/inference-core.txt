@@ -1,0 +1,9 @@
+# torch、torchvision 和 mmcv 由 Dockerfile 专门安装。
+mmengine==0.10.4
+mmsegmentation==1.2.2
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+rasterio==1.4.4
+shapely==1.8.5.post1
+Pillow>=9.2.0,<12
+PyYAML>=6.0,<7
