@@ -500,12 +500,96 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
 - [ ] **Step 5: 添加 BFF 透明代理测试。**
 
-  在 `miner/test/projectRoutes.test.js` 增加：
+  先将现有 `withServer(handler)` 辅助函数改为可传入请求路径和 fetch 选项，避免三段复制的 Express 启停代码：
 
   ```js
-  test('createProjectRoutes proxies overview without deriving readiness', async () => { /* fixture upstream */ });
-  test('createProjectRoutes proxies asset filters unchanged', async () => { /* type/status/cookie */ });
-  test('createProjectRoutes preserves read-model error status', async () => { /* 400 and 404 */ });
+  async function withServer(handler, requestPath = '/', options = {}) {
+    const app = express();
+    app.use(express.json({ limit: '20mb' }));
+    app.use('/api/projects', handler);
+    const server = await new Promise((resolve) => {
+      const instance = app.listen(0, () => resolve(instance));
+    });
+    const { port } = server.address();
+    try {
+      return await fetch(`http://127.0.0.1:${port}${requestPath}`, options);
+    } finally {
+      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  }
+
+  const loadSharedFixture = async (name) => JSON.parse(
+    await readFile(new URL(`../../tests/fixtures/project-hub-v1/${name}`, import.meta.url), 'utf8'),
+  );
+  ```
+
+  然后加入以下三个完整断言：
+
+  ```js
+  test('createProjectRoutes proxies overview without deriving readiness', async () => {
+    const fixture = await loadSharedFixture('overview-partial.json');
+    const calls = [];
+    const router = createProjectRoutes({
+      projectApi: {
+        async getProjectOverview(projectId, cookie) {
+          calls.push({ projectId, cookie });
+          return { status: 200, body: fixture };
+        },
+      },
+    });
+
+    const response = await withServer(router, '/api/projects/42/overview', {
+      headers: { cookie: 'session=fixture' },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), fixture);
+    assert.deepEqual(calls, [{ projectId: '42', cookie: 'session=fixture' }]);
+  });
+
+  test('createProjectRoutes proxies asset filters unchanged', async () => {
+    const fixture = await loadSharedFixture('assets-mixed.json');
+    const calls = [];
+    const router = createProjectRoutes({
+      projectApi: {
+        async listProjectAssets(projectId, query, cookie) {
+          calls.push({ projectId, query, cookie });
+          return { status: 200, body: fixture };
+        },
+      },
+    });
+
+    const response = await withServer(
+      router,
+      '/api/projects/42/assets?type=imagery&status=failed',
+      { headers: { cookie: 'session=fixture' } },
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), fixture);
+    assert.deepEqual(calls, [{
+      projectId: '42',
+      query: { type: 'imagery', status: 'failed' },
+      cookie: 'session=fixture',
+    }]);
+  });
+
+  test('createProjectRoutes preserves read-model error status', async () => {
+    const router = createProjectRoutes({
+      projectApi: {
+        async getProjectOverview() {
+          return { status: 404, body: { success: false, code: 1, msg: '项目不存在: 42' } };
+        },
+        async listProjectAssets() {
+          return { status: 400, body: await loadSharedFixture('assets-invalid-filter.json') };
+        },
+      },
+    });
+
+    const overview = await withServer(router, '/api/projects/42/overview');
+    const assets = await withServer(router, '/api/projects/42/assets?type=unknown');
+    assert.equal(overview.status, 404);
+    assert.equal(assets.status, 400);
+    assert.equal((await assets.json()).msg, '资产类型不合法');
+  });
   ```
 
   每个 fake `projectApi` 必须断言 BFF 未排序 `checks`、`blockers`、`next_actions`，并把后端的 400/404 原样返回；仅网络异常才转换为 502。
@@ -782,16 +866,48 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
 - [ ] **Step 1: 为浏览器 API client 与选择竞争写失败测试。**
 
-  `projectWorkspaceApi.test.js` 必须使用可注入 `http`，不启动 Vue。测试下面调用：
+  `projectWorkspaceApi.test.js` 必须使用可注入 `http`，不启动 Vue。先写以下测试；Axios 的 `params` 配置由 Axios 负责序列化，测试必须断言 path 和 query 参数均未被 Client 重写：
 
   ```js
-  api.loadOverview(42);
-  api.loadAssets(42, { type: 'imagery', status: 'failed' });
-  api.createExport(42, { format: 'geojson' });
-  api.createSnapshot(42);
+  test('project workspace api preserves read filters and rejects unsafe path fields', async () => {
+    const calls = [];
+    const http = {
+      get(url, config) {
+        calls.push({ method: 'get', url, config });
+        return Promise.resolve({ data: { success: true, data: {} } });
+      },
+      post(url, body) {
+        calls.push({ method: 'post', url, body });
+        return Promise.resolve({ data: { success: true, data: {} } });
+      },
+      patch() { throw new Error('not used in this test'); },
+      put() { throw new Error('not used in this test'); },
+    };
+    const api = createProjectWorkspaceApi({ http });
+
+    await api.loadOverview(42);
+    await api.loadAssets(42, { type: 'imagery', status: 'failed' });
+    await api.createExport(42, { format: 'geojson' });
+    await api.createSnapshot(42);
+
+    assert.deepEqual(calls, [
+      { method: 'get', url: '/api/projects/42/overview', config: undefined },
+      { method: 'get', url: '/api/projects/42/assets', config: { params: { type: 'imagery', status: 'failed' } } },
+      { method: 'post', url: '/api/projects/42/exports', body: { format: 'geojson' } },
+      { method: 'post', url: '/api/projects/42/backups', body: {} },
+    ]);
+    assert.throws(
+      () => api.createExport(42, { format: 'csv', output_dir: 'D:/tmp' }),
+      /不支持 output_dir/,
+    );
+    assert.throws(
+      () => api.registerDataset(42, { display_name: '影像', dataset_kind: 'imagery', file_path: 'D:/tmp.tif' }),
+      /不支持 file_path/,
+    );
+  });
   ```
 
-  断言 URL 为 `/api/projects/42/overview`、`/assets?type=imagery&status=failed`，请求体没有 `output_dir` 或 `file_path`。`projectWorkspaceViewModel.test.js` 断言较早项目选择的响应不能覆盖最新项目选择。
+  `projectWorkspaceViewModel.test.js` 必须断言较早项目选择的响应不能覆盖最新项目选择；该行为通过下面 Task 7 Step 3 中定义的 `createSelectionGate` 测试，不能在 Vue 测试里重复实现。
 
 - [ ] **Step 2: 实现唯一的工作台 HTTP client。**
 
@@ -807,22 +923,47 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
       if (response?.data?.success === false) throw new Error(response.data.msg || '项目请求失败');
       return response?.data?.data ?? response?.data;
     };
+    const rejectUnsafePathField = (payload, field) => {
+      if (Object.hasOwn(payload || {}, field)) {
+        throw new Error(`不支持 ${field}，请使用项目受控存储`);
+      }
+      return payload || {};
+    };
     return {
       loadProjects: () => data(http.get(url('/api/projects'))),
       loadDetail: (projectId) => data(http.get(url(`/api/projects/${projectId}`))),
       loadOverview: (projectId) => data(http.get(url(`/api/projects/${projectId}/overview`))),
       loadAssets: (projectId, params = {}) => data(http.get(url(`/api/projects/${projectId}/assets`), { params })),
+      loadSpatial: (projectId) => data(http.get(url(`/api/projects/${projectId}/spatial`))),
       loadActivity: (projectId) => data(http.get(url(`/api/projects/${projectId}/timeline`))),
       loadExports: (projectId) => data(http.get(url(`/api/projects/${projectId}/exports`))),
       loadSnapshots: (projectId) => data(http.get(url(`/api/projects/${projectId}/backups`))),
-      createExport: (projectId, payload) => data(http.post(url(`/api/projects/${projectId}/exports`), payload)),
+      createProject: (payload) => data(http.post(url('/api/projects'), payload)),
+      updateProject: (projectId, payload) => data(http.patch(url(`/api/projects/${projectId}`), payload)),
+      replaceProjectMines: (projectId, payload) => data(http.put(url(`/api/projects/${projectId}/mines`), payload)),
+      previewMineVector: (projectId, payload) => data(http.post(url(`/api/projects/${projectId}/spatial/mines/preview`), payload)),
+      importMineVector: (projectId, payload) => data(http.post(url(`/api/projects/${projectId}/spatial/mines`), payload)),
+      listBasemapCandidates: (projectId) => data(http.get(url(`/api/projects/${projectId}/spatial/basemap-candidates`))),
+      registerBasemap: (projectId, payload) => data(http.post(url(`/api/projects/${projectId}/spatial/basemaps`), payload)),
+      retrySpatialJob: (projectId, jobId) => data(http.post(url(`/api/projects/${projectId}/spatial/jobs/${jobId}/retry`), {})),
+      cancelSpatialJob: (projectId, jobId) => data(http.post(url(`/api/projects/${projectId}/spatial/jobs/${jobId}/cancel`), {})),
+      createExport: (projectId, payload) => data(http.post(
+        url(`/api/projects/${projectId}/exports`),
+        rejectUnsafePathField(payload, 'output_dir'),
+      )),
       createSnapshot: (projectId) => data(http.post(url(`/api/projects/${projectId}/backups`), {})),
-      registerDataset: (projectId, payload) => data(http.post(url(`/api/projects/${projectId}/datasets`), payload)),
+      registerDataset: (projectId, payload) => data(http.post(
+        url(`/api/projects/${projectId}/datasets`),
+        rejectUnsafePathField(payload, 'file_path'),
+      )),
+      archiveProject: (projectId) => data(http.post(url(`/api/projects/${projectId}/archive`), {})),
+      restoreProject: (projectId) => data(http.post(url(`/api/projects/${projectId}/restore`), {})),
+      restoreSnapshot: (projectId, snapshotId) => data(http.post(url(`/api/projects/${projectId}/backups/${snapshotId}/restore`), {})),
     };
   }
   ```
 
-  在同一 return 对象中补齐已有 mutation：`createProject`、`updateProject`、`replaceProjectMines`、`previewMineVector`、`importMineVector`、`listBasemapCandidates`、`registerBasemap`、`retrySpatialJob`、`cancelSpatialJob`、`archiveProject`、`restoreProject`、`restoreSnapshot`。每个方法只封装 HTTP method、公开 URL 和 request body；不得添加 readiness/资产推断。`registerDataset` 的 payload 仅允许 `display_name`、`dataset_kind`、相对 `storage_key` 和约定元数据，Client 不得接受或转发 `file_path`。
+  每个方法只封装 HTTP method、公开 URL 和 request body；不得添加 readiness/资产推断。`registerDataset` 的 payload 仅允许 `display_name`、`dataset_kind`、相对 `storage_key` 和约定元数据，Client 不得接受或转发 `file_path`。
 
 - [ ] **Step 3: 固定 slice 与失效矩阵。**
 
@@ -831,6 +972,19 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   ```js
   export function createSlice() {
     return { data: null, loading: false, error: '' };
+  }
+
+  export function createSelectionGate() {
+    let revision = 0;
+    return {
+      next() {
+        revision += 1;
+        return revision;
+      },
+      isCurrent(token) {
+        return token === revision;
+      },
+    };
   }
 
   export const INVALIDATION = {
@@ -866,7 +1020,17 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   }
   ```
 
-  在 `ProjectWorkspace.vue` 使用递增 `selectionRevision`；每个异步加载捕获开始时 revision，返回后只在 revision 等于当前值时写入状态。
+  在 `ProjectWorkspace.vue` 创建一次 `const selectionGate = createSelectionGate()`；仅在项目选择变化（或明确的全量重新加载）时执行一次 `const selectionRevision = selectionGate.next()`，并把该 token 传给同一轮 `loadSelectedProject(projectId, selectionRevision)` 的所有 slice 请求。每个请求返回后只在 `selectionGate.isCurrent(selectionRevision)` 时写入 slice，不能让并行 slice 彼此作废。并在 `projectWorkspaceViewModel.test.js` 写：
+
+  ```js
+  test('selection gate rejects stale project responses', () => {
+    const gate = createSelectionGate();
+    const projectA = gate.next();
+    const projectB = gate.next();
+    assert.equal(gate.isCurrent(projectA), false);
+    assert.equal(gate.isCurrent(projectB), true);
+  });
+  ```
 
 - [ ] **Step 4: 将父组件改为一次装配和局部刷新。**
 
