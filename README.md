@@ -4,6 +4,8 @@
 
 开发或修改前请先阅读项目级 [AGENTS.md](./AGENTS.md)。项目的模块边界、状态模型和低耦合契约见 [docs/architecture/project-structure-and-low-coupling-contract-v1.md](./docs/architecture/project-structure-and-low-coupling-contract-v1.md)。
 
+新人从 [开发规范](docs/development-standard.md) 和 [新生与 Agent 协作手册](docs/agent-collaboration-guide.md) 开始：前者说明模块、性能目标、测试和 PR 要求，后者提供任务卡、验收与换 Agent 的示例。[agent.md](agent.md) 是其他 Agent 的手动接手入口。
+
 ## 目录
 
 - backend：Flask 后端、项目空间服务和推理任务。

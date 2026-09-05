@@ -2,6 +2,8 @@
 
 > 本文档提供开发命令和存量接口说明。每次开发或修改前，必须先阅读项目级 [AGENTS.md](../AGENTS.md)；项目结构、状态模型、模块边界和跨模块契约以 [项目结构与低耦合契约 v1](./architecture/project-structure-and-low-coupling-contract-v1.md) 为准。
 
+后续开发的性能目标、按模块测试、两人分工和 PR 要求统一见 [开发规范](development-standard.md)；新人任务指令与交接示例见 [协作手册](agent-collaboration-guide.md)。
+
 ## 1. 项目结构
 
 - `miner/`：矿山监测主系统，包含 Vite/Vue 前端与 `server.js` 提供的 Miner API。
@@ -43,6 +45,8 @@ python -m unittest test_new_features.py
 
 ### `POST /api/kml/upload`
 
+这是仍保留的旧客户端上传接口，返回旧式服务器路径。新项目化地物分类入口不调用它；不要把下面的路径示例用于项目推理请求。
+
 Request:
 
 ```json
@@ -68,15 +72,17 @@ Failure:
 
 错误响应应包含可读的 `error`，并尽量提供 `next` 排查建议。
 
-### `POST /api/inference/kml-roi`
+### `POST /api/inference/jobs`
 
-保留现有字段，并支持：
+当前 Miner 项目化分类入口经 BFF 转发到 Flask 同名接口，提交示例：
 
-- `year`：单年份推理参数。
-- `old_year`：基准年份。
-- `new_year`：最新年份。
+```json
+{"project_id": 7, "dataset_id": 12, "year": "2024", "device": "auto"}
+```
 
-当 `year` 存在时，优先使用单年份模式；否则传递 `old_year/new_year`。
+`year` 可省略或留空，此时使用登记数据集的 `year_end`，没有结束年份时使用 `year_start`；均无有效年份时提示补充。后端还支持可选 `mine_fids`，当前 Miner 弹窗不传。创建成功返回 HTTP 201 的任务 DTO，随后通过 `GET /api/inference/jobs/{job_id}` 查询。
+
+Miner 仍保留 `/api/inference/kml-roi` 路由别名，但它转发到相同的项目任务接口，不能再提交 `old_tif_path`、`new_tif_path`、`kml_path`、`old_year/new_year` 等旧请求字段。旧脚本的双年份参数不等于当前浏览器 API 契约。
 
 ### `GET /api/mines/trend-report`
 
@@ -144,12 +150,9 @@ python -m unittest test_project_api test_project_read_models test_project_spatia
 
 ## 7. 测试分层
 
-- Node 单元测试：覆盖纯函数、接口参数构造、文件保存校验、趋势统计计算。
-- 静态检查：`node --check server.js`。
-- 构建测试：`npm run build`。
-- Python 单元测试：运行 `backend` 现有 unittest。
-- API 集成测试：启动服务后验证 KML 上传、趋势报告、基础 stats。
-- UI 检查：首页、趋势弹窗、推理弹窗、筛选/搜索/重置、错误态。
+按 [开发规范](development-standard.md) 的测试矩阵选择现有 Node/Python 测试、对应前端构建和浏览器路径。项目化推理联调用登记影像与 `/api/inference/jobs`，矢量编辑联调使用 GeoView 的成果 API。旧 KML 上传只在修改其历史消费者时验证。
+
+报告必须区分 mock 与真实运行、通过与跳过；构建不能替代浏览器操作，单元测试不能替代 GPU 和性能实测。
 
 ## 8. 交付要求
 
