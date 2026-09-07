@@ -8,6 +8,14 @@
 
 **Tech Stack:** Python/Flask/SQLAlchemy/Marshmallow、Node 20/Express、Vue 3/Vite、Node 原生测试、Python `unittest`、GDAL 现有运行镜像。
 
+> **实施状态回填（2026-09-07）**
+>
+> Task 1–8 的实现与测试均已落地，对应提交：`c67f28b`（Task 1 契约样例）、`3ce81c0`（Task 2 红灯测试）、`578181b`（Task 3–5 读模型与存储收口）、`ae8d834`（Task 7–8 工作台数据流与拆分）。后续 P1 修复另见 `2026-09-05` 计划及提交 `b12ad05`–`8a6ed4c`。
+>
+> 2026-09-07 重验记录：6 个 fixture JSON 解析通过；miner 全量 `node --test` 60/60 通过（含 projectRoutes 13 项与 projectWorkspace 纯 JS 层全部用例）；`npm run build` 通过；`node --check server.js` 通过。
+>
+> 复选框回填口径：实现、测试编写与提交类步骤按现有产物勾选；命令执行类步骤仅在同命令可重跑或属于红灯流程（由提交顺序推定）时勾选。**保留未勾的运行类步骤（Task 2 Step 3、Task 3 Step 5、Task 4 Step 2/Step 6、Task 5 Step 2/Step 6、Task 6 Step 2/Step 6、Task 8 Step 6）涉及后端 unittest 执行，缺少执行记录且本机无 Flask/GDAL 无法重跑，需在容器或固定 Python 3.10/GDAL 环境补跑后再勾选。** Task 8 Step 5 的编译与 Node 回归已重验，但其 Expected 中的浏览器手工验收无记录，仍待执行。底部「完工验收清单」整体留待负责人逐项验收。
+
 ---
 
 ## 范围与拆分
@@ -72,7 +80,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 - Create: `tests/fixtures/project-hub-v1/assets-invalid-filter.json`
 - Modify: `docs/architecture/project-structure-and-low-coupling-contract-v1.md`
 
-- [ ] **Step 1: 在契约中补齐不会由实现者猜测的字段语义。**
+- [x] **Step 1: 在契约中补齐不会由实现者猜测的字段语义。**
 
   在“ProjectOverviewView 契约”中明确以下字段并保持此顺序：
 
@@ -109,7 +117,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `readiness` 本身不受 lifecycle 影响；同一资产组合在 `active` 与 `archived` 下必须得到相同的 readiness。`can_start_inference` 是“可启动新任务”，不要求 `REVIEWABLE_RESULT` 通过。
 
-- [ ] **Step 2: 创建阻塞项目黄金样例。**
+- [x] **Step 2: 创建阻塞项目黄金样例。**
 
   写入 `overview-blocked.json`，顶层保持 API 的 `data` 包装，使用固定项目 ID `42`。核心内容必须为：
 
@@ -141,7 +149,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   在完整文件中补齐 `summary`、`capabilities`、`blockers`、`counts` 和空 `recent_activity`；不要加入时间戳或物理路径。
 
-- [ ] **Step 3: 创建 partial/ready/assets 黄金样例。**
+- [x] **Step 3: 创建 partial/ready/assets 黄金样例。**
 
   使用以下固定数据，避免测试依赖当前时间或自动 ID：
 
@@ -155,7 +163,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `assets-mixed.json` 中空间状态映射必须固定为：`pending -> registered`、`processing -> processing`、`active -> ready`、`failed -> failed`、`retained -> superseded`。每个 asset 只允许出现公共字段，递归检查不得含路径键。
 
-- [ ] **Step 4: 用 JSON 解析器验证 fixture。**
+- [x] **Step 4: 用 JSON 解析器验证 fixture。**
 
   Run:
 
@@ -167,7 +175,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 命令退出码为 `0`，六个 fixture 都能解析。
 
-- [ ] **Step 5: 提交契约 fixture。**
+- [x] **Step 5: 提交契约 fixture。**
 
   ```powershell
   git add docs/architecture/project-structure-and-low-coupling-contract-v1.md tests/fixtures/project-hub-v1
@@ -183,7 +191,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 - Modify: `backend/test_project_spatial.py`
 - Modify: `backend/test_project_inference_results.py`
 
-- [ ] **Step 1: 写入独立的 Read Model 测试基座。**
+- [x] **Step 1: 写入独立的 Read Model 测试基座。**
 
   在 `backend/test_project_read_models.py` 使用既有 testing app、SQLite 内存库和临时 `PROJECT_STORAGE_ROOT`；固定 ID/时间，避免删除动态字段后做宽松比较。
 
@@ -214,7 +222,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   添加 `load_fixture(name)`，从仓库根的 `tests/fixtures/project-hub-v1/` 读取 JSON。
 
-- [ ] **Step 2: 写入会失败的 endpoint 测试。**
+- [x] **Step 2: 写入会失败的 endpoint 测试。**
 
   至少实现以下测试方法；三个 overview fixture 必须以完整 JSON 比较，不能删除动态字段：
 
@@ -253,11 +261,11 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: `GET /api/projects/42/overview` 与 `/assets` 返回 404；不得因 fixture、登录或测试库初始化失败而失败。
 
-- [ ] **Step 4: 保留既有项目回归用例并补齐新语义断言。**
+- [x] **Step 4: 保留既有项目回归用例并补齐新语义断言。**
 
   在 `test_project_api.py` 中保留 CRUD、矿山绑定、数据集、归档、导出和恢复测试；只新增 `lifecycle_status` 与旧 `status` 同时存在的断言。不得修改 `test_project_spatial.py` 对 `map_ready` 和 `spatial_status` 的原有断言；新 Read Model 是增量接口，不能取代空间状态。
 
-- [ ] **Step 5: 提交红灯测试。**
+- [x] **Step 5: 提交红灯测试。**
 
   ```powershell
   git add backend/test_project_read_models.py backend/test_project_api.py backend/test_project_spatial.py backend/test_project_inference_results.py
@@ -273,7 +281,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 - Modify: `backend/applications/project_hub/service.py`
 - Modify: `backend/applications/schemas/project.py`
 
-- [ ] **Step 1: 在 `readiness.py` 实现固定检查和动作排序。**
+- [x] **Step 1: 在 `readiness.py` 实现固定检查和动作排序。**
 
   只接受已由服务层取得的 project、assets 和任务统计，禁止在 Vue 或 BFF 中复制规则。
 
@@ -303,7 +311,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `build_next_actions` 必须按检查顺序返回 `IMPORT_MINE_BOUNDARY`、`CONFIGURE_BASEMAP`、`REGISTER_INFERENCE_INPUT`、`REVIEW_RESULT`；已有条件不再重复返回。
 
-- [ ] **Step 2: 在 `assets.py` 实现无路径泄露的 `ProjectAssetView`。**
+- [x] **Step 2: 在 `assets.py` 实现无路径泄露的 `ProjectAssetView`。**
 
   用函数而不是通用数据库表适配现有来源。公共资产 ID 使用稳定复合 ID，例如 `spatial:17`、`dataset:21`、`classification-result:31`、`revision:31:2`、`export:41`、`snapshot:51`。
 
@@ -344,7 +352,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `_dataset_assets` 必须跳过已经带有 `classification_result_id` 的 `inference_result` 数据集，避免和 `ClassificationResult` 重复。`_classification_assets` 将 `vector_status=ready|ready_empty` 映射为公开 `ready`，`vector_failed` 映射为 `failed`，其余未完成状态映射为 `processing`；`_reviewable_result_check` 只能接受前两者。任何 `source_path` 只能用于服务器内部构建 provenance，不能出现在返回字典中。
 
-- [ ] **Step 3: 在 Schema 中只声明公共 DTO。**
+- [x] **Step 3: 在 Schema 中只声明公共 DTO。**
 
   在 `schemas/project.py` 新增 `ProjectAssetViewSchema` 和 `ProjectOverviewViewSchema`。`ProjectAssetViewSchema` 只允许以下字段：
 
@@ -355,7 +363,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `source_type` / `source_id` 是服务器生成的不透明追溯字段，不可让 Vue 以其底层表名写业务判断或 URL。`ProjectOverviewViewSchema` 必须含 `project_id`、`lifecycle_status`、`summary`、`readiness`、`capabilities`、`blockers`、`next_actions`、`counts`、`recent_activity`。保留现有 `ProjectSummarySchema`，不得把 overview DTO 塞进旧 summary。
 
-- [ ] **Step 4: 在 `service.py` 增加聚合读取入口。**
+- [x] **Step 4: 在 `service.py` 增加聚合读取入口。**
 
   使用 `_get_project_or_404`，不复制查询逻辑：
 
@@ -395,7 +403,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 10 个 Read Model 用例通过，fixture 比较不删除字段、不忽略数组顺序。
 
-- [ ] **Step 6: 提交后端领域实现。**
+- [x] **Step 6: 提交后端领域实现。**
 
   ```powershell
   git add backend/applications/project_hub/readiness.py backend/applications/project_hub/assets.py backend/applications/project_hub/service.py backend/applications/schemas/project.py backend/test_project_read_models.py
@@ -411,7 +419,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 - Modify: `miner/routes/projects.js`
 - Modify: `miner/test/projectRoutes.test.js`
 
-- [ ] **Step 1: 为 `/overview` 和 `/assets` 先增加 API 测试。**
+- [x] **Step 1: 为 `/overview` 和 `/assets` 先增加 API 测试。**
 
   在 `backend/test_project_read_models.py` 中对下列请求断言 envelope、HTTP 状态与 fixture：
 
@@ -435,7 +443,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 在路由实现前失败于 404/缺少 handler。
 
-- [ ] **Step 3: 在 Flask 项目路由中添加显式读取端点。**
+- [x] **Step 3: 在 Flask 项目路由中添加显式读取端点。**
 
   在 `project_detail_api` 前增加，并从 `assets.py` 导入 `ProjectAssetFilterError`：
 
@@ -465,7 +473,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   先在 import 列表加入对应 service 函数。旧 `GET /{id}`、`/timeline`、`/spatial` 不删除、不改响应形状。
 
-- [ ] **Step 4: 为 BFF 加专用 client 和透明路由。**
+- [x] **Step 4: 为 BFF 加专用 client 和透明路由。**
 
   在 `miner/services/projectBackend.js` 添加：
 
@@ -498,7 +506,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   });
   ```
 
-- [ ] **Step 5: 添加 BFF 透明代理测试。**
+- [x] **Step 5: 添加 BFF 透明代理测试。**
 
   先将现有 `withServer(handler)` 辅助函数改为可传入请求路径和 fetch 选项，避免三段复制的 Express 启停代码：
 
@@ -610,7 +618,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 旧项目 CRUD、空间接口与 BFF 的三条既有路由测试继续通过。
 
-- [ ] **Step 7: 提交 HTTP 契约实现。**
+- [x] **Step 7: 提交 HTTP 契约实现。**
 
   ```powershell
   git add backend/applications/api/project.py miner/services/projectBackend.js miner/routes/projects.js miner/test/projectRoutes.test.js backend/test_project_read_models.py
@@ -628,7 +636,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 - Modify: `backend/test_project_api.py`
 - Modify: `miner/routes/projects.js`
 
-- [ ] **Step 1: 为安全路径和 manifest 写失败测试。**
+- [x] **Step 1: 为安全路径和 manifest 写失败测试。**
 
   在 `test_project_api.py` 增加以下测试：
 
@@ -666,7 +674,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 新断言在当前 `output_dir` 行为处失败；不得删除原有恢复覆盖测试。
 
-- [ ] **Step 3: 实现唯一的项目 sandbox 路径服务。**
+- [x] **Step 3: 实现唯一的项目 sandbox 路径服务。**
 
   新建 `project_storage.py`，复用 `spatial_storage.get_storage_root()`，不复制环境变量读取逻辑：
 
@@ -690,7 +698,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `write_json_atomic(path, payload)` 必须同目录临时文件写入后 `os.replace`；禁止 `Path` 拼接绕过 `resolve_storage_path`。
 
-- [ ] **Step 4: 改造 dataset、export 与 snapshot 服务的输入和输出。**
+- [x] **Step 4: 改造 dataset、export 与 snapshot 服务的输入和输出。**
 
   - `create_dataset` 的浏览器输入改为 `storage_key`，仅接受 `incoming/` 下的相对 TIFF/TIFF 文件；存量列 `ProjectDataset.file_path` 暂存相对 key，避免立即迁移数据库。
   - API 若收到 `file_path` 或 `output_dir`，返回 `422` 和明确迁移提示，不能静默忽略。
@@ -698,7 +706,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   - `create_backup` 在 UI/API 中改名为“项目配置快照”，先写 `ProjectBackupRecord` 再创建 `snapshots/{id}/manifest.json`。
   - `_project_manifest` 改用内部 serializer 保存恢复所需存储引用；公共 `ProjectExportRecordSchema` / `ProjectBackupRecordSchema` 改为 `artifact_name` / `snapshot_name`、状态、时间、`restorable`，不序列化物理绝对路径。
 
-- [ ] **Step 5: 更新 BFF 导出转发，不再接受浏览器目录。**
+- [x] **Step 5: 更新 BFF 导出转发，不再接受浏览器目录。**
 
   在 `miner/routes/projects.js` 的 exports 路由中先拒绝 `output_dir`，再构造转发 payload；不得先删除字段后继续执行，以免客户端误以为目录选择被支持。保留由 BFF 服务端生成的 GeoJSON feature 逻辑：
 
@@ -723,7 +731,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 任意绝对/越界路径被拒绝，历史项目 CRUD 与空间路径防越界测试仍通过。
 
-- [ ] **Step 7: 提交存储收口。**
+- [x] **Step 7: 提交存储收口。**
 
   ```powershell
   git add backend/applications/project_hub/project_storage.py backend/applications/project_hub/service.py backend/applications/api/project.py backend/applications/schemas/project.py backend/test_project_api.py miner/routes/projects.js miner/test/projectRoutes.test.js
@@ -742,7 +750,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 - Modify: `miner/src/projectWorkspace/projectWorkspaceViewModel.js`
 - Modify: `miner/test/projectWorkspaceViewModel.test.js`
 
-- [ ] **Step 1: 为活动 DTO 写入失败测试。**
+- [x] **Step 1: 为活动 DTO 写入失败测试。**
 
   测试至少覆盖：创建项目、更新项目、登记数据、空间任务入队、导出、配置快照和恢复配置快照。每条公开活动必须带：
 
@@ -772,7 +780,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 在 `action_code`、`target`、真实 session actor 缺失处失败。
 
-- [ ] **Step 3: 保持旧表结构与 event_type 兼容，扩展公共 serializer。**
+- [x] **Step 3: 保持旧表结构与 event_type 兼容，扩展公共 serializer。**
 
   `ProjectActivityLog` 不迁移表。既有调用方继续传入当前小写 `event_type`（例如 `project_created`、`spatial_job_queued`、`export_created`）；不要把已存在事件值改成大写。新增规范化映射，并改造 `_append_activity`：
 
@@ -810,7 +818,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `get_project_timeline` / `serialize_recent_activity` 返回 `event_type` 原值、`action_code=ACTION_CODE_BY_EVENT_TYPE.get(event_type, event_type.upper())`、`target=payload.target`、`result=payload.result`、`created_at`，并保留 `timestamp=created_at`。旧事件没有字段时返回 `{}` 和 `success`，不能抛异常。新写入的 `target` 必须有语义类型和公开 ID；历史记录缺少时只返回空对象，不能伪造目标。`spatial_service.py` 中现有 `_activity` 也必须采用相同 payload 约定并接受可选 `actor`，避免空间事件绕过审计格式。
 
-- [ ] **Step 4: 从 HTTP 会话传入操作者，而不引入成员系统。**
+- [x] **Step 4: 从 HTTP 会话传入操作者，而不引入成员系统。**
 
   在 `api/project.py` 增加：
 
@@ -821,7 +829,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   为 `create_project`、`update_project`、`create_dataset`、归档、恢复、导出、快照、恢复快照增加可选 `actor` 参数并从路由传入。空间服务的 import/register/retry/cancel 同样增加可选 `actor`，其 `_activity` 调用透传该值；默认保留 `system` 给 worker 调用。
 
-- [ ] **Step 5: 在 Miner View Model 做纯展示映射。**
+- [x] **Step 5: 在 Miner View Model 做纯展示映射。**
 
   只映射文案，不推断业务规则：
 
@@ -864,7 +872,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 - Modify: `miner/src/projectWorkspace/projectWorkspaceHelpers.js`
 - Modify: `miner/src/components/ProjectWorkspace.vue`
 
-- [ ] **Step 1: 为浏览器 API client 与选择竞争写失败测试。**
+- [x] **Step 1: 为浏览器 API client 与选择竞争写失败测试。**
 
   `projectWorkspaceApi.test.js` 必须使用可注入 `http`，不启动 Vue。先写以下测试；Axios 的 `params` 配置由 Axios 负责序列化，测试必须断言 path 和 query 参数均未被 Client 重写：
 
@@ -909,7 +917,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `projectWorkspaceViewModel.test.js` 必须断言较早项目选择的响应不能覆盖最新项目选择；该行为通过下面 Task 7 Step 3 中定义的 `createSelectionGate` 测试，不能在 Vue 测试里重复实现。
 
-- [ ] **Step 2: 实现唯一的工作台 HTTP client。**
+- [x] **Step 2: 实现唯一的工作台 HTTP client。**
 
   复用现有 Vite base URL，所有组件通过本 client 请求：
 
@@ -965,7 +973,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   每个方法只封装 HTTP method、公开 URL 和 request body；不得添加 readiness/资产推断。`registerDataset` 的 payload 仅允许 `display_name`、`dataset_kind`、相对 `storage_key` 和约定元数据，Client 不得接受或转发 `file_path`。
 
-- [ ] **Step 3: 固定 slice 与失效矩阵。**
+- [x] **Step 3: 固定 slice 与失效矩阵。**
 
   在 `projectWorkspaceViewModel.js` 实现：
 
@@ -1032,13 +1040,13 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   });
   ```
 
-- [ ] **Step 4: 将父组件改为一次装配和局部刷新。**
+- [x] **Step 4: 将父组件改为一次装配和局部刷新。**
 
   保持 `App.vue` 的 `username`、`open-map(projectId, mineFid)`、`logout` 完全不变。把现有 `refreshCurrentProject()` 的“先 `selectProject` 再 `loadProjects`，又一次 select”改为按 `INVALIDATION` 刷新，避免重复请求。
 
   父组件负责：当前项目 ID、项目列表、slice、空间轮询、mutation 调度。子组件只接收 props 与 emit，不得拿到 `apiUrl` 或 axios。
 
-- [ ] **Step 5: 验证纯 JS 层。**
+- [x] **Step 5: 验证纯 JS 层。**
 
   Run:
 
@@ -1049,7 +1057,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: action code、未知 action fallback、URL、错误态、过滤和过期响应保护全部通过。
 
-- [ ] **Step 6: 提交数据流收口。**
+- [x] **Step 6: 提交数据流收口。**
 
   ```powershell
   git add miner/src/projectWorkspace/projectWorkspaceApi.js miner/src/projectWorkspace/projectWorkspaceViewModel.js miner/src/projectWorkspace/projectWorkspaceHelpers.js miner/src/components/ProjectWorkspace.vue miner/test/projectWorkspaceApi.test.js miner/test/projectWorkspaceViewModel.test.js miner/test/projectWorkspaceHelpers.test.js
@@ -1073,7 +1081,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 - Modify: `miner/test/projectWorkspaceViewModel.test.js`
 - Modify: `docs/development_guide.md`
 
-- [ ] **Step 1: 先创建无 HTTP 依赖的展示组件。**
+- [x] **Step 1: 先创建无 HTTP 依赖的展示组件。**
 
   每个组件遵循以下边界：
 
@@ -1087,11 +1095,11 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   | `ProjectExportSnapshotPanel` | `exports, snapshots, capabilities, loading, error` | `create-export, create-snapshot, restore-snapshot` | `output_dir`、完整备份措辞 |
   | `ProjectSpatialResources` | `spatial, mineOptions, busy, error` | `preview-mine, import-mine, register-basemap, retry-job, cancel-job` | 读取 assets 底层结构 |
 
-- [ ] **Step 2: 将空间向导单独移入 `ProjectSpatialResources.vue`。**
+- [x] **Step 2: 将空间向导单独移入 `ProjectSpatialResources.vue`。**
 
   现有空间向导有上传预览、字段映射、候选底图、启动切片、轮询进度等独立责任。把相关 template、props/emits、样式一次整体移走；父组件只保留请求与轮询。不要把它塞进 `ProjectAssetsPanel`，避免资产读取又承担导入、任务控制和轮询。
 
-- [ ] **Step 3: 移除旧详情区的重复展示和不安全字段。**
+- [x] **Step 3: 移除旧详情区的重复展示和不安全字段。**
 
   - 用 `ProjectOverviewPanel` 取代旧 summary card 和手工 `map_ready` 判断。
   - 用 `ProjectAssetsPanel` 取代旧数据集列表；不显示 `dataset.file_path`，也不根据 `source_type` / `source_id` 分支。
@@ -1100,7 +1108,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   - 用 `ProjectExportSnapshotPanel` 取代“导出与备份”；删除 `outputDir` ref 和“可选输出目录”输入框，将“备份”改为“项目配置快照”。
   - 使用 `ProjectForm` 保留建档/编辑字段；不改变旧项目 API 的字段名。
 
-- [ ] **Step 4: 为展示映射添加纯函数回归。**
+- [x] **Step 4: 为展示映射添加纯函数回归。**
 
   在 `projectWorkspaceViewModel.test.js` 加入：
 
@@ -1118,7 +1126,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `toAssetRow` 只能读取公共 `ProjectAssetView` 字段；测试中额外路径字段必须被忽略。
 
-- [ ] **Step 5: 编译和回归 Miner。**
+- [x] **Step 5: 编译和回归 Miner。**
 
   Run:
 
@@ -1143,7 +1151,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 项目、空间、地图隔离、推理成果发布和新 Read Model 全部通过；任何失败都按“原有问题/本次引入”分别记录。
 
-- [ ] **Step 7: 同步文档、检查差异并提交。**
+- [x] **Step 7: 同步文档、检查差异并提交。**
 
   在 `docs/development_guide.md` 增加上述后端运行环境说明、Miner 验证命令、`storage_key` 迁移说明、导出/配置快照语义。随后执行：
 
