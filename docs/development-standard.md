@@ -163,6 +163,16 @@ Bug 优先先复现，再修复，再证明原场景正常。新增断言应检�
 
 下面每段从**当前工作树根目录**开始执行，按任务选取，不需要逐段全跑。依赖已按锁文件安装，Python 使用项目固定 Python 3.10/GDAL 环境或已有运行镜像。先核对本机实际版本和文件存在；`main` 可能尚未包含其他工作分支的实现。
 
+本机没有 Python 环境时，用运行镜像挂载当前工作树执行。注意必须先激活 conda 环境再跑 Python：直接 `--entrypoint python` 启动会缺少 PROJ/GDAL 资源路径，所有 CRS 相关用例（空间预览、底图、shp 导出等）会集体误报失败（2026-09-07 实测：同一代码激活后由 9 处误报转为全绿）。
+
+```powershell
+docker run --rm --entrypoint bash `
+  -v "<工作树根目录>:/app" yunnan-runtime:current `
+  -c "source /opt/conda/etc/profile.d/conda.sh && conda activate MMSeg310 && cd /app/backend && python -B -m unittest test_project_read_models test_project_api -v"
+```
+
+两点边界：推理权重与 `miner/yunnan.kml` 等运行资产不入库，跑 `test_inference_runner`、`test_yunnan_project_seed` 需额外只读挂载宿主机对应资产；web 镜像不含 mmseg，也没有 PowerShell 与 docker compose CLI，全量 `discover` 时 `backend/model/custom_models` 会导入失败、若干契约用例跳过，属预期而非回归。
+
 Miner 测试、BFF 语法与构建：
 
 ```powershell

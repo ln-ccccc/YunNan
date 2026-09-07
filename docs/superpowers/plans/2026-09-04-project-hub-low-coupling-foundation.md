@@ -14,7 +14,11 @@
 >
 > 2026-09-07 重验记录：6 个 fixture JSON 解析通过；miner 全量 `node --test` 60/60 通过（含 projectRoutes 13 项与 projectWorkspace 纯 JS 层全部用例）；`npm run build` 通过；`node --check server.js` 通过。
 >
-> 复选框回填口径：实现、测试编写与提交类步骤按现有产物勾选；命令执行类步骤仅在同命令可重跑或属于红灯流程（由提交顺序推定）时勾选。**保留未勾的运行类步骤（Task 2 Step 3、Task 3 Step 5、Task 4 Step 2/Step 6、Task 5 Step 2/Step 6、Task 6 Step 2/Step 6、Task 8 Step 6）涉及后端 unittest 执行，缺少执行记录且本机无 Flask/GDAL 无法重跑，需在容器或固定 Python 3.10/GDAL 环境补跑后再勾选。** Task 8 Step 5 的编译与 Node 回归已重验，但其 Expected 中的浏览器手工验收无记录，仍待执行。底部「完工验收清单」整体留待负责人逐项验收。
+> 2026-09-07 容器重验（镜像 `yunnan-runtime:current`，Python 3.10.20 / GDAL 3.13.0，挂载本工作树至 `/app`，`conda activate MMSeg310` 后执行）：单文件 `test_project_read_models` 17/17；项目族五文件（`test_project_read_models test_project_api test_project_spatial test_project_map test_project_inference_results`，即 Task 8 Step 6 命令）80/80 全绿。注意：绕过 conda 激活直接启动 python 会因缺少 PROJ 资源路径产生 9 处 CRS 误报，激活后全部消失；可用命令已写入 [开发规范第 7 节](../../development-standard.md)。
+>
+> 同日全量 `unittest discover` 299 例：288 通过、10 例条件性跳过（web 镜像无 PowerShell/docker compose CLI、Linux 大小写敏感，均为预期）、7 例失败已逐一定责——2 例为运行资产未挂载（权重与 `yunnan.kml`，只读挂载宿主机资产后实测通过）、2 例为 Windows CRLF 检出导致 bash 契约用例在 Linux 下误报、1 例为 web 镜像无 mmseg 时 `model/custom_models` 发现失败（该测试属 worker 镜像）、2 例为**真实测试漂移且 `main` 上即已失败**：`test_inference_runner` 的 mock publisher 缺少矢量化引入的 `classification_results` 字段（生产代码正确，见 `72d5764`），`test_inference_image_contract` 对 `image_bundle.env` 的 `APP_IMAGE` 期望值仍是旧的 `geoview-runtime:split-clean`（实际为 `yunnan-runtime:current`）。
+>
+> 复选框回填口径：实现、测试编写与提交类步骤按现有产物勾选；命令执行类步骤在同命令可重跑并实测通过后勾选。Task 3 Step 5、Task 4 Step 6、Task 5 Step 6、Task 6 Step 6、Task 8 Step 6 已于 2026-09-07 在容器内按上述记录实测通过并勾选。**Task 2 Step 3、Task 4 Step 2、Task 5 Step 2、Task 6 Step 2 为历史红灯步骤，实现落地后无法复现红灯，保持未勾，由提交顺序（`3ce81c0` 早于 `578181b`）作为过程证据。** Task 8 Step 5 的浏览器手工验收无记录，仍待执行。底部「完工验收清单」整体留待负责人逐项验收。
 
 ---
 
@@ -392,7 +396,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   `build_project_counts` 对 `ProjectSpatialJob` 和 `InferenceJob` 均按 `project_id` 过滤，`queued_jobs` 与 `running_jobs` 分开。
 
-- [ ] **Step 5: 运行后端 Read Model 测试并修复到全绿。**
+- [x] **Step 5: 运行后端 Read Model 测试并修复到全绿。**
 
   Run:
 
@@ -602,7 +606,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   每个 fake `projectApi` 必须断言 BFF 未排序 `checks`、`blockers`、`next_actions`，并把后端的 400/404 原样返回；仅网络异常才转换为 502。
 
-- [ ] **Step 6: 执行接口与 BFF 回归。**
+- [x] **Step 6: 执行接口与 BFF 回归。**
 
   Run:
 
@@ -717,7 +721,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   const payload = { ...(req.body || {}) };
   ```
 
-- [ ] **Step 6: 运行存储安全与恢复回归。**
+- [x] **Step 6: 运行存储安全与恢复回归。**
 
   Run:
 
@@ -848,7 +852,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
   }
   ```
 
-- [ ] **Step 6: 运行活动回归并提交。**
+- [x] **Step 6: 运行活动回归并提交。**
 
   ```powershell
   Set-Location D:\项目\YunNan\backend
@@ -1140,7 +1144,7 @@ spatial/inference job.status: queued | running | succeeded | failed | cancelled
 
   Expected: 所有 Node 测试和 Vite build 通过；`App.vue` 无需改动；浏览器手工验收项目切换、失败资产、空间任务失败、导出、配置快照恢复与错误态。
 
-- [ ] **Step 6: 执行后端完整相关回归。**
+- [x] **Step 6: 执行后端完整相关回归。**
 
   Run（固定 Python 3.10/GDAL 环境或 backend 运行镜像内执行）:
 
