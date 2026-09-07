@@ -164,6 +164,13 @@ export function createProjectRoutes({
 
   router.post('/:projectId/datasets', async (req, res) => {
     try {
+      if (Object.hasOwn(req.body || {}, 'file_path')) {
+        return res.status(422).json({
+          success: false,
+          code: 1,
+          msg: '不支持指定服务端文件路径，请移除 file_path',
+        });
+      }
       relayJson(res, await projectApi.createProjectDataset(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
       res.status(502).json({ success: false, code: 1, msg: error?.message || String(error) });

@@ -252,6 +252,57 @@ test('createProjectRoutes rejects browser output_dir before calling export upstr
   });
 });
 
+test('createProjectRoutes rejects browser file_path before calling dataset upstream', async () => {
+  const calls = { createProjectDataset: 0, request: 0 };
+  const router = createProjectRoutes({
+    projectApi: {
+      async createProjectDataset() {
+        calls.createProjectDataset += 1;
+        return { status: 200, body: { success: true, code: 0, data: { id: 21 } } };
+      },
+      async request() {
+        calls.request += 1;
+        return { status: 200, body: { success: true, code: 0, data: {} } };
+      },
+    },
+  });
+
+  const response = await withServer(router, '/8/datasets', {
+    method: 'POST',
+    headers: { cookie: 'admin_user_id=7', 'content-type': 'application/json' },
+    body: JSON.stringify({ display_name: '影像', dataset_kind: 'imagery', file_path: 'D:/tmp.tif' }),
+  });
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), {
+    success: false,
+    code: 1,
+    msg: '不支持指定服务端文件路径，请移除 file_path',
+  });
+  assert.deepEqual(calls, { createProjectDataset: 0, request: 0 });
+});
+
+test('createProjectRoutes relays storage_key dataset registration unchanged', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async createProjectDataset(projectId, payload, cookie) {
+        calls.push({ projectId, payload, cookie });
+        return { status: 200, body: { success: true, code: 0, data: { id: 21 } } };
+      },
+    },
+  });
+
+  const payload = { display_name: '影像', dataset_kind: 'imagery', storage_key: 'incoming/2024/a.tif' };
+  const response = await withServer(router, '/8/datasets', {
+    method: 'POST',
+    headers: { cookie: 'admin_user_id=7', 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [{ projectId: '8', payload, cookie: 'admin_user_id=7' }]);
+});
+
 test('createProjectRoutes relays vector exports without BFF domain assembly', async () => {
   const calls = { detail: 0, request: 0, export: 0 };
   let exportPayload = null;
