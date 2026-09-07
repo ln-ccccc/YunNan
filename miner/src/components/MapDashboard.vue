@@ -95,7 +95,7 @@
 </template>
 
 <script setup>
-import { defineEmits, defineExpose, defineProps, nextTick, onMounted, ref } from 'vue';
+import { defineEmits, defineExpose, defineProps, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import 'leaflet/dist/leaflet.css';
 
 import TheHeader from './TheHeader.vue';
@@ -108,6 +108,7 @@ import TrendReportModal from './TrendReportModal.vue';
 
 import { useWeather } from '../composables/useWeather';
 import { useMineData } from '../composables/useMineData';
+import { createWindowResizeListener } from '../composables/windowResizeListener.js';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
 
 const props = defineProps({
@@ -137,6 +138,9 @@ const showTrendReportModal = ref(false);
 const selectedMine = ref({});
 const selectedTab = ref('NDVI');
 const mapContainerRef = ref(null);
+const resizeListener = createWindowResizeListener(() => {
+  mapContainerRef.value?.invalidateSize?.();
+});
 const imageryAssets = ref([]);
 const imageryAssetsLoading = ref(false);
 const imageryAssetsError = ref('');
@@ -295,10 +299,11 @@ const handleExportTrendReport = async (filters = {}) => {
 onMounted(() => {
   loadData();
   fetchRealtimeEnvironmentAt(25.6, 100.2);
+  resizeListener.attach();
+});
 
-  window.addEventListener('resize', () => {
-    mapContainerRef.value?.invalidateSize?.();
-  });
+onUnmounted(() => {
+  resizeListener.detach();
 });
 
 defineExpose({
