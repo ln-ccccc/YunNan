@@ -4,7 +4,7 @@
 
 开发或修改前请先阅读项目级 [AGENTS.md](./AGENTS.md)。项目的模块边界、状态模型和低耦合契约见 [docs/architecture/project-structure-and-low-coupling-contract-v1.md](./docs/architecture/project-structure-and-low-coupling-contract-v1.md)。
 
-新人从 [开发规范](docs/development-standard.md) 和 [新生与 Agent 协作手册](docs/agent-collaboration-guide.md) 开始：前者说明模块、性能目标、测试和 PR 要求，后者提供任务卡、验收与换 Agent 的示例。[agent.md](agent.md) 是其他 Agent 的手动接手入口。
+新人从 [开发规范](docs/development-standard.md) 和 [新生与 Agent 协作手册](docs/agent-collaboration-guide.md) 开始：前者说明模块、性能目标、测试和 PR 要求，后者提供职责与优先级、任务卡、Git/Docker/Agent/测试技能树、工具使用和交接示例。[agent.md](agent.md) 是其他 Agent 的手动接手入口。
 
 ## 目录
 
