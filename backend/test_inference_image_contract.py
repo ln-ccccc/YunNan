@@ -2113,7 +2113,8 @@ class InferenceWorkerEntrypointContractTest(unittest.TestCase):
         self.assertIn('export PATH="/opt/venv/bin:${PATH}"', text)
         self.assertIn("/opt/venv/bin/python /app/docker/wait-for-mysql.py", text)
         self.assertIn("exec /opt/venv/bin/python run_inference_worker.py", text)
-        self.assertNotRegex(text, r"(?i)\bconda\b")
+        # 意图是「不得调用 conda」：非注释行不得出现 conda 调用，注释中的说明文字不受限
+        self.assertNotRegex(text, r"(?im)^(?!\s*#).*\bconda\b")
 
 
 if __name__ == "__main__":
