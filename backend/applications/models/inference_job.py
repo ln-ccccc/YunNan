@@ -1,6 +1,11 @@
 import datetime
 
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
+
 from applications.extensions import db
+
+# 任务 result_json 会内嵌矢量成果 GeoJSON（实测可达 136KB），MySQL 用 MEDIUMTEXT
+LongJSON = db.Text().with_variant(MEDIUMTEXT(), "mysql")
 
 
 class InferenceJob(db.Model):
@@ -12,9 +17,9 @@ class InferenceJob(db.Model):
     requested_device = db.Column(db.String(32), nullable=False, default="auto")
     effective_device = db.Column(db.String(32))
     fallback_reason = db.Column(db.String(64))
-    warnings_json = db.Column(db.Text, nullable=False, default="[]")
-    request_payload_json = db.Column(db.Text, nullable=False)
-    result_json = db.Column(db.Text)
+    warnings_json = db.Column(LongJSON, nullable=False, default="[]")
+    request_payload_json = db.Column(LongJSON, nullable=False)
+    result_json = db.Column(LongJSON)
     error_code = db.Column(db.String(64))
     error_message = db.Column(db.Text)
     progress_current = db.Column(db.Integer, nullable=False, default=0)
@@ -40,7 +45,7 @@ class InferenceWorkerState(db.Model):
     requested_device = db.Column(db.String(32), nullable=False)
     effective_device = db.Column(db.String(32), nullable=False)
     fallback_reason = db.Column(db.String(64))
-    warnings_json = db.Column(db.Text, nullable=False, default="[]")
+    warnings_json = db.Column(LongJSON, nullable=False, default="[]")
     gpu_name = db.Column(db.String(255))
     compute_capability = db.Column(db.String(32))
     update_time = db.Column(

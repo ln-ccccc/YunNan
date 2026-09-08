@@ -1,6 +1,12 @@
 import datetime
 
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
+
 from applications.extensions import db
+
+# 矢量化 GeoJSON 实测可达 64KB 以上（MySQL TEXT 上限 65535 字节，实测 67KB 触发 1406），
+# MySQL 下统一使用 MEDIUMTEXT；SQLite 无此限制，variant 忽略
+LongJSON = db.Text().with_variant(MEDIUMTEXT(), "mysql")
 
 
 class ClassificationResult(db.Model):
@@ -14,11 +20,11 @@ class ClassificationResult(db.Model):
     model_id = db.Column(db.String(128), nullable=False)
     mine_resource_id = db.Column(db.Integer, nullable=False, index=True)
     mine_resource_version = db.Column(db.Integer)
-    roi_geometry_json = db.Column(db.Text)
+    roi_geometry_json = db.Column(LongJSON)
     label_path = db.Column(db.String(1024))
     auto_geojson_path = db.Column(db.String(1024))
-    auto_feature_collection_json = db.Column(db.Text)
-    current_feature_collection_json = db.Column(db.Text)
+    auto_feature_collection_json = db.Column(LongJSON)
+    current_feature_collection_json = db.Column(LongJSON)
     current_revision_no = db.Column(db.Integer)
     vector_status = db.Column(db.String(32), nullable=False, default="vector_failed", index=True)
     vector_error = db.Column(db.String(255))
@@ -56,7 +62,7 @@ class ClassificationRevision(db.Model):
     author = db.Column(db.String(255), nullable=False, default="system")
     feature_count = db.Column(db.Integer, nullable=False)
     snapshot_path = db.Column(db.String(1024), nullable=False)
-    feature_collection_json = db.Column(db.Text, nullable=False)
+    feature_collection_json = db.Column(LongJSON, nullable=False)
     create_time = db.Column(db.DateTime, default=datetime.datetime.now, nullable=False)
 
     __table_args__ = (
