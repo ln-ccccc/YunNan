@@ -1,5 +1,6 @@
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
@@ -32,6 +33,17 @@ def run_kml_roi_pipeline(
     tile_dir = work_dir / "tiles"
     mmseg_out_dir = work_dir / "mmseg_out"
 
+    # 逐阶段耗时（移植江西 fd63e09）：供容量评估与性能归因，随 summary 一并返回
+    stage_durations: Dict[str, float] = {}
+    stage_started = time.monotonic()
+    run_started = stage_started
+
+    def mark(stage: str) -> None:
+        nonlocal stage_started
+        now = time.monotonic()
+        stage_durations[stage] = round(now - stage_started, 3)
+        stage_started = now
+
     if not old_tif.exists() or not new_tif.exists():
         raise FileNotFoundError("old_tif or new_tif does not exist")
     if not kml_path.exists():
@@ -41,14 +53,18 @@ def run_kml_roi_pipeline(
     tile_dir.mkdir(parents=True, exist_ok=True)
     mmseg_out_dir.mkdir(parents=True, exist_ok=True)
     output_root.mkdir(parents=True, exist_ok=True)
+    mark("prep_dirs")
 
     def finish(summary):
         json.dumps(summary, ensure_ascii=False)
+        summary["stage_durations"] = dict(stage_durations)
+        summary["total_seconds"] = round(time.monotonic() - run_started, 3)
         if not keep_workdir:
             shutil.rmtree(work_dir, ignore_errors=True)
         return summary
 
     features = load_vector_features(kml_path)
+    mark("kml_load")
     bounds_4326 = raster_union_bounds_4326(old_tif, new_tif)
     features = filter_features_by_bounds(features, bounds_4326)
     if selected_fids is not None:
@@ -56,6 +72,7 @@ def run_kml_roi_pipeline(
         features = [(fid, geom) for fid, geom in features if str(fid).strip() in selected]
     if limit > 0:
         features = features[:limit]
+    mark("bounds_filter")
 
     if not features:
         return finish({"status": "no_features", "message": "No usable polygons in KML"})
@@ -69,6 +86,7 @@ def run_kml_roi_pipeline(
         old_year=old_year or None,
         new_year=new_year or None,
     )
+    mark("tiles")
     if not matched_fids:
         return finish({
             "status": "completed",
@@ -84,6 +102,7 @@ def run_kml_roi_pipeline(
         file_names=file_names,
         device=device,
     )
+    mark("inference")
     dist = distribute_outputs(
         matched_fids,
         mmseg_out_dir,
@@ -92,6 +111,7 @@ def run_kml_roi_pipeline(
         tile_dir=tile_dir,
         staging_root=work_dir / "publish",
     )
+    mark("distribute")
     summary = {
         "status": derive_outcome_status(failed_tiles, dist.get("written_fids", [])),
         "total_features": len(features),

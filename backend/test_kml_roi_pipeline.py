@@ -137,6 +137,52 @@ class TestKmlRoiPipeline(unittest.TestCase):
         loaded_features = prepare.call_args.args[2]
         self.assertEqual([fid for fid, _ in loaded_features], ["101"])
 
+    def test_pipeline_reports_stage_durations_in_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            old_tif, new_tif, vector_path = self._paths(root)
+            with (
+                patch(
+                    "applications.kml_roi.pipeline.raster_union_bounds_4326",
+                    return_value=(99, 24, 102, 27),
+                ),
+                patch(
+                    "applications.kml_roi.pipeline.filter_features_by_bounds",
+                    side_effect=lambda features, _: features,
+                ),
+                patch(
+                    "applications.kml_roi.pipeline.prepare_tiles",
+                    Mock(return_value=(["101"], ["101+2022_tile.png"], {"101": [{"dst_base": "101+2022"}]})),
+                ),
+                patch(
+                    "applications.kml_roi.pipeline.distribute_outputs",
+                    return_value={
+                        "written_fids": 1,
+                        "written_fid_list": ["101"],
+                        "missing_fids": [],
+                    },
+                ),
+            ):
+                result = run_kml_roi_pipeline(
+                    old_tif=old_tif,
+                    new_tif=new_tif,
+                    kml_path=vector_path,
+                    output_root=root / "outputs",
+                    work_dir=root / "work",
+                    model_id="cc-ln/CUGRS",
+                    device="cpu",
+                    year="2022",
+                    keep_workdir=True,
+                    tile_runner=Mock(return_value=([], {})),
+                )
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(
+            set(result["stage_durations"]),
+            {"prep_dirs", "kml_load", "bounds_filter", "tiles", "inference", "distribute"},
+        )
+        self.assertGreaterEqual(result["total_seconds"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
