@@ -51,7 +51,7 @@ from applications.project_hub.spatial_state import serialize_project_spatial_sta
 
 ALLOWED_PROJECT_STATUSES = {"draft", "active", "completed", "archived"}
 ALLOWED_DATASET_KINDS = {"imagery", "inference_result", "report", "export_package", "mine_indices"}
-ALLOWED_EXPORT_FORMATS = {"geojson", "csv", "shp"}
+ALLOWED_EXPORT_FORMATS = {"geojson", "csv", "shp", "xlsx"}
 ACTION_CODE_BY_EVENT_TYPE = {
     "project_created": "PROJECT_CREATED",
     "project_updated": "PROJECT_UPDATED",
@@ -144,6 +144,12 @@ def _validate_incoming_tiff_storage_key(value):
     if not source_path.is_file():
         raise ProjectStorageValidationError("storage_key 指向的文件不存在")
     return source_path.relative_to(storage_root).as_posix(), source_format
+
+
+def _write_xlsx(path, project, project_id=None, record_id=None):
+    from applications.project_hub.ledger import build_project_ledger_workbook
+
+    path.write_bytes(build_project_ledger_workbook(project).read())
 
 
 def _storage_key(*parts):
@@ -1039,7 +1045,7 @@ def create_export(project_id, payload, actor="system"):
         )
         raise
 
-    suffix = {"geojson": ".geojson", "csv": ".csv", "shp": ".zip"}[export_format]
+    suffix = {"geojson": ".geojson", "csv": ".csv", "shp": ".zip", "xlsx": ".xlsx"}[export_format]
     artifact_name = f"artifact{suffix}"
     artifact_key = _storage_key("projects", str(project_identifier), "exports", str(record_id), artifact_name)
     export_features = []
@@ -1066,6 +1072,14 @@ def create_export(project_id, payload, actor="system"):
             _write_artifact_atomic(
                 target_path,
                 _write_csv,
+                project,
+                project_id=project_identifier,
+                record_id=record_id,
+            )
+        elif export_format == "xlsx":
+            _write_artifact_atomic(
+                target_path,
+                _write_xlsx,
                 project,
                 project_id=project_identifier,
                 record_id=record_id,

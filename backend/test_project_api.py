@@ -784,6 +784,21 @@ class TestProjectAPI(unittest.TestCase):
                 self.assertFalse(body["success"])
                 self.assertEqual(body["code"], 1)
 
+    def test_xlsx_export_builds_project_ledger_workbook(self):
+        self.login_as_admin()
+        project_id = self._create_project("台账导出项目")
+
+        response = self.client.post(f"/api/projects/{project_id}/exports", json={"format": "xlsx"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._json(response)["code"], 0)
+        record = ProjectExportRecord.query.filter_by(project_id=project_id, format="xlsx").one()
+        artifact_path = self.storage_root / Path(record.file_path)
+        self.assertTrue(artifact_path.is_file())
+        self.assertEqual(artifact_path.read_bytes()[:2], b"PK")
+        manifest = self._read_export_manifest(project_id, record.id)
+        self.assertEqual(manifest["format"], "xlsx")
+        self.assertEqual(record.status, "completed")
+
     def test_csv_export_never_contains_legacy_dataset_file_path(self):
         self.login_as_admin()
         project_id = self._create_project("CSV 隐私回归项目")
