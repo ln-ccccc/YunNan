@@ -58,3 +58,4 @@ HOST_SHA256SUMS
 .env
 frontend/.env
 miner/.env
+docker-compose.local.yml
