@@ -609,17 +609,17 @@ class InferenceBuildWrapperContractTest(unittest.TestCase):
             line.split("=", 1)
             for line in meaningful_lines(IMAGE_BUNDLE_ENV)
         )
-        self.assertEqual(values["APP_IMAGE"], "geoview-runtime:split-clean")
+        self.assertEqual(values["APP_IMAGE"], "yunnan-runtime:current")
         self.assertEqual(
             values["MYSQL_IMAGE"],
             "registry.openanolis.cn/openanolis/mysql:8.0.30-8.6",
         )
-        self.assertEqual(values["APP_IMAGE_TAR"], "geoview_runtime_split_clean.tar")
+        self.assertEqual(values["APP_IMAGE_TAR"], "yunnan_runtime_current.tar")
         self.assertEqual(values["MYSQL_IMAGE_TAR"], "mysql_8.0.30-8.6.tar")
-        self.assertEqual(values["INFERENCE_IMAGE"], "geoview-runtime:gpu-cu128")
+        self.assertEqual(values["INFERENCE_IMAGE"], "yunnan-inference-worker:current")
         self.assertEqual(
             values["INFERENCE_IMAGE_TAR"],
-            "geoview_runtime_gpu_cu128.tar",
+            "yunnan_inference_worker_current.tar",
         )
 
     def test_bash_wrapper_rejects_equivalent_tags_before_docker(self):
