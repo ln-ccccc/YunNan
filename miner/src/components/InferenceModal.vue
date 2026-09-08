@@ -44,8 +44,8 @@
 
           <div class="modal-footer">
             <button class="btn-cancel" type="button" :disabled="running" @click="$emit('close')">取消</button>
-            <button class="btn-submit" type="button" :disabled="running || assetsLoading || !formData.datasetId" @click="handleSubmit">
-              {{ running ? '计算中…' : '开始地物分类' }}
+            <button class="btn-submit" type="button" data-testid="inference-submit" :disabled="running || assetsLoading || !formData.datasetId" @click="handleSubmit">
+              {{ running ? '正在计算…' : '确认开始推理' }}
             </button>
           </div>
         </div>
