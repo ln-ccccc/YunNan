@@ -263,10 +263,28 @@ class InferenceWorker:
         if job.cancel_requested:
             return self.job_store.finish_job(job, status="cancelled")
 
-        payload = json.loads(job.request_payload_json)
+        try:
+            payload = json.loads(job.request_payload_json)
+        except (TypeError, ValueError) as exc:
+            return self.job_store.finish_job(
+                job,
+                status="failed",
+                error_code="PAYLOAD_INVALID",
+                error_message=f"任务载荷不是合法 JSON：{exc}",
+            )
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         work_dir = self.runtime_root / str(job.id)
-        work_dir.mkdir(exist_ok=False)
+        try:
+            work_dir.mkdir(exist_ok=False)
+        except FileExistsError:
+            # 保守拒绝：残留目录可能来自上次异常退出，也可能是活跃任务的运行目录；
+            # 不做静默清理，交由人工排查，worker 本身继续服务后续任务
+            return self.job_store.finish_job(
+                job,
+                status="failed",
+                error_code="WORKDIR_CONFLICT",
+                error_message=f"任务运行目录已存在：{work_dir}",
+            )
         if hasattr(self.job_store, "set_job_workdir"):
             self.job_store.set_job_workdir(job, work_dir)
 
@@ -379,6 +397,21 @@ class InferenceWorker:
             self.active_job = None
             self.job_deadline = None
 
+    def _isolate_failed_job(self, job):
+        # 常驻 worker 不得被单个任务杀死（江西 EPIPE 修复的同类缺陷）：
+        # 尽力把任务落为 failed 终态后继续服务，异常与堆栈完整记日志
+        logger.exception("任务 %s 处理出现未捕获异常，已隔离该任务", getattr(job, "id", "?"))
+        try:
+            self.job_store.finish_job(
+                job,
+                status="failed",
+                effective_device=getattr(self.resolution, "effective", None),
+                error_code="WORKER_ISOLATED",
+                error_message="任务在流水线之外抛出未捕获异常，已被 worker 隔离",
+            )
+        except Exception:
+            logger.exception("隔离任务 %s 时写入终态失败", getattr(job, "id", "?"))
+
     def run_forever(self, should_stop=lambda: False):
         self.initialize()
         if hasattr(self.job_store, "recover_abandoned_jobs"):
@@ -397,4 +430,7 @@ class InferenceWorker:
             if job is None:
                 time.sleep(self.poll_interval)
                 continue
-            self.run_job(job)
+            try:
+                self.run_job(job)
+            except Exception:
+                self._isolate_failed_job(job)

@@ -378,6 +378,7 @@ class TestInferenceRunner(unittest.TestCase):
                         "after_img": "/after.png",
                     }
                 ],
+                "classification_results": [],
             }
         )
         job_store = Mock()
@@ -426,6 +427,132 @@ class TestInferenceRunner(unittest.TestCase):
         result = job_store.finish_job.call_args.kwargs["result"]
         self.assertEqual(result["routing"]["synced_fids"], [101])
         self.assertEqual(result["display_results"][0]["fid"], 101)
+
+    def test_run_forever_isolates_poisoned_job_and_keeps_serving(self):
+        worker_module = load_worker_module()
+        publisher = Mock(
+            return_value={
+                "synced_fids": [101],
+                "display_results": [
+                    {"fid": 101, "year": 2022, "before_img": "/b.png", "after_img": "/a.png"}
+                ],
+                "classification_results": [],
+            }
+        )
+        job_store = Mock()
+        poisoned = types.SimpleNamespace(
+            id="job-poison",
+            status="running",
+            cancel_requested=False,
+            request_payload_json="{not-valid-json",
+        )
+        good_payload = {
+            "project_id": 7,
+            "mine_fids": [101],
+            "year": "2022",
+            "old_tif_path": "old.tif",
+            "new_tif_path": "new.tif",
+            "kml_path": "mines.geojson",
+            "output_root": "project-output",
+        }
+        good = types.SimpleNamespace(
+            id="job-good",
+            status="running",
+            cancel_requested=False,
+            request_payload_json=json.dumps(good_payload),
+        )
+        queue = [poisoned, good, None]
+        claims = {"count": 0}
+
+        def claim_next_job(_worker_id):
+            index = claims["count"]
+            claims["count"] += 1
+            return queue[index] if index < len(queue) else None
+
+        job_store.claim_next_job.side_effect = claim_next_job
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = worker_module.InferenceWorker(
+                device_resolver=Mock(),
+                model_loader=Mock(),
+                inference_fn=Mock(),
+                pipeline_runner=Mock(
+                    return_value={
+                        "status": "succeeded",
+                        "written_fid_list": ["101"],
+                        "output_root": str(Path(temp_dir) / "job-good" / "staged_outputs"),
+                    }
+                ),
+                project_result_publisher=publisher,
+                job_store=job_store,
+                runtime_root=Path(temp_dir),
+                poll_interval=0,
+            )
+            worker.initialize = Mock()
+            worker.model = object()
+            worker.resolution = types.SimpleNamespace(
+                requested="cpu",
+                effective="cpu",
+                fallback_reason=None,
+                warnings=(),
+            )
+
+            worker.run_forever(should_stop=lambda: claims["count"] >= len(queue))
+
+        finished = {call.args[0].id: call.kwargs for call in job_store.finish_job.call_args_list}
+        self.assertEqual(finished["job-poison"]["status"], "failed")
+        self.assertEqual(finished["job-poison"]["error_code"], "PAYLOAD_INVALID")
+        self.assertEqual(finished["job-good"]["status"], "succeeded")
+        publisher.assert_called_once()
+
+    def test_workdir_conflict_marks_job_failed_and_preserves_existing_dir(self):
+        worker_module = load_worker_module()
+        job_store = Mock()
+        payload = {
+            "project_id": 7,
+            "mine_fids": [101],
+            "year": "2022",
+            "old_tif_path": "old.tif",
+            "new_tif_path": "new.tif",
+            "kml_path": "mines.geojson",
+            "output_root": "project-output",
+        }
+        job = types.SimpleNamespace(
+            id="job-conflict",
+            status="running",
+            cancel_requested=False,
+            request_payload_json=json.dumps(payload),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_root = Path(temp_dir)
+            existing = runtime_root / "job-conflict"
+            existing.mkdir()
+            marker = existing / "leftover.marker"
+            marker.write_text("keep", encoding="utf-8")
+            worker = worker_module.InferenceWorker(
+                device_resolver=Mock(),
+                model_loader=Mock(),
+                inference_fn=Mock(),
+                pipeline_runner=Mock(),
+                project_result_publisher=Mock(),
+                job_store=job_store,
+                runtime_root=runtime_root,
+            )
+            worker.model = object()
+            worker.resolution = types.SimpleNamespace(
+                requested="cpu",
+                effective="cpu",
+                fallback_reason=None,
+                warnings=(),
+            )
+
+            worker.run_job(job)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+
+        kwargs = job_store.finish_job.call_args.kwargs
+        self.assertEqual(kwargs["status"], "failed")
+        self.assertEqual(kwargs["error_code"], "WORKDIR_CONFLICT")
 
     def test_worker_honors_cpu_requested_by_single_job_and_restores_gpu_model(self):
         worker_module = load_worker_module()
