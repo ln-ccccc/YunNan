@@ -45,7 +45,11 @@ from applications.project_hub.readiness import (
     build_readiness,
 )
 from applications.project_hub.spatial_service import sanitize_public_geojson_value
-from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+from applications.project_hub.spatial_storage import (
+    SUPPORTED_INCOMING_RASTER_FORMATS,
+    get_storage_root,
+    resolve_storage_path,
+)
 from applications.project_hub.spatial_state import serialize_project_spatial_state
 
 
@@ -110,10 +114,6 @@ def _json_load(value, default):
         return json.loads(value)
     except Exception:
         return default
-
-
-# GDAL 可读的单文件栅格格式；ENVI 等需配套 header 的多文件格式暂不开放
-SUPPORTED_INCOMING_RASTER_FORMATS = {"tif", "tiff", "img", "jp2"}
 
 
 def _validate_incoming_tiff_storage_key(value):

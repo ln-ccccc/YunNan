@@ -9,9 +9,11 @@ from rasterio.errors import RasterioError
 from applications.models.project import Project, ProjectDataset
 from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.service import get_project_overview
-from applications.project_hub.service import SUPPORTED_INCOMING_RASTER_FORMATS
-from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
-
+from applications.project_hub.spatial_storage import (
+    SUPPORTED_INCOMING_RASTER_FORMATS,
+    get_storage_root,
+    resolve_storage_path,
+)
 
 class ProjectInferenceInputError(ValueError):
     """Raised when a project reference cannot safely start an inference job."""

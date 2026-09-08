@@ -13,8 +13,11 @@ from applications.models.project import (
     ProjectExportRecord,
 )
 from applications.models.project_spatial import ProjectSpatialResource
-from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
-
+from applications.project_hub.spatial_storage import (
+    SUPPORTED_INCOMING_RASTER_FORMATS,
+    get_storage_root,
+    resolve_storage_path,
+)
 
 VALID_ASSET_TYPES = (
     "mine_boundary",
@@ -256,10 +259,11 @@ def _dataset_asset(dataset, storage_root, result_ids, result_identities):
     temporal = _temporal_metadata(dataset.year_start, dataset.year_end)
 
     if dataset_kind == "imagery":
-        is_ready = candidate is not None and suffix in {"tif", "tiff"} and source_format in {
-            "tif",
-            "tiff",
-        }
+        is_ready = (
+            candidate is not None
+            and suffix in SUPPORTED_INCOMING_RASTER_FORMATS
+            and source_format in SUPPORTED_INCOMING_RASTER_FORMATS
+        )
         asset_status = "ready" if is_ready else "registered"
         return _asset(
             asset_id=f"imagery:{dataset.id}",

@@ -24,3 +24,6 @@ def ensure_storage_layout(storage_root=None):
     (root / "incoming").mkdir(parents=True, exist_ok=True)
     (root / "projects").mkdir(parents=True, exist_ok=True)
     return root
+
+# GDAL 可读的单文件栅格格式；ENVI 等需配套 header 的多文件格式暂不开放
+SUPPORTED_INCOMING_RASTER_FORMATS = {"tif", "tiff", "img", "jp2"}
