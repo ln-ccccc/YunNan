@@ -224,7 +224,7 @@ class TestProjectAPI(unittest.TestCase):
             {"storage_key": str(self.storage_root / "incoming" / "absolute.tif")},
             {"storage_key": "../incoming/escape.tif"},
             {"storage_key": "uploads/not-incoming.tif"},
-            {"storage_key": "incoming/not-a-tiff.img"},
+            {"storage_key": "incoming/not-supported.png"},
         ]
         for payload in invalid_payloads:
             with self.subTest(payload=payload):
@@ -254,6 +254,38 @@ class TestProjectAPI(unittest.TestCase):
         self.assertEqual(registration["asset_id"], f"imagery:{registration['id']}")
         self.assertEqual(registration["status"], "registered")
         self.assertNotIn("file_path", registration)
+
+    def test_dataset_registration_accepts_supported_raster_formats(self):
+        self.login_as_admin()
+        response = self.client.post(
+            "/api/projects",
+            json={"name": "多格式影像项目", "monitor_start_year": 2024, "monitor_end_year": 2025},
+        )
+        project_id = self._json(response)["data"]["id"]
+
+        for filename in ("multi-format.img", "multi-format.jp2", "multi-format.TIFF"):
+            with self.subTest(filename=filename):
+                storage_key = self._create_incoming_tif(filename)
+                response = self.client.post(
+                    f"/api/projects/{project_id}/datasets",
+                    json={
+                        "dataset_kind": "imagery",
+                        "display_name": f"多格式影像 {filename}",
+                        "storage_key": storage_key,
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(self._json(response)["code"], 0)
+
+        rejected = self.client.post(
+            f"/api/projects/{project_id}/datasets",
+            json={
+                "dataset_kind": "imagery",
+                "display_name": "不支持格式",
+                "storage_key": self._create_incoming_tif("multi-format.png"),
+            },
+        )
+        self.assertEqual(rejected.status_code, 422)
 
     def test_export_and_snapshot_reject_unsupported_request_fields(self):
         self.login_as_admin()

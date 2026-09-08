@@ -112,6 +112,10 @@ def _json_load(value, default):
         return default
 
 
+# GDAL 可读的单文件栅格格式；ENVI 等需配套 header 的多文件格式暂不开放
+SUPPORTED_INCOMING_RASTER_FORMATS = {"tif", "tiff", "img", "jp2"}
+
+
 def _validate_incoming_tiff_storage_key(value):
     storage_key = str(value or "").strip()
     path = Path(storage_key)
@@ -133,8 +137,10 @@ def _validate_incoming_tiff_storage_key(value):
     except ValueError as exc:
         raise ProjectStorageValidationError("storage_key 必须位于 incoming/ 目录") from exc
     source_format = source_path.suffix.lower().lstrip(".")
-    if source_format not in {"tif", "tiff"}:
-        raise ProjectStorageValidationError("storage_key 必须是 tif 或 tiff 文件")
+    if source_format not in SUPPORTED_INCOMING_RASTER_FORMATS:
+        raise ProjectStorageValidationError(
+            "storage_key 必须是受支持的栅格格式（tif/tiff/img/jp2）"
+        )
     if not source_path.is_file():
         raise ProjectStorageValidationError("storage_key 指向的文件不存在")
     return source_path.relative_to(storage_root).as_posix(), source_format

@@ -63,7 +63,7 @@ export function createProjectWorkspaceApi({ http = axios, baseUrl = '' } = {}) {
     registerDataset: (projectId, payload) => {
       const safePayload = rejectUnsafePathField(payload, 'file_path');
       if (!isSafeIncomingTiffStorageKey(safePayload.storage_key)) {
-        throw new Error('storage_key 必须是 incoming/ 目录下的相对 .tif 或 .tiff 文件');
+        throw new Error('storage_key 必须是 incoming/ 目录下的受支持栅格文件（tif/tiff/img/jp2）');
       }
       return data(http.post(url(`/api/projects/${projectId}/datasets`), safePayload));
     },

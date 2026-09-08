@@ -9,6 +9,7 @@ from rasterio.errors import RasterioError
 from applications.models.project import Project, ProjectDataset
 from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.service import get_project_overview
+from applications.project_hub.service import SUPPORTED_INCOMING_RASTER_FORMATS
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 
@@ -52,8 +53,10 @@ def _resolve_registered_tif(storage_root, file_path):
         tif_path.relative_to(incoming_root)
     except ValueError as exc:
         raise ProjectInferenceInputError("数据集影像路径必须位于 incoming/ 目录") from exc
-    if tif_path.suffix.lower() not in {".tif", ".tiff"}:
-        raise ProjectInferenceInputError("数据集影像必须是 tif 或 tiff 文件")
+    if tif_path.suffix.lower().lstrip(".") not in SUPPORTED_INCOMING_RASTER_FORMATS:
+        raise ProjectInferenceInputError(
+            "数据集影像必须是受支持的栅格格式（tif/tiff/img/jp2）"
+        )
     if not tif_path.is_file():
         raise ProjectInferenceInputError("数据集影像文件不存在或不是普通文件")
     return tif_path

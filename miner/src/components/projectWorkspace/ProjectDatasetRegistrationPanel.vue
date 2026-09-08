@@ -104,7 +104,7 @@ function submit() {
   localError.value = '';
   const storageKey = normalizeStorageKey(form.storage_key);
   if (!isSafeIncomingTiffStorageKey(storageKey)) {
-    localError.value = '请输入 incoming/ 目录下的相对 .tif 或 .tiff 影像键。';
+    localError.value = '请输入 incoming/ 目录下的受支持栅格影像键（tif/tiff/img/jp2）。';
     return;
   }
 

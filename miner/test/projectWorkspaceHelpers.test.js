@@ -35,11 +35,13 @@ test('buildMineSelectionSet returns bound mine fid values as strings', () => {
   assert.deepEqual(Array.from(selected.values()), ['101', '102']);
 });
 
-test('isSafeIncomingTiffStorageKey allows only relative TIF/TIFF files below incoming', () => {
+test('isSafeIncomingTiffStorageKey allows only supported raster files below incoming', () => {
   assert.equal(isSafeIncomingTiffStorageKey('incoming/2024/spring.tif'), true);
   assert.equal(isSafeIncomingTiffStorageKey('incoming\\2024\\spring.TIFF'), true);
   assert.equal(isSafeIncomingTiffStorageKey('incoming/../escape.tif'), false);
   assert.equal(isSafeIncomingTiffStorageKey('incoming//spring.tif'), false);
   assert.equal(isSafeIncomingTiffStorageKey('uploads/spring.tif'), false);
-  assert.equal(isSafeIncomingTiffStorageKey('incoming/spring.img'), false);
+  assert.equal(isSafeIncomingTiffStorageKey('incoming/spring.img'), true);
+  assert.equal(isSafeIncomingTiffStorageKey('incoming/spring.jp2'), true);
+  assert.equal(isSafeIncomingTiffStorageKey('incoming/spring.png'), false);
 });
