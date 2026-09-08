@@ -7,12 +7,29 @@ import json
 from openpyxl import Workbook
 
 from applications.models.classification_result import ClassificationResult
+from applications.models.inference_job import InferenceJob
 
 VECTOR_STATUS_LABELS = {
     "ready": "已出矢量",
     "ready_empty": "矢量空",
     "vector_failed": "矢量失败",
 }
+
+
+def _job_timings(inference_job_id):
+    """从关联推理任务的 result_json 取逐阶段计时（性能优化的数据来源）。"""
+    empty = (None, None)
+    if not inference_job_id:
+        return empty
+    job = InferenceJob.query.get(inference_job_id)
+    if job is None or not job.result_json:
+        return empty
+    try:
+        result = json.loads(job.result_json)
+        durations = result.get("stage_durations") or {}
+        return durations.get("inference"), result.get("total_seconds")
+    except (TypeError, ValueError):
+        return empty
 
 
 def _format_time(value):
@@ -41,12 +58,13 @@ def build_project_ledger_workbook(project):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "推理成果台账"
-    sheet.append(["成果ID", "矿山FID", "年份", "矢量化状态", "模型", "推理任务ID", "生成时间"])
+    sheet.append(["成果ID", "矿山FID", "年份", "矢量化状态", "模型", "推理任务ID", "生成时间", "推理耗时(秒)", "总耗时(秒)"])
 
     class_sheet = workbook.create_sheet("地类图斑统计")
     class_sheet.append(["成果ID", "矿山FID", "年份", "类别代码", "类别名称", "图斑数量"])
 
     for result in results:
+        inference_seconds, total_seconds = _job_timings(result.inference_job_id)
         sheet.append([
             result.id,
             result.mine_fid,
@@ -55,6 +73,8 @@ def build_project_ledger_workbook(project):
             result.model_id,
             result.inference_job_id,
             _format_time(result.create_time),
+            inference_seconds,
+            total_seconds,
         ])
         counts = {}
         order = []

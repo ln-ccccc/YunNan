@@ -799,6 +799,13 @@ class TestProjectAPI(unittest.TestCase):
         self.assertEqual(manifest["format"], "xlsx")
         self.assertEqual(record.status, "completed")
 
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(artifact_path)
+        header = [cell.value for cell in workbook["推理成果台账"][1]]
+        self.assertIn("推理耗时(秒)", header)
+        self.assertIn("总耗时(秒)", header)
+
     def test_csv_export_never_contains_legacy_dataset_file_path(self):
         self.login_as_admin()
         project_id = self._create_project("CSV 隐私回归项目")
