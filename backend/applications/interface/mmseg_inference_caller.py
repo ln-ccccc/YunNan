@@ -46,9 +46,9 @@ def get_model_paths(
 
 
 def _resolve_mmseg_python() -> List[str]:
+    # /home/livablecity/... 为江西服务器遗留路径，本机与容器均不存在，已移除
     candidate_paths = [
         "/opt/conda/envs/MMSeg310/bin/python",
-        "/home/livablecity/miniconda3/envs/MMSeg310/bin/python",
     ]
     for path in candidate_paths:
         if os.path.exists(path):
