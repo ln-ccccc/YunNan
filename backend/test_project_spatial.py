@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import json
 import datetime
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -561,6 +562,38 @@ class TestProjectSpatialState(unittest.TestCase):
         self.assertEqual(job.status, "queued")
         self.assertEqual(job.stage, "queued")
         self.assertIsNone(job.worker_id)
+
+    def test_run_forever_isolates_job_with_missing_resource_and_keeps_serving(self):
+        from applications.models.project_spatial import ProjectSpatialJob
+        from applications.project_hub import spatial_worker as worker_module
+
+        created = create_project({"name": "Isolate Test", "region": "昆明"})
+        db.session.add(
+            ProjectSpatialJob(
+                id="job-orphan",
+                project_id=created["id"],
+                resource_id=999999,
+                job_type="basemap_tiles",
+                status="queued",
+                stage="queued",
+            )
+        )
+        db.session.commit()
+
+        worker = worker_module.SpatialWorker(worker_id="test-worker", poll_seconds=0.001)
+        claims = {"count": 0}
+        original_claim = worker_module.claim_next_job
+
+        def counting_claim(worker_id):
+            claims["count"] += 1
+            return original_claim(worker_id)
+
+        with patch.object(worker_module, "claim_next_job", side_effect=counting_claim):
+            worker.run_forever(should_stop=lambda: claims["count"] >= 2)
+
+        fresh = ProjectSpatialJob.query.get("job-orphan")
+        self.assertEqual(fresh.status, "failed")
+        self.assertIn("隔离", fresh.error_message)
 
     def test_worker_generates_xyz_tile_and_activates_basemap(self):
         from applications.project_hub.spatial_service import register_basemap

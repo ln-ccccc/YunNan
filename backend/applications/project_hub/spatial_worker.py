@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging
 import math
 import os
 import shutil
@@ -11,6 +12,8 @@ from pathlib import Path
 from applications.extensions import db
 from applications.models.project import ProjectActivityLog
 from applications.models.project_spatial import ProjectSpatialJob, ProjectSpatialResource
+
+logger = logging.getLogger(__name__)
 from applications.project_hub.spatial_storage import ensure_storage_layout, resolve_storage_path
 
 
@@ -291,4 +294,31 @@ class SpatialWorker:
             if job is None:
                 time.sleep(self.poll_seconds)
                 continue
-            process_job(job, poll_seconds=min(1.0, self.poll_seconds))
+            try:
+                process_job(job, poll_seconds=min(1.0, self.poll_seconds))
+            except Exception:
+                # 常驻 worker 不得被单个任务杀死（与推理 worker 同一韧性约定）：
+                # 记完整堆栈、尽力把任务落为 failed 终态后继续服务
+                _isolate_failed_job(job)
+
+
+def _isolate_failed_job(job):
+    logger.exception("空间任务 %s 处理出现未捕获异常，已隔离该任务", getattr(job, "id", "?"))
+    try:
+        db.session.rollback()
+        fresh = ProjectSpatialJob.query.get(job.id)
+        if fresh is None or fresh.status in ("succeeded", "failed", "cancelled"):
+            return
+        now = datetime.datetime.now()
+        fresh.status = "failed"
+        fresh.stage = "failed"
+        fresh.error_message = "任务在切片流程之外抛出未捕获异常，已被 worker 隔离"
+        fresh.update_time = now
+        resource = ProjectSpatialResource.query.get(fresh.resource_id)
+        if resource is not None and resource.status == "processing":
+            resource.status = "failed"
+            resource.error_message = fresh.error_message
+        db.session.commit()
+    except Exception:
+        logger.exception("隔离空间任务 %s 时写入终态失败", getattr(job, "id", "?"))
+        db.session.rollback()
