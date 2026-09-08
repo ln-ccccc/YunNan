@@ -78,8 +78,8 @@ const goToGeoView = () => {
 <style scoped>
 .header {
   height: 60px;
-  background: rgba(10, 25, 41, 0.85);
-  backdrop-filter: blur(10px);
+  /* 同 LeftSidebar：移除 backdrop-filter 避免 GPU 合成伪影 */
+  background: rgba(10, 25, 41, 0.97);
   border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;

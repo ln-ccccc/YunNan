@@ -133,8 +133,9 @@ const emitSearch = () => emit('search');
 <style scoped>
 .sidebar {
   width: 286px;
-  background: rgba(10, 25, 41, 0.78);
-  backdrop-filter: blur(15px);
+  /* 去除 backdrop-filter：其 GPU 合成层在内嵌浏览器/低配 GPU 上会触发整页渲染
+     伪影（2026-09-09 实测截图平铺、截图超时），提高不透明度保持观感 */
+  background: rgba(10, 25, 41, 0.97);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
