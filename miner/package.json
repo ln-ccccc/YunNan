@@ -10,8 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "test": "node --test",
-    "preview": "vite preview",
-    "import:ndvi": "node scripts/import_ndvi.js"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@mapbox/togeojson": "^0.16.2",
