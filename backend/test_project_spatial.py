@@ -595,6 +595,92 @@ class TestProjectSpatialState(unittest.TestCase):
         self.assertEqual(fresh.status, "failed")
         self.assertIn("隔离", fresh.error_message)
 
+    def test_activating_basemap_keeps_two_most_recent_retained_resources(self):
+        import tempfile
+
+        from applications.models.project_spatial import ProjectSpatialJob
+        from applications.project_hub.spatial_worker import _activate_basemap
+
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        storage_root = Path(temp_dir.name)
+        created = create_project({"name": "保留保护项目", "region": "洱源"})
+        db.session.add(
+            ProjectSpatialResource(
+                project_id=created["id"],
+                resource_type="mine_vector",
+                version=1,
+                status="active",
+                source_path=f"projects/{created['id']}/mines/1/source.geojson",
+                source_format="geojson",
+            )
+        )
+        db.session.flush()
+
+        resources = {}
+        for version in (1, 2, 3):
+            resource = ProjectSpatialResource(
+                project_id=created["id"],
+                resource_type="basemap",
+                version=version,
+                status="retained",
+                source_path=f"projects/{created['id']}/basemaps/{{resource.id}}/source.tif",
+                tile_path=f"projects/{created['id']}/tiles/{{resource.id}}",
+                source_format="tif",
+                min_zoom=8,
+                max_zoom=15,
+            )
+            db.session.add(resource)
+            db.session.flush()
+            resources[version] = resource
+            resource.tile_path = f"projects/{created['id']}/tiles/{resource.id}"
+            resource.source_path = f"projects/{created['id']}/basemaps/{resource.id}/source.tif"
+            tile_dir = storage_root / resource.tile_path
+            (tile_dir / "9" / "500").mkdir(parents=True, exist_ok=True)
+            (tile_dir / "9" / "500" / "300.png").write_bytes(b"png")
+            source_dir = storage_root / "projects" / str(created["id"]) / "basemaps" / str(resource.id)
+            source_dir.mkdir(parents=True, exist_ok=True)
+            (source_dir / "source.tif").write_bytes(b"II*")
+
+        new_resource = ProjectSpatialResource(
+            project_id=created["id"],
+            resource_type="basemap",
+            version=4,
+            status="processing",
+            source_path="projects/kept/basemaps/kept/source.tif",
+            tile_path="projects/kept/tiles/kept",
+            source_format="tif",
+            min_zoom=8,
+            max_zoom=15,
+        )
+        db.session.add(new_resource)
+        db.session.flush()
+        kept_tile_dir = storage_root / "projects" / "kept" / "tiles" / "kept"
+        kept_tile_dir.mkdir(parents=True, exist_ok=True)
+        job = ProjectSpatialJob(
+            id="job-keep-two",
+            project_id=created["id"],
+            resource_id=new_resource.id,
+            job_type="basemap_tiles",
+            status="running",
+            stage="tiling",
+        )
+        db.session.add(job)
+        db.session.commit()
+
+        _activate_basemap(job, new_resource, storage_root)
+
+        self.assertEqual(new_resource.status, "active")
+        self.assertEqual(resources[3].status, "retained")
+        self.assertEqual(resources[2].status, "retained")
+        self.assertIsNone(
+            ProjectSpatialResource.query.get(resources[1].id),
+            "仅最旧的历史底图应被清理，最近两个必须保留",
+        )
+        self.assertFalse((storage_root / resources[1].tile_path).exists())
+        self.assertTrue((storage_root / resources[2].tile_path).exists())
+        self.assertTrue((storage_root / resources[3].tile_path).exists())
+
     def test_worker_generates_xyz_tile_and_activates_basemap(self):
         from applications.project_hub.spatial_service import register_basemap
         from applications.project_hub.spatial_worker import claim_next_job, process_job

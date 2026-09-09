@@ -14,6 +14,9 @@ from applications.models.project import ProjectActivityLog
 from applications.models.project_spatial import ProjectSpatialJob, ProjectSpatialResource
 
 logger = logging.getLogger(__name__)
+
+# 激活新底图时保留的历史底图数量（不含当前激活的那一张）
+RETAINED_BASEMAP_KEEP = 2
 from applications.project_hub.spatial_storage import ensure_storage_layout, resolve_storage_path
 
 
@@ -217,7 +220,10 @@ def _activate_basemap(job, resource, storage_root):
     for previous in previous_active:
         if previous.tile_path:
             previous_markers.append(resolve_storage_path(storage_root, previous.tile_path) / ".active")
-    for obsolete in retained[1:]:
+    # 历史底图保护：只清理超出保留数量的最旧资源，保留最近 2 个历史底图。
+    # 原逻辑 retained[1:] 会在每次激活时把更早的历史底图连库记录、原图与瓦片
+    # 一起永久删除——生产上 10GB 级原图被静默清除是事故（2026-09-09 上线前实测）。
+    for obsolete in retained[RETAINED_BASEMAP_KEEP:]:
         obsolete_dirs.extend(
             [
                 storage_root / "projects" / str(obsolete.project_id) / "basemaps" / str(obsolete.id),
