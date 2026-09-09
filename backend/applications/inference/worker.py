@@ -51,6 +51,7 @@ def _default_inference_fn(
     file_names,
     progress_callback=None,
     should_cancel=None,
+    batch_size=1,
 ):
     from applications.interface.mmseg_segmentation import run_inference_with_model
 
@@ -61,6 +62,7 @@ def _default_inference_fn(
         file_names=file_names,
         progress_callback=progress_callback,
         should_cancel=should_cancel,
+        batch_size=batch_size,
     )
 
 
@@ -73,6 +75,7 @@ def run_loaded_mmseg_tiles(
     file_names,
     progress_callback=None,
     should_cancel=None,
+    batch_size=1,
     **_,
 ):
     details = inference_fn(
@@ -82,6 +85,7 @@ def run_loaded_mmseg_tiles(
         file_names=file_names,
         progress_callback=progress_callback,
         should_cancel=should_cancel,
+        batch_size=batch_size,
     )
     results = {item.get("input_name"): item for item in details.get("results", [])}
     failed_tiles = []
@@ -116,6 +120,7 @@ class InferenceWorker:
         job_timeout_seconds=3600,
         poll_interval=1.0,
         worker_id=None,
+        inference_batch_size=1,
     ):
         if job_store is None:
             from applications.inference import jobs as job_store
@@ -136,6 +141,10 @@ class InferenceWorker:
         self.keep_failed_workdir = bool(keep_failed_workdir)
         self.job_timeout_seconds = max(0, int(job_timeout_seconds or 0))
         self.poll_interval = float(poll_interval)
+        try:
+            self.inference_batch_size = max(1, int(inference_batch_size or 1))
+        except (TypeError, ValueError):
+            self.inference_batch_size = 1
         self.worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}"
         self.resolution = None
         self.model = None
@@ -206,6 +215,7 @@ class InferenceWorker:
             inference_fn=self.inference_fn,
             progress_callback=progress_callback,
             should_cancel=should_cancel,
+            batch_size=self.inference_batch_size,
             **kwargs,
         )
 

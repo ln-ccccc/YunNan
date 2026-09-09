@@ -156,99 +156,151 @@ def run_inference_with_model(
     opacity: float = 0.3,
     progress_callback=None,
     should_cancel=None,
+    batch_size: int = 1,
+    forward_fn=None,
 ) -> dict:
     """
-    运行 MMSegmentation 推理
-    
+    运行 MMSegmentation 推理（支持瓦片批量前向）。
+
     Args:
         model: 已初始化的 MMSeg 模型
         input_dir: 输入图片目录
         output_dir: 输出目录
         file_names: 待处理文件名列表
         opacity: 叠加透明度
-    
+        batch_size: 每次前向的瓦片数量；1 为逐张（原行为）。>1 时同批瓦片
+            一次前向，GPU 显存占用随批线性增加，需实测显存上限。
+        forward_fn: 覆盖默认 mmseg 推理调用（测试注入用）；
+            签名 forward_fn(model, imgs)，imgs 为列表时返回结果列表。
+
     Returns:
         推理结果字典
     """
-    from mmseg.apis import inference_model
-    
+    if forward_fn is None:
+        from mmseg.apis import inference_model as forward_fn
+
+    try:
+        batch_size = max(1, int(batch_size or 1))
+    except (TypeError, ValueError):
+        batch_size = 1
+
     os.makedirs(output_dir, exist_ok=True)
-    
+
     results = []
-    
-    for index, filename in enumerate(file_names, start=1):
-        if should_cancel is not None and should_cancel():
-            raise RuntimeError("INFERENCE_CANCELLED")
-        try:
-            img_path = os.path.join(input_dir, filename)
-            
-            # 加载图像
-            img_array = load_rs_image_with_gdal(img_path, to_float32=True)
+    total = len(file_names)
+    processed = 0
+
+    def _progress():
+        nonlocal processed
+        processed += 1
+        if progress_callback is not None:
+            progress_callback(processed, total)
+
+    def _render(img_array, pred_mask, filename):
+        pred = pred_mask.astype(np.uint8)
+        color_mask = colorize_mask(pred)
+        if len(img_array.shape) == 3 and img_array.shape[2] >= 3:
+            img_rgb = img_array[:, :, :3]
+            if img_rgb.max() > 1:
+                img_rgb = img_rgb / img_rgb.max() * 255
+            img_bgr = img_rgb[:, :, ::-1].astype(np.uint8)
+            overlay = cv2.addWeighted(img_bgr, opacity, color_mask, 1 - opacity, 0)
+        else:
+            overlay = color_mask
+        base_name = os.path.splitext(filename)[0]
+        out_name = f"pred_{base_name}.png"
+        cv2.imwrite(os.path.join(output_dir, out_name), overlay)
+        mask_name = f"mask_{base_name}.png"
+        cv2.imwrite(os.path.join(output_dir, mask_name), pred)
+        return {
+            "input_name": filename,
+            "name": out_name,
+            "output_name": out_name,
+            "mask_name": mask_name,
+            "status": "success",
+        }
+
+    for chunk_start in range(0, total, batch_size):
+        chunk = file_names[chunk_start:chunk_start + batch_size]
+
+        # 1. 组批加载：坏瓦片单独记录错误，不进入批次
+        imgs, names, failed = [], [], {}
+        for filename in chunk:
+            if should_cancel is not None and should_cancel():
+                raise RuntimeError("INFERENCE_CANCELLED")
+            img_array = load_rs_image_with_gdal(os.path.join(input_dir, filename), to_float32=True)
             if img_array is None:
+                failed[filename] = {
+                    "input_name": filename,
+                    "name": filename,
+                    "status": "error",
+                    "error": "Failed to load image",
+                }
+            else:
+                imgs.append(img_array)
+                names.append(filename)
+
+        # 2. 批量前向；整批失败时降级为逐张重试，坏瓦片单独报错不拖累好瓦片
+        det_outputs = None
+        if imgs:
+            try:
+                det = forward_fn(model, imgs)
+                det_list = list(det) if isinstance(det, (list, tuple)) else [det]
+                if len(det_list) != len(imgs):
+                    raise RuntimeError(f"批量前向返回数量不符: {len(det_list)} != {len(imgs)}")
+                det_outputs = det_list
+            except Exception as exc:
+                print(f"[MMSeg] 批量前向失败（{len(imgs)} 张），降级为逐张重试: {exc}", file=sys.stderr)
+                det_outputs = []
+                for name, img in zip(names, imgs):
+                    if should_cancel is not None and should_cancel():
+                        raise RuntimeError("INFERENCE_CANCELLED")
+                    try:
+                        det_outputs.append(forward_fn(model, img))
+                    except Exception as single_exc:
+                        det_outputs.append({
+                            "input_name": name,
+                            "name": name,
+                            "status": "error",
+                            "error": str(single_exc),
+                        })
+
+        # 3. 统一后处理：按原始顺序对齐（加载失败的直接落错误条目）
+        img_by_name = dict(zip(names, imgs))
+        for filename in chunk:
+            if should_cancel is not None and should_cancel():
+                raise RuntimeError("INFERENCE_CANCELLED")
+            if filename in failed:
+                results.append(failed[filename])
+                print(f"[MMSeg] Error processing {filename}: Failed to load image", file=sys.stderr)
+                _progress()
+                continue
+            det = det_outputs[names.index(filename)]
+            if isinstance(det, dict) and det.get("status") == "error":
+                results.append(det)
+                print(f"[MMSeg] Error processing {filename}: {det.get('error')}", file=sys.stderr)
+                _progress()
+                continue
+            try:
+                pred_mask = det.pred_sem_seg.data[0].cpu().numpy()
+                rendered = _render(img_by_name[filename], pred_mask, filename)
+                results.append(rendered)
+                print(f"[MMSeg] Processed: {filename} -> {rendered['name']}", file=sys.stderr)
+            except Exception as e:
                 results.append({
                     "input_name": filename,
                     "name": filename,
                     "status": "error",
-                    "error": "Failed to load image"
+                    "error": str(e),
                 })
-                continue
-            
-            # 运行推理
-            result = inference_model(model, img_array)
-            pred_mask = result.pred_sem_seg.data[0].cpu().numpy().astype(np.uint8)
-            
-            # 生成彩色掩码
-            color_mask = colorize_mask(pred_mask)
-            
-            # 叠加原图和掩码
-            if len(img_array.shape) == 3 and img_array.shape[2] >= 3:
-                # 取前三个波段作为 RGB
-                img_rgb = img_array[:, :, :3]
-                if img_rgb.max() > 1:
-                    img_rgb = img_rgb / img_rgb.max() * 255
-                img_bgr = img_rgb[:, :, ::-1].astype(np.uint8)
-                overlay = cv2.addWeighted(img_bgr, opacity, color_mask, 1 - opacity, 0)
-            else:
-                overlay = color_mask
-            
-            # 保存结果
-            base_name = os.path.splitext(filename)[0]
-            out_name = f"pred_{base_name}.png"
-            out_path = os.path.join(output_dir, out_name)
-            cv2.imwrite(out_path, overlay)
-            
-            # 同时保存原始掩码（用于后续分析）
-            mask_name = f"mask_{base_name}.png"
-            mask_path = os.path.join(output_dir, mask_name)
-            cv2.imwrite(mask_path, pred_mask)
-            
-            results.append({
-                "input_name": filename,
-                "name": out_name,
-                "output_name": out_name,
-                "mask_name": mask_name,
-                "status": "success"
-            })
-            
-            print(f"[MMSeg] Processed: {filename} -> {out_name}", file=sys.stderr)
-            
-        except Exception as e:
-            results.append({
-                "input_name": filename,
-                "name": filename,
-                "status": "error", 
-                "error": str(e)
-            })
-            print(f"[MMSeg] Error processing {filename}: {e}", file=sys.stderr)
-        finally:
-            if progress_callback is not None:
-                progress_callback(index, len(file_names))
-    
+                print(f"[MMSeg] Error processing {filename}: {e}", file=sys.stderr)
+            _progress()
+
     return {
         "status": "completed",
         "total": len(file_names),
         "success": sum(1 for r in results if r.get("status") == "success"),
-        "results": results
+        "results": results,
     }
 
 

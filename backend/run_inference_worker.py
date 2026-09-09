@@ -33,6 +33,7 @@ def main():
         allow_cpu_fallback=app.config.get("INFERENCE_CPU_FALLBACK", True),
         keep_failed_workdir=app.config.get("INFERENCE_KEEP_FAILED_WORKDIR", True),
         job_timeout_seconds=app.config.get("INFERENCE_JOB_TIMEOUT_SECONDS", 3600),
+        inference_batch_size=app.config.get("INFERENCE_BATCH_SIZE", 1),
     )
 
     with app.app_context():
