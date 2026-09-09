@@ -1,5 +1,8 @@
 # Runtime archives and restored Docker assets
 images/
+# README 界面截图属文档资产，保留入库
+!docs/images/
+!docs/images/**
 volumes/
 volume_backups_before_restore_*/
 logs/
