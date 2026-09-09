@@ -180,6 +180,12 @@ onUnmounted(() => {
   height: 100vh;
 }
 
+/* 工作台是长页面：超出视口的部分在工作台外壳内纵向滚动。
+   地图视图保持满屏不滚（仪表盘布局），body 全局隐藏溢出不变。 */
+.workspace-shell {
+  overflow-y: auto;
+}
+
 .loading-shell {
   width: 100vw;
   height: 100vh;
