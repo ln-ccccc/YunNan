@@ -219,7 +219,7 @@ function formatYearRange(startYear, endYear) {
 .summary-card small,
 .muted-text,
 .empty-block {
-  color: #5d6f6d;
+  color: #6e6e73;
 }
 
 .check-list {
@@ -237,7 +237,7 @@ function formatYearRange(startYear, endYear) {
   gap: 8px;
   border-radius: 10px;
   padding: 10px;
-  background: #f8fcfa;
+  background: #f5f5f7;
 }
 
 button {
@@ -249,14 +249,14 @@ button {
 
 .secondary-btn {
   border: 1px solid rgba(47, 122, 104, 0.24);
-  background: #eaf6f1;
-  color: #1f5c4d;
+  background: rgba(10, 125, 92, 0.08);
+  color: #086a4f;
 }
 
 .ghost-btn {
   border: none;
   background: transparent;
-  color: #2f7a68;
+  color: #0a7d5c;
 }
 
 .success-text {

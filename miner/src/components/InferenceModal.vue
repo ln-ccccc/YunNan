@@ -129,27 +129,27 @@ function handleSubmit() {
 
 <style scoped>
 .modal-overlay { position: fixed; inset: 0; z-index: 4000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.7); }
-.modal-content { width: min(550px, calc(100vw - 32px)); border: 1px solid #4ecdc4; border-radius: 8px; background: #0a1929; box-shadow: 0 0 30px rgba(78, 205, 196, 0.2); }
+.modal-content { width: min(550px, calc(100vw - 32px)); border: 1px solid #2fa98a; border-radius: 8px; background: #131416; box-shadow: 0 0 30px rgba(78, 205, 196, 0.2); }
 .modal-header { display: flex; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
-.modal-header h3 { margin: 0; color: #4ecdc4; font-size: 16px; }
+.modal-header h3 { margin: 0; color: #2fa98a; font-size: 16px; }
 .close-btn { border: 0; background: none; color: #fff; font-size: 24px; cursor: pointer; }
 .modal-body { padding: 20px; }
 .form-group { margin-bottom: 15px; }
 .form-row { display: flex; gap: 15px; }
 .half { flex: 1; }
-.form-group label { display: block; margin-bottom: 6px; color: #8da3b6; font-size: 13px; }
+.form-group label { display: block; margin-bottom: 6px; color: #9f9fa4; font-size: 13px; }
 .form-input { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 4px; outline: none; background: rgba(0, 0, 0, 0.3); color: #fff; }
-.form-input:focus { border-color: #4ecdc4; }
-.tip { display: block; margin-top: 4px; color: #8da3b6; font-size: 11px; }
+.form-input:focus { border-color: #2fa98a; }
+.tip { display: block; margin-top: 4px; color: #9f9fa4; font-size: 11px; }
 .error-msg, .success-msg, .task-status { margin-bottom: 15px; padding: 10px; border-radius: 4px; font-size: 13px; }
 .error-msg { background: rgba(255, 118, 117, 0.1); color: #ff7675; }
-.success-msg { background: rgba(0, 184, 148, 0.1); color: #00b894; }
+.success-msg { background: rgba(0, 184, 148, 0.1); color: #2fa98a; }
 .task-status { background: rgba(78, 205, 196, 0.08); color: #c8d6e5; font-size: 12px; line-height: 1.7; }
 .fallback-msg { color: #feca57; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
 .btn-cancel, .btn-submit { border: 0; border-radius: 4px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
 .btn-cancel { background: rgba(255, 255, 255, 0.1); color: #fff; }
-.btn-submit { background: #4ecdc4; color: #000; font-weight: bold; }
+.btn-submit { background: #2fa98a; color: #000; font-weight: bold; }
 .btn-submit:disabled, .btn-cancel:disabled { cursor: not-allowed; opacity: 0.55; }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }

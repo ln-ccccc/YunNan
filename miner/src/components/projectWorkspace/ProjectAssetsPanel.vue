@@ -178,7 +178,7 @@ select {
   border: 1px solid rgba(35, 86, 78, 0.1);
   border-radius: 12px;
   padding: 12px;
-  background: #f8fcfa;
+  background: #f5f5f7;
 }
 
 .asset-error {
@@ -188,14 +188,14 @@ select {
 
 .muted-text,
 .empty-block {
-  color: #5d6f6d;
+  color: #6e6e73;
 }
 
 .status-pill {
   border-radius: 999px;
   padding: 3px 8px;
-  background: #edf7f3;
-  color: #1f5c4d;
+  background: #f5f5f7;
+  color: #086a4f;
   font-size: 12px;
 }
 
@@ -213,14 +213,14 @@ select {
 
 .primary-btn {
   border: none;
-  background: #2f7a68;
+  background: #0a7d5c;
   color: #fff;
 }
 
 .secondary-btn {
   border: 1px solid rgba(47, 122, 104, 0.24);
-  background: #eaf6f1;
-  color: #1f5c4d;
+  background: rgba(10, 125, 92, 0.08);
+  color: #086a4f;
 }
 
 .error-text {

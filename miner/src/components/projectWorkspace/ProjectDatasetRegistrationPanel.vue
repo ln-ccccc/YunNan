@@ -207,13 +207,13 @@ textarea {
   border: none;
   border-radius: 10px;
   padding: 8px 12px;
-  background: #2f7a68;
+  background: #0a7d5c;
   color: #fff;
   cursor: pointer;
 }
 
 .muted-text {
-  color: #5d6f6d;
+  color: #6e6e73;
 }
 
 .error-text {

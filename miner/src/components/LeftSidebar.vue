@@ -135,7 +135,7 @@ const emitSearch = () => emit('search');
   width: 286px;
   /* 去除 backdrop-filter：其 GPU 合成层在内嵌浏览器/低配 GPU 上会触发整页渲染
      伪影（2026-09-09 实测截图平铺、截图超时），提高不透明度保持观感 */
-  background: rgba(10, 25, 41, 0.97);
+  background: rgba(19, 20, 22, 0.97);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
@@ -153,7 +153,7 @@ const emitSearch = () => emit('search');
   border-bottom: 1px solid rgba(255,255,255,0.1);
   white-space: nowrap;
 }
-.sidebar-header h2 { font-size: 16px; margin: 0; color: #4ecdc4; flex: 1; text-align: center; }
+.sidebar-header h2 { font-size: 16px; margin: 0; color: #2fa98a; flex: 1; text-align: center; }
 
 .sidebar-content {
   flex: 1;
@@ -192,13 +192,13 @@ const emitSearch = () => emit('search');
   font-size: 14px;
   color: #fff;
   margin: 0;
-  border-left: 3px solid #4ecdc4;
+  border-left: 3px solid #2fa98a;
   padding-left: 8px;
 }
 .reset-btn {
   background: rgba(255,255,255,0.1);
   border: none;
-  color: #8da3b6;
+  color: #9f9fa4;
   font-size: 11px;
   padding: 2px 6px;
   border-radius: 3px;
@@ -218,7 +218,7 @@ const emitSearch = () => emit('search');
   padding: 8px;
   background: rgba(78, 205, 196, 0.1);
   border: 1px solid rgba(78, 205, 196, 0.3);
-  color: #4ecdc4;
+  color: #2fa98a;
   border-radius: 6px;
   cursor: pointer;
   font-weight: bold;
@@ -229,8 +229,8 @@ const emitSearch = () => emit('search');
   gap: 8px;
 }
 .action-btn:hover {
-  background: #4ecdc4;
-  color: #0a1929;
+  background: #2fa98a;
+  color: #131416;
 }
 .trend-btn {
   margin-top: 8px;
@@ -240,16 +240,16 @@ const emitSearch = () => emit('search');
   font-size: 16px;
 }
 
-.metric-label { font-size: 12px; color: #8da3b6; }
+.metric-label { font-size: 12px; color: #9f9fa4; }
 .metric-value { font-size: 18px; font-weight: bold; margin: 5px 0; }
 .metric-unit { font-size: 10px; color: #666; }
-.text-cyan { color: #4ecdc4; }
-.text-blue { color: #24c1ff; }
-.text-green { color: #00b894; }
+.text-cyan { color: #2fa98a; }
+.text-blue { color: #2fa98a; }
+.text-green { color: #2fa98a; }
 .text-yellow { color: #f1c40f; }
 
 .filter-group { margin-bottom: 10px; }
-.filter-group label { display: block; font-size: 12px; color: #8da3b6; margin-bottom: 4px; }
+.filter-group label { display: block; font-size: 12px; color: #9f9fa4; margin-bottom: 4px; }
 .filter-group select {
   width: 100%;
   background: rgba(0,0,0,0.3);
@@ -267,7 +267,7 @@ const emitSearch = () => emit('search');
   padding: 6px;
   border-radius: 4px;
 }
-.search-box button { background: #4ecdc4; border: none; border-radius: 4px; cursor: pointer; }
+.search-box button { background: #2fa98a; border: none; border-radius: 4px; cursor: pointer; }
 
 .ranking-list { display: flex; flex-direction: column; gap: 8px; }
 .ranking-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
@@ -277,5 +277,5 @@ const emitSearch = () => emit('search');
 .top-3 { background: #e67e22; color: #000; }
 .rank-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rank-bar-container { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; }
-.rank-bar { height: 100%; background: #4ecdc4; border-radius: 3px; }
+.rank-bar { height: 100%; background: #2fa98a; border-radius: 3px; }
 </style>

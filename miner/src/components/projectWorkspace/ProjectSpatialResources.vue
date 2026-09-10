@@ -365,7 +365,7 @@ function formatFileSize(value) {
 }
 
 .muted-text {
-  color: #5d6f6d;
+  color: #6e6e73;
 }
 
 .wizard-steps {
@@ -395,7 +395,7 @@ function formatFileSize(value) {
   padding: 14px;
   border: 1px solid rgba(35, 86, 78, 0.12);
   border-radius: 14px;
-  background: #f8fcfa;
+  background: #f5f5f7;
 }
 
 .file-input-label {
@@ -407,7 +407,7 @@ function formatFileSize(value) {
 
 .selected-file {
   margin: 0;
-  color: #1f5c4d;
+  color: #086a4f;
 }
 
 .mapping-grid {
@@ -480,7 +480,7 @@ progress {
   padding: 12px;
   border: 1px solid rgba(35, 86, 78, 0.08);
   border-radius: 12px;
-  background: #f7faf8;
+  background: #f5f5f7;
 }
 
 .mine-item div {
@@ -502,7 +502,7 @@ select {
   border-radius: 12px;
   padding: 10px 12px;
   background: #fff;
-  color: #163030;
+  color: #1d1d1f;
 }
 
 button {
@@ -513,21 +513,21 @@ button {
 
 .primary-btn {
   border: none;
-  background: #2f7a68;
+  background: #0a7d5c;
   color: #fff;
 }
 
 .secondary-btn {
   border: 1px solid rgba(47, 122, 104, 0.2);
-  background: #eaf6f1;
-  color: #1f5c4d;
+  background: rgba(10, 125, 92, 0.08);
+  color: #086a4f;
 }
 
 .ghost-btn,
 .link-btn {
   border: none;
   background: transparent;
-  color: #2f7a68;
+  color: #0a7d5c;
 }
 
 .success-text {

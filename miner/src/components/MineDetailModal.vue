@@ -180,8 +180,8 @@ const renderTrendChart = () => {
   const years = data.map(d => d.year);
   const values = data.map(d => d.value);
 
-  const colorMap = { ndvi: '#00b894', ndbi: '#fdcb6e', ndwi: '#0984e3', ndsi: '#e17055' };
-  const color = colorMap[key] || '#00b894';
+  const colorMap = { ndvi: '#2fa98a', ndbi: '#fdcb6e', ndwi: '#2fa98a', ndsi: '#e17055' };
+  const color = colorMap[key] || '#2fa98a';
 
   trendChartInst.setOption({
     backgroundColor: 'transparent',
@@ -221,8 +221,8 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
 }
 .modal-content {
   width: 600px;
-  background: #0a1929;
-  border: 1px solid #4ecdc4;
+  background: #131416;
+  border: 1px solid #2fa98a;
   box-shadow: 0 0 30px rgba(78, 205, 196, 0.2);
 }
 .modal-header { display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 15px; }
@@ -237,15 +237,15 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
 
 .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
 .info-item { display: flex; justify-content: space-between; border-bottom: 1px dashed rgba(255,255,255,0.1); padding-bottom: 5px; }
-.label { color: #8da3b6; font-size: 13px; }
+.label { color: #9f9fa4; font-size: 13px; }
 .val { font-weight: bold; }
 .status-tag { padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-.status-tag.treated { background: rgba(0, 184, 148, 0.2); color: #00b894; }
+.status-tag.treated { background: rgba(0, 184, 148, 0.2); color: #2fa98a; }
 .status-tag.untreated { background: rgba(255, 118, 117, 0.2); color: #ff7675; }
 
 .source-badge {
   margin-bottom: 10px;
-  color: #8da3b6;
+  color: #9f9fa4;
   font-size: 12px;
 }
 
@@ -258,13 +258,13 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
   padding: 8px;
   cursor: pointer;
 }
-.tabs button.active { background: #4ecdc4; color: #000; border-color: #4ecdc4; }
+.tabs button.active { background: #2fa98a; color: #000; border-color: #2fa98a; }
 
 .trend-stats { display: flex; justify-content: space-around; margin-bottom: 15px; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; }
 .stat-box { display: flex; flex-direction: column; align-items: center; }
 .stat-box .val { font-size: 16px; margin-top: 5px; }
 .text-red { color: #ff7675; }
-.text-green { color: #00b894; }
+.text-green { color: #2fa98a; }
 
 .chart-container { height: 250px; width: 100%; }
 
@@ -290,7 +290,7 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
 }
 
 .confusion-matrix th {
-  color: #8da3b6;
+  color: #9f9fa4;
   font-weight: normal;
   background: rgba(255, 255, 255, 0.03);
 }
@@ -315,7 +315,7 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
 .corner-new {
   position: absolute;
   font-size: 11px;
-  color: #8da3b6;
+  color: #9f9fa4;
 }
 
 .corner-old {
@@ -331,7 +331,7 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
 }
 
 .row-label {
-  color: #8da3b6;
+  color: #9f9fa4;
   text-align: left !important;
   width: 60px;
 }
@@ -354,7 +354,7 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
   gap: 10px;
   margin-top: 15px;
   font-size: 12px;
-  color: #8da3b6;
+  color: #9f9fa4;
   justify-content: center;
 }
 
@@ -368,7 +368,7 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
 .no-data {
   text-align: center;
   padding: 40px;
-  color: #8da3b6;
+  color: #9f9fa4;
 }
 
 .classification-container {
@@ -390,7 +390,7 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
 .class-title {
   font-size: 13px;
   margin-bottom: 6px;
-  color: #8da3b6;
+  color: #9f9fa4;
 }
 
 .class-image-wrapper {

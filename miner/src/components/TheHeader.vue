@@ -79,7 +79,7 @@ const goToGeoView = () => {
 .header {
   height: 60px;
   /* 同 LeftSidebar：移除 backdrop-filter 避免 GPU 合成伪影 */
-  background: rgba(10, 25, 41, 0.97);
+  background: rgba(19, 20, 22, 0.97);
   border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;
@@ -106,7 +106,7 @@ const goToGeoView = () => {
   font-weight: 600;
   letter-spacing: 0;
   margin: 0;
-  background: linear-gradient(90deg, #fff, #4ecdc4);
+  background: linear-gradient(90deg, #fff, #2fa98a);
   -webkit-background-clip: text;
   color: transparent;
 }
@@ -166,7 +166,7 @@ const goToGeoView = () => {
 }
 
 .system-btn {
-  background: linear-gradient(135deg, #0984e3, #00cec9);
+  background: linear-gradient(135deg, #2fa98a, #00cec9);
 }
 
 .secondary-btn:hover,

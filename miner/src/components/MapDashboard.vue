@@ -314,13 +314,13 @@ defineExpose({
 
 <style scoped>
 :root {
-  --bg-dark: #0a1929;
-  --panel-bg: rgba(13, 27, 42, 0.75);
+  --bg-dark: #131416;
+  --panel-bg: rgba(29, 30, 32, 0.75);
   --border-color: rgba(78, 205, 196, 0.3);
-  --text-primary: #e0f7ff;
-  --text-secondary: #8da3b6;
-  --accent-cyan: #4ecdc4;
-  --accent-blue: #24c1ff;
+  --text-primary: #f5f5f7;
+  --text-secondary: #9f9fa4;
+  --accent-cyan: #2fa98a;
+  --accent-blue: #2fa98a;
 }
 
 .dashboard {
@@ -328,8 +328,8 @@ defineExpose({
   height: 100vh;
   background:
     radial-gradient(circle at 50% 44%, rgba(36, 193, 255, 0.12), transparent 46%),
-    #0a1929;
-  color: #e0f7ff;
+    #131416;
+  color: #f5f5f7;
   overflow: hidden;
   font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   display: flex;

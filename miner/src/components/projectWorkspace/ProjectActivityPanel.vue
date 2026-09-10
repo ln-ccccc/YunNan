@@ -102,7 +102,7 @@ function formatTimestamp(value) {
   border: 1px solid rgba(35, 86, 78, 0.1);
   border-radius: 12px;
   padding: 11px 12px;
-  background: #f8fcfa;
+  background: #f5f5f7;
 }
 
 .activity-item strong {
@@ -112,8 +112,8 @@ function formatTimestamp(value) {
 .result-pill {
   border-radius: 999px;
   padding: 3px 8px;
-  background: #edf7f3;
-  color: #1f5c4d;
+  background: #f5f5f7;
+  color: #086a4f;
   font-size: 12px;
 }
 
@@ -121,8 +121,8 @@ function formatTimestamp(value) {
   border: 1px solid rgba(47, 122, 104, 0.24);
   border-radius: 10px;
   padding: 8px 12px;
-  background: #eaf6f1;
-  color: #1f5c4d;
+  background: rgba(10, 125, 92, 0.08);
+  color: #086a4f;
   font: inherit;
   cursor: pointer;
 }
@@ -130,7 +130,7 @@ function formatTimestamp(value) {
 .muted-text,
 .empty-block,
 small {
-  color: #5d6f6d;
+  color: #6e6e73;
 }
 
 .error-text {

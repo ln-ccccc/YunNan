@@ -191,20 +191,20 @@ button {
 
 .primary-btn {
   border: none;
-  background: #2f7a68;
+  background: #0a7d5c;
   color: #fff;
 }
 
 .secondary-btn {
   border: 1px solid rgba(47, 122, 104, 0.24);
-  background: #eaf6f1;
-  color: #1f5c4d;
+  background: rgba(10, 125, 92, 0.08);
+  color: #086a4f;
 }
 
 .ghost-btn {
   border: none;
   background: transparent;
-  color: #2f7a68;
+  color: #0a7d5c;
 }
 
 .error-text {

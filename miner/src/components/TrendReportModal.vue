@@ -252,8 +252,8 @@ const formatAreaKm2 = (v) => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: #0a1929;
-  border: 1px solid #4ecdc4;
+  background: #131416;
+  border: 1px solid #2fa98a;
 }
 
 .glass-panel {
@@ -296,7 +296,7 @@ const formatAreaKm2 = (v) => {
 .btn.primary {
   background: rgba(78, 205, 196, 0.2);
   border-color: rgba(78, 205, 196, 0.5);
-  color: #4ecdc4;
+  color: #2fa98a;
 }
 
 .select {
@@ -309,7 +309,7 @@ const formatAreaKm2 = (v) => {
 
 .select option {
   color: #fff;
-  background: #0a1929;
+  background: #131416;
 }
 
 .btn:disabled {
@@ -336,14 +336,14 @@ const formatAreaKm2 = (v) => {
 }
 
 .label {
-  color: #8da3b6;
+  color: #9f9fa4;
   font-size: 12px;
 }
 
 .value {
   margin-top: 4px;
   font-size: 18px;
-  color: #4ecdc4;
+  color: #2fa98a;
   font-weight: 600;
 }
 
@@ -375,7 +375,7 @@ const formatAreaKm2 = (v) => {
 
 .data-table th {
   background: rgba(255, 255, 255, 0.04);
-  color: #8da3b6;
+  color: #9f9fa4;
 }
 
 .downward {
@@ -384,13 +384,13 @@ const formatAreaKm2 = (v) => {
 }
 
 .upward {
-  color: #00b894;
+  color: #2fa98a;
   font-weight: 600;
 }
 
 .empty {
   text-align: center;
-  color: #8da3b6;
+  color: #9f9fa4;
 }
 
 .error-msg {

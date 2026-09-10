@@ -55,22 +55,19 @@ const submitLogin = () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(circle at top left, rgba(8, 132, 227, 0.15), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(46, 204, 113, 0.14), transparent 26%),
-    linear-gradient(180deg, #eef5f3 0%, #dce8e3 100%);
+  background: #f5f5f7;
   padding: 24px;
   box-sizing: border-box;
 }
 
 .login-card {
   width: min(100%, 420px);
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(27, 84, 74, 0.12);
-  border-radius: 22px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 18px;
   padding: 28px;
   box-shadow: 0 24px 48px rgba(20, 54, 48, 0.14);
-  color: #163030;
+  color: #1d1d1f;
 }
 
 .login-kicker,
@@ -81,7 +78,7 @@ label span {
 }
 
 .login-kicker {
-  color: #2f7a68;
+  color: #6e6e73;
   font-size: 13px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -93,7 +90,7 @@ label span {
 }
 
 .login-subtitle {
-  color: #5d6f6d;
+  color: #6e6e73;
   line-height: 1.6;
 }
 
@@ -111,19 +108,19 @@ label span {
 .login-form input {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid rgba(35, 86, 78, 0.15);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 12px;
   padding: 12px 14px;
   background: #fff;
-  color: #163030;
+  color: #1d1d1f;
   font: inherit;
 }
 
 .login-btn {
   border: none;
-  border-radius: 12px;
+  border-radius: 10px;
   padding: 12px 14px;
-  background: #2f7a68;
+  background: #0a7d5c;
   color: #fff;
   font: inherit;
   cursor: pointer;

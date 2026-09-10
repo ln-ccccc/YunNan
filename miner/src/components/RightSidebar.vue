@@ -100,7 +100,7 @@ const resizeCharts = () => {
 };
 
 const getPieData = () => ([
-  { value: props.treatedCount, name: '已治理', itemStyle: { color: '#00b894' } },
+  { value: props.treatedCount, name: '已治理', itemStyle: { color: '#2fa98a' } },
   { value: props.untreatedCount, name: '未治理', itemStyle: { color: '#ff7675' } }
 ]);
 
@@ -158,7 +158,7 @@ const initBarChart = () => {
         data: list.map((item) => item.value),
         itemStyle: {
           color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [
-            { offset: 0, color: '#0984e3' },
+            { offset: 0, color: '#2fa98a' },
             { offset: 1, color: '#74b9ff' }
           ])
         },
@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
 .sidebar {
   width: 286px;
   /* 同 LeftSidebar：移除 backdrop-filter 避免 GPU 合成伪影 */
-  background: rgba(10, 25, 41, 0.97);
+  background: rgba(19, 20, 22, 0.97);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
@@ -266,7 +266,7 @@ onBeforeUnmount(() => {
 .sidebar-header h2 {
   font-size: 16px;
   margin: 0;
-  color: #4ecdc4;
+  color: #2fa98a;
   flex: 1;
   text-align: center;
 }
@@ -274,7 +274,7 @@ onBeforeUnmount(() => {
 .collapse-btn {
   background: none;
   border: none;
-  color: #8da3b6;
+  color: #9f9fa4;
   cursor: pointer;
   font-size: 12px;
   padding: 5px;
@@ -301,7 +301,7 @@ onBeforeUnmount(() => {
   font-size: 14px;
   color: #fff;
   margin: 0 0 10px 0;
-  border-left: 3px solid #4ecdc4;
+  border-left: 3px solid #2fa98a;
   padding-left: 8px;
 }
 
@@ -333,7 +333,7 @@ onBeforeUnmount(() => {
 
 .metric-label {
   font-size: 12px;
-  color: #8da3b6;
+  color: #9f9fa4;
 }
 
 .metric-value {
@@ -348,11 +348,11 @@ onBeforeUnmount(() => {
 }
 
 .text-cyan {
-  color: #4ecdc4;
+  color: #2fa98a;
 }
 
 .text-blue {
-  color: #24c1ff;
+  color: #2fa98a;
 }
 
 .text-yellow {

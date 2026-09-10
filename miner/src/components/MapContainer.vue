@@ -214,7 +214,7 @@ const initMap = () => {
 
 const getMineColor = (feature) => {
   const status = feature.properties.status_normalized || 'unknown';
-  if (status === 'treated') return '#00b894';
+  if (status === 'treated') return '#2fa98a';
   if (status === 'untreated') return '#ff7675';
   return '#fab1a0';
 };
@@ -366,7 +366,7 @@ defineExpose({
 }
 
 .dot.treated {
-  background: #00b894;
+  background: #2fa98a;
 }
 
 .dot.untreated {
