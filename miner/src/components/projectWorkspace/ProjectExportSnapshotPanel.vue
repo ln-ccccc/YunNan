@@ -155,10 +155,10 @@ function formatTimestamp(value) {
   grid-template-columns: minmax(120px, 1fr) auto minmax(150px, 1fr) minmax(150px, 1fr);
   align-items: center;
   gap: 10px;
-  border: 1px solid rgba(35, 86, 78, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.07);
   border-radius: 12px;
   padding: 11px 12px;
-  background: #f5f5f7;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .snapshot-row {

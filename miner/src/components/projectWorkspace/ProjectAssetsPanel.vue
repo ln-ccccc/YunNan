@@ -164,7 +164,7 @@ button {
 }
 
 select {
-  border: 1px solid rgba(35, 86, 78, 0.18);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 10px;
   padding: 8px 10px;
   background: #fff;
@@ -175,10 +175,10 @@ select {
   grid-template-columns: minmax(180px, 1.6fr) auto auto minmax(130px, 1fr);
   align-items: center;
   gap: 10px;
-  border: 1px solid rgba(35, 86, 78, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.07);
   border-radius: 12px;
   padding: 12px;
-  background: #f5f5f7;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .asset-error {

@@ -716,21 +716,22 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.workspace-page { min-height: 100vh; box-sizing: border-box; padding: 32px 40px 56px; color: #1d1d1f; background: #f5f5f7; }
+.workspace-page { min-height: 100vh; box-sizing: border-box; padding: 40px 48px 72px; color: #1d1d1f; background: #fafafa; }
 .workspace-header, .workspace-header-actions, .workspace-layout { display: flex; gap: 16px; }
-.workspace-header { justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+.workspace-header { justify-content: space-between; align-items: flex-start; margin-bottom: 40px; }
 .workspace-header-actions { align-items: center; }
-.workspace-kicker { margin: 0 0 8px; color: #6e6e73; font-size: 13px; letter-spacing: 0.01em; }
-.workspace-header h1 { margin: 0; font-size: 32px; font-weight: 700; letter-spacing: -0.02em; }
-.workspace-subtitle { margin: 8px 0 0; color: #6e6e73; font-size: 14px; }
+.workspace-kicker { margin: 0 0 10px; color: #6e6e73; font-size: 14px; letter-spacing: 0.01em; }
+.workspace-header h1 { margin: 0; font-size: 40px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.1; }
+.workspace-subtitle { margin: 10px 0 0; color: #6e6e73; font-size: 16px; }
 .workspace-subtitle { margin-top: 8px; color: #6e6e73; }
 .workspace-layout { align-items: flex-start; gap: 24px; }
-.project-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 20px; }
-.panel { box-sizing: border-box; padding: 24px 28px; border: 1px solid rgba(0, 0, 0, 0.08); border-radius: 16px; background: #ffffff; }
+.project-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 28px; }
+.panel { box-sizing: border-box; padding: 28px 32px; border: 1px solid rgba(0, 0, 0, 0.07); border-radius: 18px; background: #ffffff; }
 .empty-detail { min-height: 300px; display: flex; flex-direction: column; justify-content: center; }
-button { padding: 9px 16px; border-radius: 10px; font: inherit; font-size: 14px; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s ease; }
+button { padding: 10px 20px; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease; }
 .primary-btn { border: 0; color: #fff; background: #0a7d5c; }
 .primary-btn:hover { background: #086a4f; }
+.primary-btn:disabled { opacity: 0.45; }
 .secondary-btn { border: 1px solid rgba(47, 122, 104, 0.2); color: #086a4f; background: rgba(10, 125, 92, 0.08); }
 .ghost-btn { border: 0; color: #0a7d5c; background: transparent; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }

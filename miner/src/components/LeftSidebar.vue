@@ -241,7 +241,7 @@ const emitSearch = () => emit('search');
 }
 
 .metric-label { font-size: 12px; color: #9f9fa4; }
-.metric-value { font-size: 18px; font-weight: bold; margin: 5px 0; }
+.metric-value { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; margin: 5px 0; }
 .metric-unit { font-size: 10px; color: #666; }
 .text-cyan { color: #2fa98a; }
 .text-blue { color: #2fa98a; }

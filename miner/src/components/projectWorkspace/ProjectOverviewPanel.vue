@@ -210,10 +210,10 @@ function formatYearRange(startYear, endYear) {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  border: 1px solid rgba(35, 86, 78, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.07);
   border-radius: 12px;
   padding: 12px;
-  background: #f4faf7;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .summary-card small,
@@ -237,7 +237,7 @@ function formatYearRange(startYear, endYear) {
   gap: 8px;
   border-radius: 10px;
   padding: 10px;
-  background: #f5f5f7;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 button {

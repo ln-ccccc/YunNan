@@ -151,7 +151,7 @@ input,
 select {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid rgba(35, 86, 78, 0.18);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 10px;
   padding: 8px 10px;
 }
@@ -179,7 +179,7 @@ select {
 }
 
 .project-card {
-  border: 1px solid rgba(35, 86, 78, 0.15);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 12px;
   padding: 12px;
   background: #f5f5f7;
@@ -190,7 +190,7 @@ select {
 
 .project-card.active {
   border-color: #0a7d5c;
-  background: #f5f5f7;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .status-pill {

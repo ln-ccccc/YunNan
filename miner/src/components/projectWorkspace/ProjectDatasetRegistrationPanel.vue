@@ -189,7 +189,7 @@ select,
 textarea {
   box-sizing: border-box;
   width: 100%;
-  border: 1px solid rgba(35, 86, 78, 0.18);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 10px;
   padding: 9px 11px;
 }

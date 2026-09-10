@@ -99,10 +99,10 @@ function formatTimestamp(value) {
 
 .activity-item {
   justify-content: space-between;
-  border: 1px solid rgba(35, 86, 78, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.07);
   border-radius: 12px;
   padding: 11px 12px;
-  background: #f5f5f7;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .activity-item strong {

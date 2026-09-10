@@ -340,12 +340,11 @@ function formatFileSize(value) {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 18px;
-  border: 1px solid rgba(35, 86, 78, 0.1);
+  padding: 28px 32px;
+  border: 1px solid rgba(0, 0, 0, 0.07);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 12px 30px rgba(31, 66, 61, 0.08);
-}
+  background: #ffffff;
+  }
 
 .panel-title-row,
 .action-row {
@@ -395,7 +394,7 @@ function formatFileSize(value) {
   padding: 14px;
   border: 1px solid rgba(35, 86, 78, 0.12);
   border-radius: 14px;
-  background: #f5f5f7;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .file-input-label {
@@ -480,7 +479,7 @@ progress {
   padding: 12px;
   border: 1px solid rgba(35, 86, 78, 0.08);
   border-radius: 12px;
-  background: #f5f5f7;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .mine-item div {
@@ -498,7 +497,7 @@ button {
 input,
 select {
   box-sizing: border-box;
-  border: 1px solid rgba(35, 86, 78, 0.15);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 12px;
   padding: 10px 12px;
   background: #fff;

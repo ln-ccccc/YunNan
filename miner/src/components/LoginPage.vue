@@ -64,7 +64,7 @@ const submitLogin = () => {
   width: min(100%, 420px);
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 18px;
+  border-radius: 20px;
   padding: 28px;
   box-shadow: 0 24px 48px rgba(20, 54, 48, 0.14);
   color: #1d1d1f;
@@ -86,7 +86,8 @@ label span {
 
 .login-card h1 {
   margin: 10px 0 8px;
-  font-size: 34px;
+  font-size: 40px;
+  letter-spacing: -0.025em;
 }
 
 .login-subtitle {
