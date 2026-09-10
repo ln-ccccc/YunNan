@@ -66,17 +66,15 @@ body {
     color 0.5s,
     background-color 0.5s;
   line-height: 1.6;
+  /* Apple 系统字体栈优先：Mac/iOS 上即 SF Pro，Windows 落到雅黑/Segoe；
+     不再引入外部 Inter，避免默认 AI 味字体 */
   font-family:
-    Inter,
     -apple-system,
     BlinkMacSystemFont,
+    'SF Pro Text',
     'Segoe UI',
-    Roboto,
-    Oxygen,
-    Ubuntu,
-    Cantarell,
-    'Fira Sans',
-    'Droid Sans',
+    'Microsoft YaHei',
+    'PingFang SC',
     'Helvetica Neue',
     sans-serif;
   font-size: 15px;
