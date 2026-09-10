@@ -149,6 +149,23 @@
 **本项目实例（2026-09-09）**：项目工作台内容高 1897px、视口 768px，`body{overflow-y:hidden}` + 工作台外壳 `height:100vh` 无 overflow，用户滚轮失灵、下半页面板（资产/活动/导出）永远够不着。修复：仅给工作台外壳加 `overflow-y: auto`（`2739884`）；修复后滚动 600px 底部面板进入视口（scrollTop 可驱使），地图视图的满屏不滚布局不受影响。
 
 
+### 14. 容器内测代码：用 git archive 传输，不信 bind mount 与 docker cp ✅
+
+**解决什么问题**：Windows 上通过 bind mount 或 `docker cp` 把代码送进容器测试时，gRPC-FUSE 缓存可能返回**陈旧文件内容**——同一份代码"有时测试全绿、有时莫名失败"，或者"修了没生效"，极难排查。
+
+**做法**：测试用的代码一律经 `git archive` 从 git 对象库导出（git 自校验，绕过文件系统缓存）：
+
+```bash
+git archive --format=tar -o /tmp/code.tar HEAD backend
+docker cp /tmp/code.tar 容器:/tmp/
+docker exec 容器 bash -c "cd /tmp && tar xf code.tar && cd backend && python -m unittest ..."
+```
+
+**为什么好**：git 对象库读取内容哈希自洽，永不陈旧；tar 传输一次到位，避开挂载层。配套两条纪律：①容器内测试报错与宿主机直跑不一致时，**先怀疑文件内容不同**（容器内 `hashlib` 对比或 `inspect.getsource` 打印执行中的源码），再怀疑代码；②只在 git 追踪的提交上做"定义性验证"，临时实验标注清楚。
+
+**本项目实例（2026-09-10）**：批量前向开发的验收测试，docker cp 路径下 5 项测试稳定报 `KeyError: 'out_name'`（陈旧字节里的旧代码），改用 `git archive` 后同套件全绿——同一秒内两种传输方式结果相反。已写入开发规范作为容器测试的标准传输方式。
+
+
 ---
 
 ## 二、想不出测试思路时的检查单
