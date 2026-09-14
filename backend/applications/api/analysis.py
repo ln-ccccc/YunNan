@@ -37,6 +37,14 @@ spectral_vector_root = repo_root / 'miner'
 SPECTRAL_VECTOR_SUFFIXES = {'.kml', '.geojson', '.json'}
 
 
+def _safe_int(value, default):
+    """分页等数值查询参数容错：非数字/空值回退默认值，不进全局异常处理器。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _resolve_spectral_kml_path(kml_path):
     """非空 kml_path 仅接受受控 vector 根（miner/）内的 basename 矢量文件。
 
@@ -168,8 +176,8 @@ def show_result(analysis_type):
     if not hasattr(type_utils, analysis_type):
         return fail_api("当前类型暂未开放")
 
-    page = int(request.args.get('page', 1) or 1)
-    limit = int(request.args.get('limit', 10) or 10)
+    page = _safe_int(request.args.get('page'), 1)
+    limit = _safe_int(request.args.get('limit'), 10)
     query = Analysis.query.filter_by(type=getattr(type_utils, analysis_type)).order_by(desc(Analysis.create_time))
 
     pagination = query.paginate(page=page, per_page=limit, error_out=False)
@@ -349,8 +357,8 @@ def kml_roi_output_file(fid, filename):
 
 @analysis_api.get('/kml_roi_history')
 def kml_roi_history_list():
-    page = int(request.args.get('page', 1) or 1)
-    limit = int(request.args.get('limit', 20) or 20)
+    page = _safe_int(request.args.get('page'), 1)
+    limit = _safe_int(request.args.get('limit'), 20)
     page = max(1, page)
     limit = max(1, min(100, limit))
 

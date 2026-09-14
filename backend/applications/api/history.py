@@ -64,7 +64,8 @@ def analysis_handle(items):
 
 @history_api.delete('/batchRemove')
 def history_delete():
-    req_json = request.json
+    # 无 body / JSON null 时 request.json 为 None，缺省容错避免 TypeError 进全局处理器
+    req_json = request.json or {}
     if 'ids' in req_json:
         ids = req_json['ids']
         for id in ids:
