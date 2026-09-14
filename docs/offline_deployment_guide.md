@@ -116,6 +116,16 @@ docker load -i images/mysql_8.0.30-8.6.tar
 
 旧 `geoview_*` 数据卷，以及 `geoview-runtime:split-clean`、`geoview-inference-worker:current`、`geoview-jiangxi:gpu` 等旧镜像标签，均属于江西保留环境。云南部署不得挂载这些旧卷，也不得删除或覆盖这些旧资源。
 
+### 与江西镜像的隔离边界
+
+两平台镜像体系按"互不引用、互不挂载"原则解耦（2026-09-15 谱系复核结论）：
+
+- 云南现役构建与 Compose 只引用 `yunnan-runtime:current`、`yunnan-inference-worker:current` 和 MySQL 镜像，不引用任何 `jiangxi-*`、`geoview-jiangxi` 标签；江西侧构建与 Compose 同样不引用 `yunnan-*` 标签（其仓库内有 `test_source_isolation`、`test_compose_isolation` 防护测试防回潮）。
+- 云南部署不得把江西镜像用作基础镜像、缓存源或 `--from` 拷贝来源，也不得挂载江西容器的数据卷；反之，江西环境不得挂载 `yunnan_*` 卷。
+- 历史层链共享（江西 CPU 交付镜像的底层曾包含 `yunnan-runtime:current` 的 30 层）只是分发层面的死重，不构成运行时依赖；江西侧已建立 squash 解耦基线（见江西仓库 AGENTS.md §4.1「镜像谱系与独立性」）。
+- `yunnan-runtime:current` 无 Dockerfile，其构建层谱系等价留档于 `docker/Dockerfile.yunnan-runtime-provenance`（非重建指令）；离线交付一律以 `images/yunnan_runtime_current.tar` 为准。
+- 镜像与数据隔离的完整设计见 `docs/superpowers/specs/2026-07-18-yunnan-jiangxi-data-isolation-design.md`。
+
 ### 3. 启动
 
 ```bash
