@@ -3,6 +3,9 @@
     <div class="login-card">
       <div class="login-title">管理员登录</div>
       <div class="login-subtitle">登录后才能访问解译平台、历史记录和上传结果。</div>
+      <div v-if="sessionNotice" class="session-notice" role="status">
+        {{ sessionNotice }}
+      </div>
       <el-form @submit.prevent="submitLogin">
         <el-form-item label="账号">
           <el-input v-model="form.username" autocomplete="username" />
@@ -36,11 +39,23 @@ export default {
     return {
       loading: false,
       errorMessage: "",
+      sessionNotice: "",
       form: {
         username: "admin",
         password: "",
       },
     };
+  },
+  created() {
+    // 会话过期跳转携带 reason（/login?reason=expired&redirect=...，见
+    // utils/authRedirect.js 的 redirectToLegacyLogin），这里是它的唯一消费者：
+    // 给出明确文案，不让用户面对无解释的登录页。
+    const reason = String(this.$route?.query?.reason || "").trim();
+    if (reason === "expired") {
+      this.sessionNotice = "登录已过期，请重新登录";
+    } else if (reason) {
+      this.sessionNotice = "登录状态已失效，请重新登录";
+    }
   },
   methods: {
     async submitLogin() {
@@ -98,6 +113,17 @@ export default {
   margin: 10px 0 24px;
   color: #59736b;
   line-height: 1.6;
+}
+
+.session-notice {
+  margin: -10px 0 18px;
+  padding: 9px 10px;
+  border-left: 2px solid #e6a23c;
+  background: rgba(230, 162, 60, 0.08);
+  color: #a16207;
+  font-size: 13px;
+  line-height: 1.5;
+  border-radius: 4px;
 }
 
 .submit-btn {

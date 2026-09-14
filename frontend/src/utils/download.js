@@ -6,7 +6,10 @@ import global from '@/global'
 import {hideFullScreenLoading} from "@/utils/loading";
 function downloadimgWithWords(index, src, funtype) {
   fetch(src)
-    .then((response) => response.blob())//链式编程
+    .then((response) => {
+      if (!response.ok) throw new Error(`下载失败: ${response.status}`);
+      return response.blob();
+    })//链式编程
     .then((res) => {
       let blob = new Blob([res]);
       // 通过URL.createObjectURL生成文件路径
@@ -25,6 +28,12 @@ function downloadimgWithWords(index, src, funtype) {
       ele.click();
       // 移除a标签
       ele.remove();
+      // 下载已触发，释放 object URL
+      window.URL.revokeObjectURL(url);
+    })
+    .catch((error) => {
+      // 失败时留在控制台留痕即可，不能把错误页面内容当图片下载
+      console.error('下载图片失败:', error);
     });
 }
 function getImgArrayBuffer(url) {

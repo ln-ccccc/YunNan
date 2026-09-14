@@ -459,6 +459,13 @@ export default {
   created() {
     this.getUploadImg("地物分类");
   },
+  beforeUnmount() {
+    // 离开页面时释放预览 object URL，避免内存泄漏
+    if (this.fileimg) {
+      window.URL.revokeObjectURL(this.fileimg);
+      this.fileimg = "";
+    }
+  },
   methods: {
     getImgArrayBuffer,
     atchDownload,
@@ -573,6 +580,12 @@ export default {
       const file = fileLike?.raw || fileLike?.file || fileLike;
       this.cutVisible = !!this.$refs.cut?.checked;
       this.canUpload = true;
+      // MyVueCropper 依赖 file.name 生成裁剪产物文件名，缺失会得到 undefined.png
+      this.file = file;
+      // 释放上一张预览的 object URL，避免反复选图累积泄漏
+      if (this.fileimg) {
+        window.URL.revokeObjectURL(this.fileimg);
+      }
       this.fileimg = window.URL.createObjectURL(file);
     },
     disableCutForBatchUpload() {
