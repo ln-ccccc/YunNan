@@ -1,0 +1,68 @@
+# =============================================================================
+# yunnan-runtime:current 镜像构建层谱系留档
+# =============================================================================
+# 【等价留档，用于可追溯，非重建指令；离线交付以 images/yunnan_runtime_current.tar 为准。】
+#
+# - 云南仓库不保留 yunnan-runtime:current 的 Dockerfile：该镜像以离线 tar 交付
+#   （docker load -i images/yunnan_runtime_current.tar，见
+#   docs/offline_deployment_guide.md「加载镜像」一节）。
+# - 以下注释块逐条留档 `docker history --no-trunc yunnan-runtime:current` 的全部
+#   层命令（44 条；docker history 原始输出为自顶向下=最新在前，此处反转为
+#   自底向上=构建顺序，内容逐字未改）。镜像 ID
+#   sha256:9cb2df04970d0c6175773949309e735e73094fc8371c166905f57753f10d1115，
+#   RootFS 共 30 个文件系统层（其余为 ENV/ARG/LABEL 等元数据行），提取于
+#   2026-09-15。
+# - 两条 CreatedBy 为字面量 "infinity" 的记录系 buildkit 写入的异常历史值，
+#   原样保留（对应 2.27MB 与 73.7kB 的最新两层）。
+# - 该层链与江西平台镜像的隔离边界见 docs/offline_deployment_guide.md
+#   「与江西镜像的隔离边界」与
+#   docs/superpowers/specs/2026-07-18-yunnan-jiangxi-data-isolation-design.md。
+# - 本文件不得直接用于 docker build：如未来需要真正重建该镜像，以本谱系为
+#   起点补齐当期构建上下文（backend/frontend/miner 源码、requirements、
+#   offline_maps），并重新走完整离线交付验证。
+# =============================================================================
+# ---- 层命令留档（自底向上 = 构建顺序）----
+# /bin/sh -c #(nop)  ARG RELEASE
+# /bin/sh -c #(nop)  ARG LAUNCHPAD_BUILD_ARCH
+# /bin/sh -c #(nop)  LABEL org.opencontainers.image.ref.name=ubuntu
+# /bin/sh -c #(nop)  LABEL org.opencontainers.image.version=20.04
+# /bin/sh -c #(nop) ADD file:f9ee450324e6ff2c946bc9aae5cf7e35e240dbd387d8b9f5ee1ed5b8434b9894 in / 
+# /bin/sh -c #(nop)  CMD ["/bin/bash"]
+# ARG USER_HOME=/root
+# ENV DEBIAN_FRONTEND=noninteractive TZ=Asia/Shanghai MAMBA_DOCKERFILE_ACTIVATE=1
+# RUN |1 USER_HOME=/root /bin/sh -c sed -i 's|archive.ubuntu.com|mirrors.aliyun.com|g' /etc/apt/sources.list     && sed -i 's|security.ubuntu.com|mirrors.aliyun.com|g' /etc/apt/sources.list     && rm -f /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/nvidia-ml.list || true # buildkit
+# RUN |1 USER_HOME=/root /bin/sh -c apt-get update && apt-get install -y --no-install-recommends     bash     ca-certificates     curl     git     build-essential     wget     bzip2     libgl1     libglib2.0-0     libsm6     libxext6     libxrender1     libgomp1     && rm -rf /var/lib/apt/lists/* # buildkit
+# ARG MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh
+# ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+# ENV PIP_DEFAULT_TIMEOUT=600
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c wget -O /tmp/miniconda.sh ${MINICONDA_URL}     && bash /tmp/miniconda.sh -b -p /opt/conda     && rm /tmp/miniconda.sh # buildkit
+# ENV PATH=/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c echo "channels:" > /opt/conda/.condarc &&     echo "  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/Paddle" >> /opt/conda/.condarc &&     echo "  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge" >> /opt/conda/.condarc &&     echo "  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main" >> /opt/conda/.condarc &&     echo "  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r" >> /opt/conda/.condarc &&     echo "show_channel_urls: true" >> /opt/conda/.condarc &&     echo "channel_priority: strict" >> /opt/conda/.condarc &&     conda update -n base -y conda &&     conda clean -afy # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c conda create -y -n MMSeg310 python=3.10 gdal &&     conda clean -afy # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c set -eux;     ARCH="linux-x64";     NODE_VERSION="v18.20.3";     curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/${NODE_VERSION}/node-${NODE_VERSION}-${ARCH}.tar.xz -o node.tar.xz;     tar -xJf node.tar.xz -C /usr/local --strip-components=1;     rm node.tar.xz;     ln -sf /usr/local/bin/node /usr/bin/node;     ln -sf /usr/local/bin/npm /usr/bin/npm;     ln -sf /usr/local/bin/npx /usr/bin/npx # buildkit
+# WORKDIR /app
+# COPY backend/requirements.txt /app/backend/requirements.txt # buildkit
+# COPY config.yaml /app/config.yaml # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c mkdir -p /root/.pip &&     echo "[global]" > /root/.pip/pip.conf &&     echo "index-url = https://pypi.tuna.tsinghua.edu.cn/simple" >> /root/.pip/pip.conf &&     echo "trusted-host = pypi.tuna.tsinghua.edu.cn" >> /root/.pip/pip.conf # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c conda run -n MMSeg310 python -m pip install --upgrade pip &&     conda run -n MMSeg310 pip install -r backend/requirements.txt &&     conda run -n MMSeg310 pip install cryptography gunicorn &&     conda run -n MMSeg310 pip check # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c conda run -n MMSeg310 pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu       torch==2.2.2 torchvision==0.17.2 &&     conda clean -afy # buildkit
+# COPY backend /app/backend # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c conda run -n MMSeg310 pip install --no-cache-dir mmengine==0.10.4 &&     conda run -n MMSeg310 pip install --no-cache-dir -f https://download.openmmlab.com/mmcv/dist/cpu/torch2.2/index.html mmcv==2.2.0 &&     conda run -n MMSeg310 pip install --no-cache-dir prettytable wcwidth &&     if [ -f /app/backend/model/mmseg_config/dinov3_swinV1/setup.py ] || [ -f /app/backend/model/mmseg_config/dinov3_swinV1/pyproject.toml ]; then       conda run -n MMSeg310 pip install --no-cache-dir -e /app/backend/model/mmseg_config/dinov3_swinV1;     else       echo "Skipping editable install for missing non-package path: /app/backend/model/mmseg_config/dinov3_swinV1";     fi &&     conda run -n MMSeg310 pip install --no-cache-dir mmdet==3.3.0 &&     conda run -n MMSeg310 pip check # buildkit
+# WORKDIR /app/frontend
+# COPY frontend /app/frontend # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c npm config set registry https://registry.npmmirror.com &&     npm install --no-audit --prefer-offline # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c npm run build || true # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c set -eux;     ARCH="linux-x64";     NODE_VERSION="v20.19.0";     mkdir -p /opt/node20;     (curl -fsSL --retry 3 https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-${ARCH}.tar.xz -o /tmp/node20.tar.xz ||      curl -fsSL --retry 3 https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/${NODE_VERSION}/node-${NODE_VERSION}-${ARCH}.tar.xz -o /tmp/node20.tar.xz);     tar -xJf /tmp/node20.tar.xz -C /opt/node20 --strip-components=1;     rm /tmp/node20.tar.xz # buildkit
+# WORKDIR /app/miner
+# COPY miner/package.json miner/package-lock.json /app/miner/ # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c PATH=/opt/node20/bin:$PATH npm config set registry https://registry.npmmirror.com &&     PATH=/opt/node20/bin:$PATH npm install --no-audit --prefer-offline # buildkit
+# COPY miner /app/miner # buildkit
+# WORKDIR /app
+# COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh # buildkit
+# RUN |2 USER_HOME=/root MINICONDA_URL=https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Linux-x86_64.sh /bin/sh -c chmod +x /usr/local/bin/entrypoint.sh # buildkit
+# ENV PATH=/opt/conda/envs/MMSeg310/bin:/opt/conda/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin CONDA_DEFAULT_ENV=MMSeg310 PYTHONUNBUFFERED=1 LD_LIBRARY_PATH=/opt/conda/envs/MMSeg310/lib:
+# EXPOSE [3000/tcp 4000/tcp 5008/tcp 8000/tcp]
+# CMD ["entrypoint.sh"]
+# 
+# infinity
+# infinity
