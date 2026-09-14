@@ -1,6 +1,8 @@
 import os
 
-from flask import Flask
+from flask import Flask, request
+
+from applications.auth.guard import ensure_logged_in
 
 
 def _build_allowed_origins(app):
@@ -47,6 +49,16 @@ def create_app(config_name=None):
         init_script(app)
 
     system_api(app)
+
+    @app.before_request
+    def require_static_auth():
+        # 上传与生成目录位于 Flask static 目录下（UPLOADED_PHOTOS_DEST），
+        # 与 /_uploads/photos 一样必须登录后访问，避免默认 /static/<path>
+        # 路由成为免登录下载上传影像与结果图的旁路。
+        if request.path.startswith('/static/'):
+            unauthorized = ensure_logged_in()
+            if unauthorized is not None:
+                return unauthorized
 
     app.config['SESSION_TYPE'] = 'filesystem'
     app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024
