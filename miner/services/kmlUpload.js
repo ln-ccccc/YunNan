@@ -21,5 +21,7 @@ export function saveKmlUpload({ uploadRoot, filename, content }) {
   }
 
   fs.writeFileSync(target, text, 'utf-8');
-  return { kml_path: target };
+  // 返回裸文件名：浏览器不得感知服务器物理路径（AGENTS §6）；
+  // 绝对路径仅供服务端日志/排查，不进入前端可见的提交链路
+  return { kml_path: safeName, kml_path_absolute: target };
 }
