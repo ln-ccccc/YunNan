@@ -1,6 +1,6 @@
 const backendBaseUrl = (process.env.GEOVIEW_BACKEND_URL || 'http://localhost:5008').replace(/\/$/, '');
 
-export async function requestBackendAuth(method, path, { body, cookie } = {}) {
+export async function requestBackendAuth(method, path, { body, cookie, timeoutMs = 15000 } = {}) {
   const response = await fetch(`${backendBaseUrl}${path}`, {
     method,
     headers: {
@@ -8,6 +8,7 @@ export async function requestBackendAuth(method, path, { body, cookie } = {}) {
       ...(cookie ? { cookie } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   const text = await response.text();
@@ -35,6 +36,7 @@ export const authBackend = {
     return requestBackendAuth('POST', '/api/auth/logout', { cookie });
   },
   session(cookie = '') {
-    return requestBackendAuth('GET', '/api/auth/session', { cookie });
+    // session 检查在每个受保护请求上执行：5s 超时足够，避免上游挂起时长时间占用请求线程
+    return requestBackendAuth('GET', '/api/auth/session', { cookie, timeoutMs: 5000 });
   },
 };

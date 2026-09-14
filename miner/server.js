@@ -26,16 +26,35 @@ app.use(express.json({ limit: '60mb' }));
 const authGuard = requireMinerAuth({ sessionApi: authBackend.session });
 app.use('/api/geoview', authGuard, geoviewRoutes);
 
+// 认证后端不可达/超时等异常统一 502 JSON；格式与 authProxy.requireMinerAuth 的失败响应对齐，
+// 服务端 console.error 留痕，但不把异常细节回显给客户端。
+const AUTH_GATEWAY_ERROR = { success: false, code: 1, msg: '认证服务暂时不可用，请稍后重试' };
+
 app.post('/api/auth/login', async (req, res) => {
-  relayBackendResponse(res, await authBackend.login(req.body || {}));
+  try {
+    relayBackendResponse(res, await authBackend.login(req.body || {}));
+  } catch (error) {
+    console.error('[auth] login 网关请求失败:', error?.message || error);
+    res.status(502).json(AUTH_GATEWAY_ERROR);
+  }
 });
 
 app.get('/api/auth/session', async (req, res) => {
-  relayBackendResponse(res, await authBackend.session(req.headers.cookie || ''));
+  try {
+    relayBackendResponse(res, await authBackend.session(req.headers.cookie || ''));
+  } catch (error) {
+    console.error('[auth] session 网关请求失败:', error?.message || error);
+    res.status(502).json(AUTH_GATEWAY_ERROR);
+  }
 });
 
 app.post('/api/auth/logout', async (req, res) => {
-  relayBackendResponse(res, await authBackend.logout(req.headers.cookie || ''));
+  try {
+    relayBackendResponse(res, await authBackend.logout(req.headers.cookie || ''));
+  } catch (error) {
+    console.error('[auth] logout 网关请求失败:', error?.message || error);
+    res.status(502).json(AUTH_GATEWAY_ERROR);
+  }
 });
 
 app.use('/api/projects', authGuard, createProjectRoutes());
@@ -96,8 +115,10 @@ app.post('/api/kml/upload', (req, res) => {
     });
     res.json(result);
   } catch (err) {
+    // 上传异常细节（含文件系统错误）只进服务端日志，不回显给浏览器
+    console.error('[kml] 上传失败:', err);
     res.status(400).json({
-      error: err?.message || 'KML 上传失败',
+      error: 'KML 上传失败',
       next: '请确认文件扩展名为 .kml，且文件内容非空'
     });
   }
@@ -105,6 +126,7 @@ app.post('/api/kml/upload', (req, res) => {
 
 
 app.use('/api/inference', authGuard);
+const INFERENCE_GATEWAY_ERROR = { success: false, code: 1, msg: '推理服务暂时不可用，请稍后重试' };
 const relayInferenceJobCreate = async (req, res) => {
   try {
     return relayBackendResponse(
@@ -112,22 +134,38 @@ const relayInferenceJobCreate = async (req, res) => {
       await inferenceBackend.createJob(req.body || {}, req.headers.cookie || ''),
     );
   } catch (err) {
-    return res.status(502).json({ success: false, code: 1, msg: err?.message || String(err) });
+    console.error('[inference] 创建任务网关请求失败:', err?.message || err);
+    return res.status(502).json(INFERENCE_GATEWAY_ERROR);
   }
 };
 app.post('/api/inference/jobs', relayInferenceJobCreate);
 app.post('/api/inference/kml-roi', relayInferenceJobCreate);
 
 app.get('/api/inference/jobs/:jobId', async (req, res) => {
-  relayBackendResponse(res, await inferenceBackend.getJob(req.params.jobId, req.headers.cookie || ''));
+  try {
+    relayBackendResponse(res, await inferenceBackend.getJob(req.params.jobId, req.headers.cookie || ''));
+  } catch (err) {
+    console.error('[inference] 查询任务网关请求失败:', err?.message || err);
+    res.status(502).json(INFERENCE_GATEWAY_ERROR);
+  }
 });
 
 app.post('/api/inference/jobs/:jobId/cancel', async (req, res) => {
-  relayBackendResponse(res, await inferenceBackend.cancelJob(req.params.jobId, req.headers.cookie || ''));
+  try {
+    relayBackendResponse(res, await inferenceBackend.cancelJob(req.params.jobId, req.headers.cookie || ''));
+  } catch (err) {
+    console.error('[inference] 取消任务网关请求失败:', err?.message || err);
+    res.status(502).json(INFERENCE_GATEWAY_ERROR);
+  }
 });
 
 app.get('/api/inference/capabilities', async (req, res) => {
-  relayBackendResponse(res, await inferenceBackend.getCapabilities(req.headers.cookie || ''));
+  try {
+    relayBackendResponse(res, await inferenceBackend.getCapabilities(req.headers.cookie || ''));
+  } catch (err) {
+    console.error('[inference] capabilities 网关请求失败:', err?.message || err);
+    res.status(502).json(INFERENCE_GATEWAY_ERROR);
+  }
 });
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
