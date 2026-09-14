@@ -64,15 +64,28 @@ def execute_fromfile(filename):
 
     sqlcommamds = sqlfile.split(';')
 
+    failures = []
     for command in sqlcommamds:
+        statement = command.strip()
+        if not statement:
+            continue
         try:
-            cursor.execute(command)
+            cursor.execute(statement)
             db.commit()
 
         except Exception as msg:
-
             db.rollback()
+            failures.append((statement, msg))
     db.close()
+
+    if failures:
+        # 初始化 SQL 失败不允许被静默吞掉：逐条打印 SQL 片段与异常，
+        # 并汇总抛错阻止“表创建成功”这类误导性的完成提示。
+        for statement, msg in failures:
+            snippet = ' '.join(statement.split())[:120]
+            print('SQL 执行失败: %s\n异常: %s' % (snippet, msg))
+        raise RuntimeError(
+            'init_db 有 %d 条 SQL 执行失败，数据库初始化未完成' % len(failures))
 
 
 def init_db():
