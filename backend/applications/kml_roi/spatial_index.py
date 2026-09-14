@@ -76,25 +76,18 @@ def filter_features_by_bounds(
     q = _shapely_box(*bounds_4326)
     candidates = tree.query(q)
 
-    out = []
-    seen = set()
+    # 命中的候选统一收集为索引集合，再按输入顺序输出：
+    # 1) STRtree.query 的返回顺序不构成契约，按输入顺序输出与无 shapely 的
+    #    回退路径行为一致（回退路径天然保持输入顺序）；
+    # 2) 不按 fid 去重——同 fid 的多个 Placemark 是同一场地的多个图斑，
+    #    全部保留交给 tiles 层做 variant 区分（历史行为在此静默丢弃第二个图斑）。
+    hit_indices = set()
     if len(candidates) > 0 and isinstance(candidates[0], numbers.Integral):
-        for i in candidates:
-            fid, geom = idx_to_feature[int(i)]
-            if fid in seen:
-                continue
-            seen.add(fid)
-            out.append((fid, geom))
-        return out
+        hit_indices = {int(i) for i in candidates}
+    else:
+        geom_id_to_index = {id(g): i for i, g in enumerate(boxes)}
+        hit_indices = {
+            geom_id_to_index[id(g)] for g in candidates if id(g) in geom_id_to_index
+        }
 
-    geom_id_to_index = {id(g): i for i, g in enumerate(boxes)}
-    for g in candidates:
-        i = geom_id_to_index.get(id(g))
-        if i is None:
-            continue
-        fid, geom = idx_to_feature[i]
-        if fid in seen:
-            continue
-        seen.add(fid)
-        out.append((fid, geom))
-    return out
+    return [idx_to_feature[i] for i in sorted(hit_indices)]

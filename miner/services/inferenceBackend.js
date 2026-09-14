@@ -4,7 +4,7 @@ const defaultBackendBaseUrl = (process.env.GEOVIEW_BACKEND_URL || 'http://localh
 export function createInferenceBackend({ fetchImpl = fetch, backendBaseUrl = defaultBackendBaseUrl } = {}) {
   const baseUrl = String(backendBaseUrl).replace(/\/$/, '');
 
-  async function request(method, path, { body, cookie = '' } = {}) {
+  async function request(method, path, { body, cookie = '', timeoutMs = 15000 } = {}) {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method,
       headers: {
@@ -12,6 +12,7 @@ export function createInferenceBackend({ fetchImpl = fetch, backendBaseUrl = def
         ...(cookie ? { cookie } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await response.text();
     let parsed;

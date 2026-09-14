@@ -36,11 +36,11 @@ def parse_year(v: Optional[str]) -> Optional[int]:
     return y
 
 
-def name_base(fid: str, tag: str, use_year_naming: bool) -> str:
+def name_base(fid: str, tag: str, use_year_naming: bool, variant_suffix: str = "") -> str:
     tag_s = str(tag).strip()
     if use_year_naming:
-        return f"{fid}+{tag_s}"
-    return f"{fid}_{tag_s}"
+        return f"{fid}+{tag_s}{variant_suffix}"
+    return f"{fid}_{tag_s}{variant_suffix}"
 
 
 def validate_fid_path_component(value) -> str:
@@ -79,10 +79,17 @@ def prepare_tiles(
         variants = [("old", "old", old_tif), ("new", "new", new_tif)]
         use_year_naming = False
 
+    # 同 fid 的多个 Placemark（同场地多图斑）按出现顺序编为 variant：
+    # 第 1 组沿用历史命名保证 565 主链路（fid 唯一）行为不变；
+    # 第 2 组起加 _v2/_v3 后缀，避免瓦片与推理产物同名互相覆盖。
+    variant_group_counts: Dict[str, int] = {}
+
     for fid, geom in features:
+        occurrence = variant_group_counts.get(fid, 0) + 1
+        variant_suffix = "" if occurrence == 1 else f"_v{occurrence}"
         variant_specs: List[Dict] = []
         for _, tag, tif_path in variants:
-            dst_base = name_base(fid, tag, use_year_naming)
+            dst_base = name_base(fid, tag, use_year_naming, variant_suffix)
             src_base = f"{dst_base}_tile"
             cropped_tif = tile_dir / f"{src_base}.tif"
             cropped_png = tile_dir / f"{src_base}.png"
@@ -106,8 +113,10 @@ def prepare_tiles(
             )
 
         if variant_specs:
-            matched_fids.append(fid)
-            variants_by_fid[fid] = variant_specs
+            variant_group_counts[fid] = occurrence
+            if fid not in variants_by_fid:
+                matched_fids.append(fid)
+            variants_by_fid.setdefault(fid, []).extend(variant_specs)
 
     return matched_fids, file_names, variants_by_fid
 

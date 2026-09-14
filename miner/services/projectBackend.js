@@ -15,6 +15,7 @@ async function requestJson(method, path, { query, body, cookie } = {}) {
       ...(cookie ? { cookie } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15000),
   });
   const text = await response.text();
   let parsed;
@@ -34,11 +35,12 @@ function positiveRouteId(value, fieldName) {
   return raw;
 }
 
-async function requestBinary(method, path, { cookie } = {}) {
+async function requestBinary(method, path, { cookie, timeoutMs = 30000 } = {}) {
   const url = new URL(`${backendBaseUrl}${path}`);
   const response = await fetch(url, {
     method,
     headers: cookie ? { cookie } : {},
+    signal: AbortSignal.timeout(timeoutMs),
   });
   return {
     status: response.status,
