@@ -1,10 +1,12 @@
 import json
+import logging
 from pathlib import Path
 from urllib.parse import unquote
 
 from flask import Blueprint, request, send_from_directory
 from sqlalchemy import desc
 
+from applications.api.error_responses import business_or_server_failure
 from applications.auth.guard import ensure_logged_in
 from applications.common.curd import model_to_dicts
 from applications.common.path_global import generate_dir, generate_url, fun_type_2, fun_type_3, fun_type_4, fun_type_5, up_dir
@@ -25,6 +27,7 @@ from applications.project_hub.spatial_storage import get_storage_root, resolve_s
 from applications.schemas import AnalysisSchema
 
 analysis_api = Blueprint('analysis_api', __name__, url_prefix='/api/analysis')
+LOGGER = logging.getLogger(__name__)
 repo_root = Path(__file__).resolve().parents[3]
 miner_change_output_root = repo_root / 'miner' / 'change_matrix_outputs'
 
@@ -196,7 +199,7 @@ def semantic_segmentation_api():
         terrain_classification(model_path, up_dir, generate_dir, img_list, step1_, step2_, type_=3)
         return success_api()
     except Exception as e:
-        return fail_api(f"推理失败: {str(e)}")
+        return business_or_server_failure(e, "推理失败", logger=LOGGER)
 
 @analysis_api.post('/image_pre')
 def image_pre_api():
@@ -317,7 +320,7 @@ def spectral_indices_api():
             return success_api(msg="未匹配当前项目矿山，结果仅在解译平台展示", data=result)
         return success_api(msg="计算完成，结果仅在解译平台展示", data=result)
     except Exception as e:
-        return fail_api(f"计算失败: {str(e)}")
+        return business_or_server_failure(e, "计算失败", logger=LOGGER)
 
 
 @analysis_api.post('/kml_roi_inference')

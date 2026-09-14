@@ -5,6 +5,7 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_file, send_from_directory, session
 
+from applications.api.error_responses import business_or_server_failure
 from applications.auth.guard import login_required
 from applications.common.utils.code import SUCCESS
 from applications.common.utils.http import fail_api, success_api
@@ -215,7 +216,7 @@ def project_detail_api(project_id):
     try:
         return success_api(data=get_project_detail(project_id))
     except Exception as exc:
-        return fail_api(str(exc))
+        return business_or_server_failure(exc, "项目详情读取失败", logger=LOGGER)
 
 
 @project_api.patch("/<int:project_id>")
@@ -341,7 +342,9 @@ def project_map_manifest_api(project_id):
     try:
         return success_api(data=get_project_map_manifest(project_id))
     except Exception as exc:
-        return fail_api(str(exc), status=404)
+        return business_or_server_failure(
+            exc, "项目地图清单读取失败", logger=LOGGER, business_status=404
+        )
 
 
 @project_api.get("/<int:project_id>/classification-results/<int:result_id>")
@@ -526,7 +529,7 @@ def project_export_list_api(project_id):
     try:
         return success_api(data=list_exports(project_id))
     except Exception as exc:
-        return fail_api(str(exc))
+        return business_or_server_failure(exc, "项目导出记录读取失败", logger=LOGGER)
 
 
 @project_api.post("/<int:project_id>/backups")

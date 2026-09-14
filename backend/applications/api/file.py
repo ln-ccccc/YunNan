@@ -1,11 +1,15 @@
+import logging
+
 from flask import Blueprint, jsonify, request
 
+from applications.api.error_responses import business_or_server_failure
 from applications.auth.guard import ensure_logged_in
 from applications.common.utils import type_utils, upload as upload_curd
 from applications.common.utils.http import fail_api
 from applications.common.utils.tiff_processor import MAX_TIFF_SIZE_MB, is_tiff_file
 
 file_api = Blueprint('file_api', __name__, url_prefix='/api/file')
+LOGGER = logging.getLogger(__name__)
 
 
 @file_api.before_request
@@ -57,7 +61,7 @@ def upload_api():
         except ValueError as e:
             return fail_api(str(e))
         except Exception as e:
-            return fail_api(f'文件上传失败: {str(e)}')
+            return business_or_server_failure(e, "文件上传失败", logger=LOGGER)
 
     res = {'msg': '上传成功', 'code': 0, 'success': True, 'data': data}
     return jsonify(res)
