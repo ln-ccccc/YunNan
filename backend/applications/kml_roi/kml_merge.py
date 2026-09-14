@@ -64,11 +64,13 @@ def merge_kml_increment(base_kml: Path, incoming_kml: Path) -> Dict:
     base_doc = _document(base_root)
     parents = _parent_map(base_root)
 
-    existing = {}
+    # 同 fid 的全部 Placemark 都要登记：base 内同 fid 多图斑时逐个替换，
+    # 只记最后一个会让其余同 fid 残留，合并结果出现重复 fid。
+    existing: Dict[str, list] = {}
     for pm in base_root.findall(".//kml:Placemark", NS):
         fid = _extract_fid(pm)
         if fid:
-            existing[fid] = (pm, parents.get(pm, base_doc))
+            existing.setdefault(fid, []).append((pm, parents.get(pm, base_doc)))
 
     inserted = 0
     updated = 0
@@ -82,14 +84,16 @@ def merge_kml_increment(base_kml: Path, incoming_kml: Path) -> Dict:
             continue
         new_pm = copy.deepcopy(pm)
         if fid in existing:
-            old_pm, parent = existing[fid]
-            parent.remove(old_pm)
+            old_entries = existing[fid]
+            parent = old_entries[0][1]
+            for old_pm, old_parent in old_entries:
+                old_parent.remove(old_pm)
             parent.append(new_pm)
-            existing[fid] = (new_pm, parent)
+            existing[fid] = [(new_pm, parent)]
             updated += 1
         else:
             base_doc.append(new_pm)
-            existing[fid] = (new_pm, base_doc)
+            existing[fid] = [(new_pm, base_doc)]
             inserted += 1
         fids.append(int(fid) if fid.isdigit() else fid)
 
