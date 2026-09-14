@@ -33,8 +33,9 @@ miner_change_output_root = repo_root / 'miner' / 'change_matrix_outputs'
 
 # standalone 光谱计算的受控 vector 根：默认矿山 KML（miner/yunnan.kml）所在目录。
 spectral_vector_root = repo_root / 'miner'
-# 与 interface 层 load_vector_features 支持的矿山矢量格式保持一致
-SPECTRAL_VECTOR_SUFFIXES = {'.kml', '.geojson', '.json'}
+# 矢量白名单不含 .json：受控根就是 miner/ 目录（内含 package.json 等 MB 级
+# JSON），放行 .json 会允许把它们当矢量喂给解析器浪费 CPU
+SPECTRAL_VECTOR_SUFFIXES = {'.kml', '.geojson'}
 
 
 def _safe_int(value, default):

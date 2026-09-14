@@ -417,7 +417,9 @@ def project_geojson_api(project_id):
     try:
         return success_api(data=get_project_geojson(project_id))
     except Exception as exc:
-        return fail_api(str(exc), status=404)
+        return business_or_server_failure(
+            exc, "项目数据读取失败", logger=LOGGER, business_status=404
+        )
 
 
 @project_api.get("/<int:project_id>/stats")
@@ -426,7 +428,9 @@ def project_stats_api(project_id):
     try:
         return success_api(data=get_project_stats(project_id))
     except Exception as exc:
-        return fail_api(str(exc), status=404)
+        return business_or_server_failure(
+            exc, "项目数据读取失败", logger=LOGGER, business_status=404
+        )
 
 
 @project_api.get("/<int:project_id>/mines/search")
@@ -435,7 +439,9 @@ def project_mines_search_api(project_id):
     try:
         return success_api(data=search_project_mines(project_id, request.args.get("q")))
     except Exception as exc:
-        return fail_api(str(exc), status=404)
+        return business_or_server_failure(
+            exc, "项目数据读取失败", logger=LOGGER, business_status=404
+        )
 
 
 @project_api.get("/<int:project_id>/mines/indices")
@@ -444,7 +450,9 @@ def project_mines_indices_api(project_id):
     try:
         return success_api(data=get_project_mine_indices(project_id, request.args.get("fid")))
     except Exception as exc:
-        return fail_api(str(exc), status=404)
+        return business_or_server_failure(
+            exc, "项目数据读取失败", logger=LOGGER, business_status=404
+        )
 
 
 @project_api.get("/<int:project_id>/mines/change-matrix")
@@ -453,7 +461,9 @@ def project_mines_change_matrix_api(project_id):
     try:
         return success_api(data=get_project_change_matrix(project_id, request.args.get("fid")))
     except Exception as exc:
-        return fail_api(str(exc), status=404)
+        return business_or_server_failure(
+            exc, "项目数据读取失败", logger=LOGGER, business_status=404
+        )
 
 
 @project_api.get("/<int:project_id>/mines/trend-report")
@@ -462,7 +472,9 @@ def project_mines_trend_report_api(project_id):
     try:
         return success_api(data=get_project_trend_report(project_id, request.args.get("fid")))
     except Exception as exc:
-        return fail_api(str(exc), status=404)
+        return business_or_server_failure(
+            exc, "项目数据读取失败", logger=LOGGER, business_status=404
+        )
 
 
 @project_api.post("/<int:project_id>/datasets")
@@ -554,7 +566,7 @@ def project_backup_list_api(project_id):
     try:
         return success_api(data=list_backups(project_id))
     except Exception as exc:
-        return fail_api(str(exc))
+        return business_or_server_failure(exc, "项目快照列表读取失败", logger=LOGGER)
 
 
 @project_api.post("/<int:project_id>/backups/<int:backup_id>/restore")

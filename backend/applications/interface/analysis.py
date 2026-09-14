@@ -94,8 +94,8 @@ def _resolve_spectral_input(item, data_path):
         if not safe_name:
             raise ValueError("影像路径不合法")
         return os.path.join(data_path, safe_name), safe_name, display_url
-    if text and os.path.exists(text):
-        return text, os.path.basename(text), display_url
+    # 纯 basename 也不做 CWD 直通（backend 目录下可能存在其他同名文件），
+    # 一律收敛到受控 data_path 下再由调用方打开
     img_name = img_url_handle(text)
     return os.path.join(data_path, img_name), img_name, display_url
 

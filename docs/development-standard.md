@@ -205,6 +205,17 @@ try {
 } finally { Pop-Location }
 ```
 
+安全与数据正确性回归（/static 鉴权、光谱输入收敛、同 fid 多 Placemark、工作簿锁）：
+
+```powershell
+Push-Location backend
+try {
+    python -B -m unittest test_security_recheck test_kml_roi_duplicate_fid test_kml_roi_index_sync_lock -v
+} finally { Pop-Location }
+```
+
+API 层异常处理约定：`except Exception` 分支一律使用 `applications/api/error_responses.py::business_or_server_failure`——业务校验异常（ValueError/FileNotFoundError）回显原文，其余只记服务端日志并返回通用文案 + 500；不得新增 `fail_api(str(exc))` 直回显。
+
 推理入口与发布（含 mock，不代表真实 GPU 验收）：
 
 ```powershell
