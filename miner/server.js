@@ -3,7 +3,6 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
-import geoviewRoutes from './routes/geoview.js';
 import { createProjectRoutes } from './routes/projects.js';
 import { authBackend } from './services/authBackend.js';
 import { relayBackendResponse, requireMinerAuth } from './services/authProxy.js';
@@ -24,7 +23,9 @@ if (/wsl|\\\\wsl\\.localhost/i.test(startupCwd)) {
 app.use(cors());
 app.use(express.json({ limit: '60mb' }));
 const authGuard = requireMinerAuth({ sessionApi: authBackend.session });
-app.use('/api/geoview', authGuard, geoviewRoutes);
+// /api/geoview 下的光谱实时数据代理已删除：Flask 后端从未实现该路由，
+// 每次请求必然 404 且被静默吞掉（2026-09-15 审计 Y2-3），
+// 守护断言见 test/deadLinkGuards.test.js。
 
 // 认证后端不可达/超时等异常统一 502 JSON；格式与 authProxy.requireMinerAuth 的失败响应对齐，
 // 服务端 console.error 留痕，但不把异常细节回显给客户端。
