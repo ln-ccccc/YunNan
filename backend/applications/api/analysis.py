@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from urllib.parse import unquote
 
 from flask import Blueprint, request, send_from_directory
 from sqlalchemy import desc
@@ -26,6 +27,31 @@ from applications.schemas import AnalysisSchema
 analysis_api = Blueprint('analysis_api', __name__, url_prefix='/api/analysis')
 repo_root = Path(__file__).resolve().parents[3]
 miner_change_output_root = repo_root / 'miner' / 'change_matrix_outputs'
+
+# standalone 光谱计算的受控 vector 根：默认矿山 KML（miner/yunnan.kml）所在目录。
+spectral_vector_root = repo_root / 'miner'
+# 与 interface 层 load_vector_features 支持的矿山矢量格式保持一致
+SPECTRAL_VECTOR_SUFFIXES = {'.kml', '.geojson', '.json'}
+
+
+def _resolve_spectral_kml_path(kml_path):
+    """非空 kml_path 仅接受受控 vector 根（miner/）内的 basename 矢量文件。
+
+    请求体里的 kml_path 原样拼接会把任意 KML/GeoJSON 交给矢量读取，
+    因此含分隔符（含反斜杠与 URL 编码）、越界或不支持的扩展名一律 ValueError。
+    """
+    text = str(kml_path or '').strip()
+    if not text:
+        return kml_path
+    decoded = unquote(text).replace('\\', '/')
+    if (
+        not decoded
+        or '/' in decoded
+        or decoded in {'.', '..'}
+        or Path(decoded).suffix.lower() not in SPECTRAL_VECTOR_SUFFIXES
+    ):
+        raise ValueError("KML 路径不合法")
+    return str((spectral_vector_root / decoded).resolve())
 
 
 @analysis_api.before_request
@@ -203,7 +229,11 @@ def spectral_indices_api():
     index_type = req_json.get("index_type", "NDVI")
     year = req_json.get("year", "")
     band_map = req_json.get("band_map", {})
-    kml_path = req_json.get("kml_path")
+    try:
+        # kml_path 来自请求体，只允许受控 vector 根内的 basename，越界 400
+        kml_path = _resolve_spectral_kml_path(req_json.get("kml_path"))
+    except ValueError as error:
+        return fail_api(str(error)), 400
     fid = req_json.get("fid")
     project_id = req_json.get("project_id")
     # 计算核心使用小写键（nir/red/green/swir），这里统一标准化避免前端大小写差异导致映射失效

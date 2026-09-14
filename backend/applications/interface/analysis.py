@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 from pathlib import Path
+from urllib.parse import unquote
 
 import cv2
 import numpy as np
@@ -81,10 +82,21 @@ def _resolve_spectral_input(item, data_path):
         display_url = item
 
     candidate = raw_path or display_url
-    if candidate and os.path.exists(str(candidate)):
-        return str(candidate), os.path.basename(str(candidate)), display_url
-
-    img_name = img_url_handle(str(candidate))
+    text = str(candidate or "")
+    # 纵深收口：读取路径一律收敛到受控 data_path 下的 basename。任何含分隔符
+    # （含反斜杠与 URL 编码解码后）的输入不得经 os.path.exists 直通读取服务器
+    # 任意文件；display_url 仅作展示，原样保留。
+    decoded = unquote(text.replace("\\", "/"))
+    if decoded and ("/" in decoded or "%" in text):
+        safe_name = decoded.rsplit("/", 1)[-1]
+        if not safe_name or safe_name in (".", ".."):
+            safe_name = ""
+        if not safe_name:
+            raise ValueError("影像路径不合法")
+        return os.path.join(data_path, safe_name), safe_name, display_url
+    if text and os.path.exists(text):
+        return text, os.path.basename(text), display_url
+    img_name = img_url_handle(text)
     return os.path.join(data_path, img_name), img_name, display_url
 
 

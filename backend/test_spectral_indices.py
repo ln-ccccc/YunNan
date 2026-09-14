@@ -350,9 +350,10 @@ class TestSpectralIndicesAPI(unittest.TestCase):
 
     def test_ndvi_mean_uses_matching_kml_polygon_fid(self):
         tif = self._make_constant_geo_tif("ndvi_poly")
-        tmp = tempfile.mkdtemp()
-        self.temp_dirs.append(tmp)
-        kml_path = os.path.join(tmp, "mine.kml")
+        # kml_path 只接受受控 vector 根（miner/）内的 basename 矢量文件
+        miner_root = Path(__file__).resolve().parents[1] / "miner"
+        kml_name = f"mine_test_{uuid.uuid4().hex[:8]}.kml"
+        kml_path = miner_root / kml_name
         with open(kml_path, "w", encoding="utf-8") as f:
             f.write(
                 """<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
@@ -361,13 +362,14 @@ class TestSpectralIndicesAPI(unittest.TestCase):
                 </coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
                 </Document></kml>"""
             )
+        self.created_upload_files.append(str(kml_path))
 
         status, body = self._post_spectral(
             {
                 "list": [up_url + tif],
                 "index_type": "NDVI",
                 "band_map": {"nir": 4, "red": 3},
-                "kml_path": kml_path,
+                "kml_path": kml_name,
             }
         )
 
