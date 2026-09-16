@@ -51,6 +51,10 @@ __pycache__/
 .migration-backups/
 .worktrees/
 
+# 本地会话数据与临时探测/截图脚本（永不入库）
+.zcode/
+tmp/
+
 # Local business samples and generated index workbooks in the migrated Miner
 # workspace. Keep code and test fixtures, but do not publish business data.
 miner/*.xlsx
