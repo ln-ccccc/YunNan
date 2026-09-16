@@ -102,7 +102,7 @@ COPY docker/build-mmcv-wheel.py /usr/local/bin/build-mmcv-wheel.py
 
 # The helper validates both cache hits and new wheels. A failed hit is removed,
 # rebuilt and validated before the key is atomically published in this same RUN.
-RUN --mount=type=cache,id=geoview-mmcv-wheels,target=/root/.cache/mmcv-wheels,sharing=locked \
+RUN --mount=type=cache,id=yunnan-mmcv-wheels,target=/root/.cache/mmcv-wheels,sharing=locked \
     --mount=type=cache,target=/root/.cache/pip \
     python /usr/local/bin/build-mmcv-wheel.py \
       --cache-root /root/.cache/mmcv-wheels \
@@ -143,10 +143,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python -c "import cv2, mmcv, mmengine, mmseg, numpy, rasterio, shapely, torch; from mmcv.ops import roi_align; assert torch.version.cuda == '${CUDA_VERSION}'; print(roi_align)" \
     && python /usr/local/bin/check-inference-image.py
 
-LABEL org.opencontainers.image.title="GeoView NVIDIA inference core" \
-      io.geoview.python.version="3.10" \
-      io.geoview.torch.version="2.7.0+cu128" \
-      io.geoview.mmcv.version="2.1.0"
+LABEL org.opencontainers.image.title="YunNan NVIDIA inference core" \
+      io.yunnan.python.version="3.10" \
+      io.yunnan.torch.version="2.7.0+cu128" \
+      io.yunnan.mmcv.version="2.1.0"
 
 
 FROM inference-core AS inference-worker

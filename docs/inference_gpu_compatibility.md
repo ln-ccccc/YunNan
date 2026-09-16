@@ -1,5 +1,10 @@
 # NVIDIA 通用推理兼容与验收
 
+> 命名说明：云南推理镜像统一为 `yunnan-inference-worker:current`（由
+> `docker/build-inference-image.ps1/.sh` 构建晋升）。历史文档中的旧称
+> `geoview-runtime:gpu-cu128` 即同一镜像血统；云南镜像名一律
+> 含 `yunnan`，与江西镜像严格区分。
+
 ## 1. 适配边界
 
 系统不按 5060 或其他具体显卡型号分支。Worker 启动时依次检查：
@@ -17,7 +22,7 @@ GPU 名称和 compute capability 只用于展示和验收记录，不参与设�
 CPU 强制模式：
 
 ```bash
-export INFERENCE_IMAGE=geoview-runtime:gpu-cu128
+export INFERENCE_IMAGE=yunnan-inference-worker:current
 export INFERENCE_ACCELERATOR=cpu
 docker compose -f docker-compose.prod.yml up -d
 ```
@@ -36,8 +41,8 @@ NVIDIA GPU 模式：
 
 ```bash
 docker build -f docker/Dockerfile.inference-gpu \
-  -t geoview-runtime:gpu-cu128 docker
-export INFERENCE_IMAGE=geoview-runtime:gpu-cu128
+  -t yunnan-inference-worker:current docker
+export INFERENCE_IMAGE=yunnan-inference-worker:current
 export INFERENCE_ACCELERATOR=auto
 export INFERENCE_CPU_FALLBACK=true
 docker compose -f docker-compose.prod.yml -f docker-compose.gpu.yml up -d
@@ -95,7 +100,7 @@ docker exec cugrs-inference-worker \
 
 | 项目 | 值 |
 | --- | --- |
-| 镜像 | `geoview-runtime:gpu-cu128` |
+| 镜像 | `yunnan-inference-worker:current` |
 | 镜像内容摘要 | `sha256:7895038cdd5508c581d5399ccb808bfeaec85dab4b452590ca5fb029bda7fcd2` |
 | 本机构建体积 | 14,449,129,716 bytes（约 14.45 GB） |
 | Python / Torch / CUDA | 3.10.20 / 2.7.0+cu128 / 12.8 |
@@ -112,12 +117,12 @@ docker exec cugrs-inference-worker \
 GPU 镜像离线导出与加载：
 
 ```bash
-docker save geoview-runtime:gpu-cu128 -o offline_bundle/images/geoview_runtime_gpu_cu128.tar
-sha256sum offline_bundle/images/geoview_runtime_gpu_cu128.tar \
-  > offline_bundle/images/geoview_runtime_gpu_cu128.tar.sha256
+docker save yunnan-inference-worker:current -o offline_bundle/images/yunnan_inference_worker_current.tar
+sha256sum offline_bundle/images/yunnan_inference_worker_current.tar \
+  > offline_bundle/images/yunnan_inference_worker_current.tar.sha256
 
-docker load -i offline_bundle/images/geoview_runtime_gpu_cu128.tar
-export INFERENCE_IMAGE=geoview-runtime:gpu-cu128
+docker load -i offline_bundle/images/yunnan_inference_worker_current.tar
+export INFERENCE_IMAGE=yunnan-inference-worker:current
 ```
 
 ## 6. 回滚

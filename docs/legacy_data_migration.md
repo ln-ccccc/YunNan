@@ -17,6 +17,8 @@
 
 - `geoview_miner_outputs` 卷：历史 `change_matrix_outputs`
 - `geoview_backend_static` 卷：历史上传/结果图
+  （这两个 `geoview_*` 卷是隔离前历史数据的物理所在，仅作一次性迁移读取来源；
+  日常云南运行一律使用 `yunnan_*` 卷，见 docs/offline_deployment_guide.md 隔离边界）
 - MySQL：项目元数据与旧版 `analysis` 记录
 
 因此执行迁移时，必须让脚本同时看到：
@@ -45,7 +47,7 @@ docker run --rm --entrypoint /bin/sh --network yunnan_default `
   -v "D:/项目/YunNan/miner:/app/miner" `
   -v geoview_miner_outputs:/app/miner/change_matrix_outputs `
   -v geoview_backend_static:/app/backend/static `
-  geoview-runtime:split-clean `
+  yunnan-runtime:current `
   -lc "cd /app/backend && python migrate_legacy_project_data.py --project-name 历史成果迁移项目 --manager admin"
 ```
 

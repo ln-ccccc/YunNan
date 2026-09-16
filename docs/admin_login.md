@@ -37,7 +37,7 @@ ADMIN_PASSWORD=必须显式设置强密码
 ## Docker 联调
 
 ```powershell
-$env:APP_IMAGE="geoview-runtime:split-clean"
+$env:APP_IMAGE="yunnan-runtime:current"
 docker compose -f docker-compose.prod.yml up -d --force-recreate backend miner-api miner-web
 ```
 

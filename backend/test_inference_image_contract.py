@@ -1225,13 +1225,13 @@ class InferenceComposeContractTest(unittest.TestCase):
             for volume in config["services"]["inference-worker"]["volumes"]
         }
 
-    def test_production_worker_uses_legacy_image_with_host_runtime_code(self):
+    def test_production_worker_uses_yunnan_image_with_host_runtime_code(self):
         config = self.compose_config(PROD_COMPOSE)
         volumes = self.volumes_by_target(config)
 
         self.assertEqual(
             config["services"]["inference-worker"]["image"],
-            "geoview-runtime:gpu-cu128",
+            "yunnan-inference-worker:current",
         )
         self.assertIn("/app/backend", volumes)
         self.assertIn("/app/docker", volumes)
@@ -1246,6 +1246,8 @@ class InferenceComposeContractTest(unittest.TestCase):
             "/app/docker": ROOT / "docker",
             "/app/backend": ROOT / "backend",
             "/app/miner/yunnan.kml": ROOT / "miner" / "yunnan.kml",
+            # 项目存储沙箱（PROJECT_STORAGE_ROOT）：worker 需读项目内数据集并写成果
+            "/project_storage": ROOT / "project_storage",
         }
         self.assertEqual(
             {
@@ -1259,7 +1261,9 @@ class InferenceComposeContractTest(unittest.TestCase):
             with self.subTest(target=target):
                 volume = volumes[target]
                 self.assertEqual(volume["type"], "bind")
-                self.assertTrue(volume["read_only"])
+                if target != "/project_storage":
+                    # /project_storage 为读写挂载（成果写入），其余只读
+                    self.assertTrue(volume["read_only"])
                 self.assertEqual(Path(volume["source"]), expected_source.resolve())
 
         for target in (
@@ -1284,7 +1288,7 @@ class InferenceComposeContractTest(unittest.TestCase):
                 }
                 self.assertIn("/app/docker", targets)
 
-    def test_only_gpu_override_grants_nvidia_to_legacy_worker(self):
+    def test_only_gpu_override_grants_nvidia_to_yunnan_worker(self):
         production = self.compose_config(PROD_COMPOSE)
         gpu = self.compose_config(PROD_COMPOSE, GPU_COMPOSE)
 

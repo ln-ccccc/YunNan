@@ -80,7 +80,7 @@ ls -lah offline_bundle/maps/dali
 再用正确变量重启：
 
 ```bash
-export APP_IMAGE=geoview-runtime:current
+export APP_IMAGE=yunnan-runtime:current
 export MYSQL_IMAGE=registry.openanolis.cn/openanolis/mysql:8.0.30-8.6
 export OFFLINE_MAP_DIR="$(pwd)/offline_bundle/maps/dali"
 export MINER_TILE_TIF_PATH="/offline_maps/dali/大理白族自治州_卫图1_Level_15.tif"
@@ -115,7 +115,7 @@ tar -xzf source/GeoView_source_*.tar.gz -C hotfix_src
 `hotfix_rebuild.sh` 会读取 `image_bundle.env`，当前默认重建镜像：
 
 ```text
-geoview-runtime:current
+yunnan-runtime:current
 ```
 
-不要手动改成 `geoview:latest`，否则 `docker-compose.prod.yml` 默认不会使用新镜像。
+不要手动改成非 `yunnan` 前缀的标签（云南镜像名必须含 yunnan，与江西镜像严格区分），否则 `docker-compose.prod.yml` 默认不会使用新镜像。
