@@ -5,7 +5,9 @@ import FileSaver from 'file-saver'
 import global from '@/global'
 import {hideFullScreenLoading} from "@/utils/loading";
 function downloadimgWithWords(index, src, funtype) {
-  fetch(src)
+  // 凭证必带：图片资源在 :5008（/_uploads 全部要求登录），页面在 :3000 跨源，
+  // fetch 默认 same-origin 不带 Cookie 会 401（2026-09-20 审查 P1 回归修复）
+  fetch(src, { credentials: "include" })
     .then((response) => {
       if (!response.ok) throw new Error(`下载失败: ${response.status}`);
       return response.blob();
@@ -41,6 +43,8 @@ function getImgArrayBuffer(url) {
     //通过请求获取文件blob格式
     let xmlhttp = new XMLHttpRequest();
     xmlhttp.open("GET",global.BASEURL+url, true);
+    // 跨源下载必须带 Cookie（/_uploads 要求登录），默认 false 会 401
+    xmlhttp.withCredentials = true;
     xmlhttp.responseType = "blob";
     xmlhttp.onload = function () {
       if (this.status === 200) {

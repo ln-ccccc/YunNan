@@ -12,7 +12,10 @@ export function request(config) {
   });
 
   instance.interceptors.request.use((reqConfig) => {
-    showFullScreenLoading();
+    // 轮询/后台请求可携带 silent 标记，避免每次触发全屏锁死 loading
+    if (!reqConfig.silent) {
+      showFullScreenLoading();
+    }
     return reqConfig;
   });
 
@@ -37,7 +40,11 @@ export function request(config) {
         redirectToLegacyLogin("expired");
         return Promise.reject(new Error(error?.response?.data?.msg || "登录已失效"));
       }
-      return Promise.reject(new Error(error?.response?.data?.msg || "网络异常，请检查后端服务是否启动"));
+      // HTTP 层错误（4xx/5xx/超时）此前静默 reject，用户点按钮后无任何反馈；
+      // 与 code!==0 分支对齐给出提示（大量调用点自行 .catch 处理时也不会重复弹窗）
+      const message = error?.response?.data?.msg || "网络异常，请检查后端服务是否启动";
+      ElMessage.error(message);
+      return Promise.reject(new Error(message));
     },
   );
 

@@ -447,15 +447,6 @@ export default {
       projectId: readProjectId(window.location.search)
     };
   },
-  watch: {
-    uploadSrc: {
-      handler(newVal, oldVal) {
-        this.uploadSrc = newVal
-      },
-      deep: true,
-      immediate: true
-    }
-  },
   created() {
     this.getUploadImg("地物分类");
   },
@@ -483,9 +474,6 @@ export default {
     downloadimgWithWords,
     flashHistoryDeleteOne,
     flashHistoryClear,
-    checkUpload() {
-      this.isUpload = this.afterImg.length !== 0;
-    },
     clearQueue() {
       this.fileList = [];
       if (this.$refs.folderInput) this.$refs.folderInput.value = "";

@@ -83,7 +83,8 @@ export default {
       this.$router.go(-1);
     },
     goHome() {
-      this.$router.push('detectchanges');
+      // 回真实存在的首页路由（detectchanges 从未注册，点击后仍停留 404）
+      this.$router.push('/home');
     }
   }
 };

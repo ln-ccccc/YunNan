@@ -277,9 +277,14 @@ export default {
   },
   beforeUnmount() {
     this.destroyMap();
+    // 组件销毁后丢弃在途响应（route query 变化会复用实例并发起第二次 reload）
+    this.reloadSeq = -1;
   },
   methods: {
     async reloadResult() {
+      // 竞态守卫：两次 reload 并发时（前进/后退、重复进入），先发后至的旧响应
+      // 会把 A 成果的数据装进 B 成果的 context，保存时即写错对象
+      const seq = (this.reloadSeq = (this.reloadSeq || 0) + 1);
       this.destroyMap();
       this.context = readClassificationResultContext(window.location.search);
       this.result = null;
@@ -298,6 +303,10 @@ export default {
           getClassificationResult(this.context.projectId, this.context.resultId),
           getClassificationRevisions(this.context.projectId, this.context.resultId),
         ]);
+        if (seq !== this.reloadSeq || seq === -1) {
+          // 过期响应（已被更新的 reload 或卸载取代）：丢弃，不覆盖新状态
+          return;
+        }
         this.result = result;
         this.revisions = revisionPayload?.revisions || [];
         this.activeClassCode = Number(result?.classes?.[0]?.class_code ?? 0);
@@ -307,9 +316,14 @@ export default {
           this.initializeMap();
         }
       } catch (error) {
+        if (seq !== this.reloadSeq) {
+          return;
+        }
         this.loadError = error?.message || '分类成果读取失败';
       } finally {
-        this.loading = false;
+        if (seq === this.reloadSeq) {
+          this.loading = false;
+        }
       }
     },
     initializeMap() {

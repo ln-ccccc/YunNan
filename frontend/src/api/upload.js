@@ -48,6 +48,8 @@ export function kmlRoiInfer(data){
 export function getKmlRoiJob(jobId){
     return request({
         method:'GET',
-        url:`/api/inference/jobs/${encodeURIComponent(jobId)}`
+        url:`/api/inference/jobs/${encodeURIComponent(jobId)}`,
+        // 推理轮询每秒一次：不触发全屏 loading 锁死页面（AGENTS §10 页面可继续操作）
+        silent: true
     })
 }

@@ -18,14 +18,19 @@ const inferenceTerminalStatuses = new Set([
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+// 轮询上限：与后端 INFERENCE_JOB_TIMEOUT_SECONDS（默认 3600s）对齐并留裕量；
+// 任务卡死在非终态时避免无限轮询
+const MAX_POLL_ATTEMPTS = 3700;
+
 async function waitForKmlRoiJob(jobId) {
-  while (true) {
+  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
     const response = await getKmlRoiJob(jobId);
     const job = response?.data?.data;
     if (!job?.status) throw new Error("推理任务查询未返回有效状态");
     if (inferenceTerminalStatuses.has(job.status)) return job;
     await wait(1000);
   }
+  throw new Error(`推理任务 ${jobId} 长时间未结束，已停止等待，请稍后在历史记录中查看`);
 }
 
 function getUploadImg(type) {
