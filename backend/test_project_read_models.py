@@ -910,6 +910,22 @@ class TestProjectReadModels(unittest.TestCase):
             self.json_body(response), self.load_fixture("assets-invalid-filter.json")
         )
 
+    def test_assets_internal_error_is_sanitized(self):
+        """契约失败态：资产读模型内部异常只回通用文案，不泄漏存储路径。"""
+        self._seed_blocked_project()
+
+        with patch(
+            "applications.api.project.get_project_assets",
+            side_effect=PermissionError(f"无法读取 {self.storage_root}/secret.tif"),
+        ):
+            response = self.client.get(f"/api/projects/{self.PROJECT_ID}/assets")
+
+        self.assertEqual(response.status_code, 500, response.get_data(as_text=True))
+        body = self.json_body(response)
+        self.assertFalse(body["success"])
+        self.assertEqual(body["msg"], "项目资产读取失败，请检查服务日志")
+        self.assertNotIn(str(self.storage_root), json.dumps(body, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     unittest.main()

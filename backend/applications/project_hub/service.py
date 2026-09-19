@@ -116,6 +116,16 @@ def _json_load(value, default):
         return default
 
 
+def _parse_iso_datetime(value):
+    """快照 manifest 里的 ISO 时间串回 datetime；非法/缺失返回 None。"""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _validate_incoming_tiff_storage_key(value):
     storage_key = str(value or "").strip()
     path = Path(storage_key)
@@ -1165,6 +1175,8 @@ def _serialize_internal_activity(activity):
         "event_type": activity.event_type,
         "actor": activity.actor,
         "payload": _json_load(activity.payload_json, {}),
+        # 审计时间线的主数据：恢复时回写原始时间，避免整段历史被压缩到恢复时刻
+        "created_at": activity.create_time.isoformat() if activity.create_time else None,
     }
 
 
@@ -1394,12 +1406,14 @@ def restore_backup(project_id, backup_id, actor="system"):
             )
 
         for item in manifest["activities"]:
+            created_at = _parse_iso_datetime(item.get("created_at"))
             db.session.add(
                 ProjectActivityLog(
                     project_id=project.id,
                     event_type=item["event_type"],
                     actor=item.get("actor") or "system",
                     payload_json=_json_dump(item.get("payload")),
+                    create_time=created_at or datetime.now(),
                 )
             )
 

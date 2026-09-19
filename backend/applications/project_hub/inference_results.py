@@ -251,7 +251,10 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
             if had_summary:
                 os.replace(summary_target, summary_backup)
             os.replace(summary_temp, summary_target)
-            inference_dataset = _upsert_inference_dataset(project.id, fid, year, target_dir, copied)
+            # 资产读模型只认相对 storage key（assets.resolve_storage_path 拒绝绝对路径），
+            # 写绝对路径会把本已就绪的成果资产错算成 registered（2026-09-20 审查契约修复）
+            dataset_storage_key = f"projects/{project.id}/outputs/inference/{fid}"
+            inference_dataset = _upsert_inference_dataset(project.id, fid, year, dataset_storage_key, copied)
             db.session.commit()
         except Exception:
             db.session.rollback()

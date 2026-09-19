@@ -534,7 +534,12 @@ def list_basemap_candidates(project_id):
     for path in sorted((root / "incoming").rglob("*")):
         if not path.is_file() or path.suffix.lower() not in {".tif", ".tiff"}:
             continue
-        metadata = _raster_metadata(path)
+        try:
+            metadata = _raster_metadata(path)
+        except (ValueError, OSError, RuntimeError):
+            # incoming 是运维投递区，单个截断/损坏 tif 不应让整个候选列表接口
+            # 失败——跳过坏文件（注册时单独选择它仍会得到明确报错）
+            continue
         items.append(
             {
                 "candidate": path.relative_to(root).as_posix(),

@@ -440,6 +440,51 @@ class TestInferenceJobAPI(unittest.TestCase):
         response = self.client.get("/api/inference/jobs/missing")
         self.assertEqual(response.status_code, 401)
 
+    def test_get_job_missing_returns_404_for_logged_in_user(self):
+        """契约补齐：登录态请求不存在任务走独立 404 分支（此前只测过匿名 401）。"""
+        self.login()
+        response = self.client.get("/api/inference/jobs/does-not-exist")
+        self.assertEqual(response.status_code, 404)
+        data = json.loads(response.data.decode("utf-8"))
+        self.assertFalse(data["success"])
+        self.assertIn("推理任务不存在", data["msg"])
+
+    def test_cancel_job_contract_four_states(self):
+        """契约四态：成功（queued→cancelled）/ 幂等边界（终态任务不再改状态）/
+        无数据（404）/ 失败（服务异常脱敏 500）。"""
+        self.login()
+        seed = self.seed_ready_project()
+
+        # 成功：queued 任务取消后直接落终态
+        response = self.post_safe_job(seed)
+        self.assertEqual(response.status_code, 201)
+        job_id = json.loads(response.data.decode("utf-8"))["data"]["id"]
+        response = self.client.post(f"/api/inference/jobs/{job_id}/cancel")
+        self.assertEqual(response.status_code, 200)
+        cancelled = json.loads(response.data.decode("utf-8"))["data"]
+        self.assertEqual(cancelled["status"], "cancelled")
+
+        # 幂等边界：对终态任务再取消不改变状态语义
+        response = self.client.post(f"/api/inference/jobs/{job_id}/cancel")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.data.decode("utf-8"))["data"]["status"], "cancelled")
+
+        # 无数据
+        response = self.client.post("/api/inference/jobs/does-not-exist/cancel")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("推理任务不存在", json.loads(response.data.decode("utf-8"))["msg"])
+
+        # 失败：服务内部异常不回显内部细节
+        with patch(
+            "applications.api.inference.request_job_cancel",
+            side_effect=PermissionError("db error /internal/path"),
+        ):
+            response = self.client.post(f"/api/inference/jobs/{job_id}/cancel")
+        self.assertEqual(response.status_code, 500)
+        data = json.loads(response.data.decode("utf-8"))
+        self.assertFalse(data["success"])
+        self.assertNotIn("/internal/path", json.dumps(data))
+
     def test_create_job_rejects_legacy_path_body(self):
         self.login()
         response = self.client.post(

@@ -3,6 +3,8 @@ import math
 from datetime import timezone
 from pathlib import Path
 
+from sqlalchemy.orm import load_only
+
 from applications.models.classification_result import (
     ClassificationResult,
     ClassificationRevision,
@@ -217,7 +219,7 @@ def _asset(
     }
 
 
-def _relative_existing_path(storage_root, value):
+def _relative_existing_path(storage_root, value, allow_dir=False):
     raw_value = str(value or "").strip()
     if not raw_value:
         return None
@@ -225,7 +227,12 @@ def _relative_existing_path(storage_root, value):
         candidate = resolve_storage_path(storage_root, raw_value)
     except ValueError:
         return None
-    return candidate if candidate.is_file() else None
+    if candidate.is_file():
+        return candidate
+    # classification_dir 类成果的 file_path 指向目录而非文件
+    if allow_dir and candidate.is_dir():
+        return candidate
+    return None
 
 
 def _configured_result_id(dataset):
@@ -304,6 +311,7 @@ def _dataset_asset(dataset, storage_root, result_ids, result_identities):
         or _dataset_matches_result(dataset, result_identities)
     ):
         return None
+    candidate = _relative_existing_path(storage_root, dataset.file_path, allow_dir=True)
     asset_status = "ready" if candidate is not None else "registered"
     return _asset(
         asset_id=f"inference_dataset:{dataset.id}",
@@ -444,6 +452,17 @@ def list_project_assets(project, asset_type=None, status=None):
             ClassificationRevision.result_id == ClassificationResult.id,
         )
         .filter(ClassificationResult.project_id == project_id)
+        # 只取渲染所需的轻量列：整行加载会连带拉出 MEDIUMTEXT 的
+        # feature_collection_json（单成果矢量 64KB+，随人工保存无上限增长），
+        # 概览/资产是热路径，属无界全量加载（AGENTS §10）
+        .options(
+            load_only(
+                ClassificationRevision.id,
+                ClassificationRevision.result_id,
+                ClassificationRevision.revision_no,
+                ClassificationRevision.create_time,
+            )
+        )
         .all()
     )
     for revision in revisions:

@@ -238,12 +238,26 @@ class TestInferenceRunner(unittest.TestCase):
         self.assertIn(str(training_checkpoint.resolve()), message)
 
     def test_caller_prefers_inference_only_checkpoint_when_present(self):
+        """密封化改造：此前依赖真实 model.inference.pth 存在（仅有权重的环境才能通过）。"""
         caller = load_caller_module()
-
-        _, checkpoint_path = caller.get_model_paths("cc-ln/CUGRS")
-
-        self.assertEqual(Path(checkpoint_path).name, "model.inference.pth")
-        self.assertTrue(Path(checkpoint_path).is_file())
+        original_config = caller.CUGRS_CONFIG
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            (temp_path / "config.py").touch()
+            (temp_path / "model.inference.pth").touch()
+            (temp_path / "model.pth").touch()
+            caller.CUGRS_CONFIG = {
+                "model_id": "cc-ln/CUGRS",
+                "config_path": str(temp_path / "config.py"),
+                "inference_checkpoint_path": str(temp_path / "model.inference.pth"),
+                "checkpoint_path": str(temp_path / "model.pth"),
+            }
+            try:
+                _, checkpoint_path = caller.get_model_paths("cc-ln/CUGRS")
+                self.assertEqual(Path(checkpoint_path).name, "model.inference.pth")
+                self.assertTrue(Path(checkpoint_path).is_file())
+            finally:
+                caller.CUGRS_CONFIG = original_config
 
     def test_production_model_path_requires_inference_checkpoint(self):
         caller = load_caller_module()

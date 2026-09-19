@@ -77,6 +77,18 @@ def migrate_indices(project):
     marker = output_dir / ".migrated-v2"
     if marker.exists():
         return "existing"
+    # 源 xlsx 全部缺失（未挂载/交付包漏装）时不迁移也不写完成标记：
+    # 否则失败被固化为"已完成"，补装文件后也不会重试（2026-09-20 审查 P2）
+    available_sources = {
+        index_name: source
+        for index_name, filename in INDEX_FILES.items()
+        if (source := Path("/app/miner") / filename).is_file()
+    }
+    if not available_sources:
+        raise FileNotFoundError(
+            "指数迁移源缺失：/app/miner 下未找到任何 "
+            f"{sorted(INDEX_FILES.values())}，跳过迁移且不写完成标记"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     source_dir.mkdir(parents=True, exist_ok=True)
     for old_payload in output_dir.glob("*.json"):
@@ -84,8 +96,8 @@ def migrate_indices(project):
     bound_fids = {row.mine_fid for row in project.mines}
     by_fid = {}
     for index_name, filename in INDEX_FILES.items():
-        source = Path("/app/miner") / filename
-        if not source.is_file():
+        source = available_sources.get(index_name)
+        if source is None:
             continue
         target = source_dir / filename
         if not target.exists():

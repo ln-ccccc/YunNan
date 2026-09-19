@@ -338,6 +338,7 @@ class InferenceWorker:
             else None
         )
         try:
+            is_project_job = payload.get("project_id") not in (None, "")
             if payload.get("requested_device") == "cpu" and self.resolution.effective != "cpu":
                 restore_process_device = True
                 self.resolution = SimpleNamespace(
@@ -362,7 +363,7 @@ class InferenceWorker:
                     self.job_store.set_job_workdir(job, fallback_work_dir)
                 summary = self._run_pipeline(payload, fallback_work_dir)
             if (
-                payload.get("project_id") not in (None, "")
+                is_project_job
                 and summary.get("written_fid_list")
                 and summary.get("status") in {"completed", "succeeded", "partial_failed"}
             ):
@@ -385,6 +386,12 @@ class InferenceWorker:
                 }
                 summary["display_results"] = publication["display_results"]
                 summary["classification_results"] = publication["classification_results"]
+            if is_project_job:
+                # 项目任务的暂存目录（瓦片 TIFF、mmseg 输出，GB 级）在发布完成后
+                # 使命结束——发布方已把成果复制进项目存储；不清理会导致
+                # runtime/inference_jobs 无界增长。失败路径仍受 keep_failed_workdir 控制
+                shutil.rmtree(work_dir, ignore_errors=True)
+                shutil.rmtree(self.runtime_root / f"{job.id}-cpu-fallback", ignore_errors=True)
             status = summary.get("status", "failed")
             if status in {"completed", "no_features"}:
                 status = "succeeded"
@@ -401,6 +408,8 @@ class InferenceWorker:
         except Exception as error:
             if not self.keep_failed_workdir:
                 shutil.rmtree(work_dir, ignore_errors=True)
+                # OOM 回退二次执行的暂存目录同样按失败策略清理，避免泄漏
+                shutil.rmtree(self.runtime_root / f"{job.id}-cpu-fallback", ignore_errors=True)
             if str(error) == "INFERENCE_CANCELLED":
                 return self.job_store.finish_job(
                     job,
