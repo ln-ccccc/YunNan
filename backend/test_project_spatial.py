@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -522,6 +523,118 @@ class TestProjectSpatialState(unittest.TestCase):
                 self.assertEqual(result["job"]["status"], "queued")
                 with self.assertRaisesRegex(ValueError, "incoming"):
                     register_basemap(project.id, "../outside.tif", 8, 15)
+            finally:
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
+    def test_basemap_scan_skips_in_progress_copies(self):
+        """甲方建议 2026-09-03：.staging/.part 命名的半文件不得进入候选列表，
+        也不得被登记（复制完成后才改回正式名）。"""
+        from applications.project_hub.spatial_service import list_basemap_candidates, register_basemap
+
+        created = create_project({"name": "半文件项目", "region": "Kunming"})
+        project = Project.query.get(created["id"])
+        project.spatial_resources.append(
+            ProjectSpatialResource(
+                resource_type="mine_vector",
+                version=1,
+                status="active",
+                source_path=f"projects/{project.id}/mines/1/source.geojson",
+                normalized_path=f"projects/{project.id}/mines/1/mines.geojson",
+                source_format="geojson",
+                bounds_json=json.dumps([102.0, 25.0, 102.5, 25.5]),
+            )
+        )
+        db.session.commit()
+
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            incoming = os.path.join(temp_dir, "incoming")
+            os.makedirs(incoming)
+            tif_path = os.path.join(incoming, "kunming.tif")
+            driver = gdal.GetDriverByName("GTiff")
+            dataset = driver.Create(tif_path, 10, 10, 1, gdal.GDT_Byte)
+            dataset.SetGeoTransform([102.0, 0.05, 0.0, 25.5, 0.0, -0.05])
+            crs = osr.SpatialReference()
+            crs.ImportFromEPSG(4326)
+            dataset.SetProjection(crs.ExportToWkt())
+            dataset = None
+            # 复制中的两种命名形态：后缀缀尾（.tif.part 不匹配 tif 后缀，天然排除）
+            # 与中间插段（base.staging.tif 会匹配 .tif 后缀，必须显式过滤）
+            with open(os.path.join(incoming, "kunming.tif.part"), "wb") as fh:
+                fh.write(b"\x00" * 16)
+            shutil.copy(tif_path, os.path.join(incoming, "base.staging.tif"))
+            try:
+                candidates = list_basemap_candidates(project.id)
+                self.assertEqual(
+                    [item["candidate"] for item in candidates],
+                    ["incoming/kunming.tif"],
+                    "半文件（.staging/.part 命名）不得出现在候选列表",
+                )
+                with self.assertRaisesRegex(ValueError, "复制中"):
+                    register_basemap(project.id, "incoming/base.staging.tif", 8, 15)
+            finally:
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
+    def test_worker_copy_recovers_from_interrupted_partial_copy(self):
+        """甲方建议 2026-09-03：源文件复制必须原子；中断留下的半文件在重跑时
+        被完整副本替换（曾经 target.exists() 即跳过导致切片读坏文件），并写 .ready。"""
+        from applications.project_hub.spatial_worker import _copy_source_to_project
+
+        created = create_project({"name": "原子复制项目", "region": "Kunming"})
+        project = Project.query.get(created["id"])
+        resource = ProjectSpatialResource(
+            project_id=project.id,
+            resource_type="basemap",
+            version=1,
+            status="pending",
+            source_path="incoming/dali.tif",
+            source_format="tif",
+        )
+        db.session.add(resource)
+        db.session.flush()
+
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            incoming = os.path.join(temp_dir, "incoming")
+            os.makedirs(incoming)
+            source = os.path.join(incoming, "dali.tif")
+            with open(source, "wb") as fh:
+                fh.write(b"\x7f" * 4096)
+            with open(os.path.join(incoming, "dali.tfw"), "w", encoding="utf-8") as fh:
+                fh.write("1.0\n0\n0\n-1.0\n0\n0\n")
+            # 模拟上次复制中断：目标目录里已有半文件（字节数不足、无 .ready）
+            target_dir = (
+                Path(temp_dir) / "projects" / str(project.id) / "basemaps" / str(resource.id)
+            )
+            target_dir.mkdir(parents=True)
+            partial = target_dir / "dali.tif"
+            partial.write_bytes(b"\x7f" * 100)
+            try:
+                target = _copy_source_to_project(resource, Path(temp_dir))
+
+                self.assertEqual(target.stat().st_size, 4096, "半文件必须被完整副本替换")
+                self.assertTrue(
+                    (target_dir / "dali.tif.ready").is_file(),
+                    "复制完成必须写 .ready 完成标记",
+                )
+                self.assertEqual((target_dir / "dali.tfw").read_text(encoding="utf-8")[:3], "1.0")
+
+                # 幂等：再次运行（模拟 worker 重启续跑）不重复制、不报错
+                target_again = _copy_source_to_project(resource, Path(temp_dir))
+                self.assertEqual(target_again, target)
+                self.assertEqual(target.stat().st_size, 4096)
+                self.assertEqual(
+                    resource.source_path,
+                    f"projects/{project.id}/basemaps/{resource.id}/dali.tif",
+                )
             finally:
                 if previous_root is None:
                     os.environ.pop("PROJECT_STORAGE_ROOT", None)

@@ -502,12 +502,25 @@ def _active_mine_bounds(project_id):
     return json.loads(resource.bounds_json) if resource else None
 
 
+# 投递约定（甲方建议 2026-09-03）：复制中的半文件必须以这些标记段命名
+# （如 base.tif.part / base.staging.tif），复制完成后才改回正式名；
+# 可选地由投递工具写入 <name>.ready 作为完成标记（系统不强制）。
+_INCOMPLETE_COPY_MARKERS = ("staging", "part", "tmp", "crdownload")
+
+
+def _is_incomplete_copy_name(name):
+    segments = str(name).casefold().replace(" ", "").split(".")
+    return any(marker in segments for marker in _INCOMPLETE_COPY_MARKERS)
+
+
 def _candidate_relative_path(candidate):
     value = Path(str(candidate or ""))
     if value.is_absolute() or not value.parts or value.parts[0].casefold() != "incoming":
         raise ValueError("底图必须来自 project_storage/incoming 目录")
     if value.suffix.lower() not in {".tif", ".tiff"}:
         raise ValueError("底图仅支持 TIF/TIFF")
+    if _is_incomplete_copy_name(value.name):
+        raise ValueError("底图文件仍在复制中（.staging/.part），请等待复制完成后再登记")
     return value
 
 
@@ -533,6 +546,9 @@ def list_basemap_candidates(project_id):
     items = []
     for path in sorted((root / "incoming").rglob("*")):
         if not path.is_file() or path.suffix.lower() not in {".tif", ".tiff"}:
+            continue
+        # 复制中的半文件（.staging/.part 命名约定）不出现在候选列表
+        if _is_incomplete_copy_name(path.name):
             continue
         try:
             metadata = _raster_metadata(path)

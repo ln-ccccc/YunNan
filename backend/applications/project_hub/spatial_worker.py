@@ -117,6 +117,18 @@ def _activity(project_id, event_type, payload):
     )
 
 
+def _atomic_copy2(source, target):
+    """复制到同目录临时文件后原子替换（甲方建议 2026-09-03）：
+    GB 级复制中断不会在目标位置留半文件，重试总是得到完整副本。"""
+    temporary = target.with_name(f".{target.name}.copying")
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink(missing_ok=True)
+
+
 def _copy_source_to_project(resource, storage_root):
     source = resolve_storage_path(storage_root, resource.source_path)
     if not source.is_file():
@@ -124,8 +136,17 @@ def _copy_source_to_project(resource, storage_root):
     target_dir = storage_root / "projects" / str(resource.project_id) / "basemaps" / str(resource.id)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / source.name
-    if source.resolve() != target.resolve() and not target.exists():
-        shutil.copy2(source, target)
+    ready_marker = target.with_name(f"{target.name}.ready")
+    if source.resolve() != target.resolve():
+        # 曾有失败模式：中断的复制留下半文件，target.exists() 即跳过导致切片读坏文件。
+        # 现改为完整副本校验（.ready 标记或字节数一致），不一致则原子重复制
+        already_copied = target.exists() and (
+            ready_marker.is_file() or target.stat().st_size == source.stat().st_size
+        )
+        if not already_copied:
+            _atomic_copy2(source, target)
+            # 完成标记：记录字节数，供续跑时免重复制快速校验
+            ready_marker.write_text(str(target.stat().st_size), encoding="utf-8")
         possible_sidecars = [
             Path(f"{source}.ovr"),
             source.with_suffix(".tfw"),
@@ -136,8 +157,12 @@ def _copy_source_to_project(resource, storage_root):
             source.with_suffix(".aux.xml"),
         ]
         for sidecar in possible_sidecars:
-            if sidecar.is_file():
-                shutil.copy2(sidecar, target_dir / sidecar.name)
+            if not sidecar.is_file():
+                continue
+            sidecar_target = target_dir / sidecar.name
+            if sidecar_target.exists() and sidecar_target.stat().st_size == sidecar.stat().st_size:
+                continue
+            _atomic_copy2(sidecar, sidecar_target)
     resource.source_path = target.relative_to(storage_root).as_posix()
     db.session.commit()
     return target
