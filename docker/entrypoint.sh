@@ -108,7 +108,7 @@ cd /app/frontend
 npm run serve -- --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}" &
 FRONTEND_PID=$!
 
-# --- Miner (鐭垮北鐩戞祴绯荤粺) conditional startup ---
+# --- Miner (矿山监测系统) conditional startup ---
 MINER_BACKEND_PID=""
 MINER_FRONTEND_PID=""
 

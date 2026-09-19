@@ -56,22 +56,39 @@ function proxyRequest(request, response, proxy) {
 }
 
 http.createServer((request, response) => {
-  const proxy = proxies.find((item) => request.url.startsWith(item.prefix));
-  if (proxy) {
-    proxyRequest(request, response, proxy);
-    return;
-  }
+  try {
+    const proxy = proxies.find((item) => request.url.startsWith(item.prefix));
+    if (proxy) {
+      proxyRequest(request, response, proxy);
+      return;
+    }
 
-  const requestPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-  const safePath = path.normalize(requestPath).replace(/^(\.\.[/\\])+/, '');
-  let filePath = path.join(root, safePath);
-  if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
-    filePath = path.join(filePath, 'index.html');
+    // 截断的百分号编码（如 /%C3）会让 decodeURIComponent 抛 URIError；
+    // 回调内同步异常会让整个静态服务进程退出（2026-09-20 审查 P1），按 400 拒绝即可
+    let requestPath;
+    try {
+      requestPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    } catch {
+      response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('Bad request');
+      return;
+    }
+    const safePath = path.normalize(requestPath).replace(/^(\.\.[/\\])+/, '');
+    let filePath = path.join(root, safePath);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+      filePath = path.join(filePath, 'index.html');
+    }
+    if (!fs.existsSync(filePath)) {
+      filePath = path.join(root, fallback);
+    }
+    sendFile(response, filePath);
+  } catch (error) {
+    console.error('[static-server] request handler error:', error);
+    if (!response.headersSent) {
+      response.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+    }
+    response.end('Internal error');
   }
-  if (!fs.existsSync(filePath)) {
-    filePath = path.join(root, fallback);
-  }
-  sendFile(response, filePath);
 }).listen(port, '0.0.0.0', () => {
   console.log(`[static-server] ${root} -> http://0.0.0.0:${port}`);
 });

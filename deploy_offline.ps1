@@ -80,7 +80,16 @@ function Invoke-Docker {
 
     $commandText = 'docker ' + ($Arguments -join ' ')
     if ($Capture) {
-        $output = & docker @Arguments 2>&1
+        # PS 5.1 下 EAP=Stop 时 docker 输出任何 stderr 警告（即使 exit 0）都会以
+        # NativeCommandError 中止脚本；捕获分支临时放宽，仅以 $LASTEXITCODE 判败
+        $previousEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $output = & docker @Arguments 2>&1 | ForEach-Object { $_.ToString() }
+        }
+        finally {
+            $ErrorActionPreference = $previousEap
+        }
     }
     else {
         & docker @Arguments
@@ -470,6 +479,23 @@ foreach ($requiredKey in @('ADMIN_USERNAME', 'ADMIN_PASSWORD', 'SECRET_KEY', 'MY
     if (-not $envValues.ContainsKey($requiredKey) -or [string]::IsNullOrWhiteSpace([string]$envValues[$requiredKey])) {
         throw ".env requires a non-empty $requiredKey value."
     }
+}
+
+# 弱口令闸（2026-09-20 审查）：三口令不得相同且长度 >= 8，拒绝 5 位弱口令直接过闸
+$adminPassword = [string]$envValues['ADMIN_PASSWORD']
+$mysqlPassword = [string]$envValues['MYSQL_PASSWORD']
+$mysqlRootPassword = [string]$envValues['MYSQL_ROOT_PASSWORD']
+foreach ($passwordPair in @(
+        @('ADMIN_PASSWORD', $adminPassword),
+        @('MYSQL_PASSWORD', $mysqlPassword),
+        @('MYSQL_ROOT_PASSWORD', $mysqlRootPassword)
+    )) {
+    if ($passwordPair[1].Length -lt 8) {
+        throw ".env 中 $($passwordPair[0]) 长度不足 8 位（当前 $($passwordPair[1].Length) 位），请先更换强口令再部署。"
+    }
+}
+if ($adminPassword -eq $mysqlPassword -or $adminPassword -eq $mysqlRootPassword -or $mysqlPassword -eq $mysqlRootPassword) {
+    throw '.env 中 ADMIN_PASSWORD / MYSQL_PASSWORD / MYSQL_ROOT_PASSWORD 不得使用同一口令，请分别设置后再部署。'
 }
 
 $occupiedPorts = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |

@@ -27,7 +27,7 @@ def existing_zoom_levels(tile_root: Path) -> list[int]:
 
 
 def resolve_source_tif() -> Path | None:
-    configured = str(os.environ.get("MINER_TILE_TIF_PATH", "")).strip().rstrip("n")
+    configured = str(os.environ.get("MINER_TILE_TIF_PATH", "")).strip()
     if configured:
         candidate = Path(configured)
         if candidate.exists() and candidate.is_file():
