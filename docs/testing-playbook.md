@@ -159,6 +159,43 @@
 **本项目实例（2026-09-09）**：项目工作台内容高 1897px、视口 768px，`body{overflow-y:hidden}` + 工作台外壳 `height:100vh` 无 overflow，用户滚轮失灵、下半页面板（资产/活动/导出）永远够不着。修复：仅给工作台外壳加 `overflow-y: auto`（`2739884`）；修复后滚动 600px 底部面板进入视口（scrollTop 可驱使），地图视图的满屏不滚布局不受影响。
 
 
+### 14 后端全量回归的标准姿势（2026-09-20 审查定型）✅
+
+**解决什么问题**：本机 conda 无一环境能跑后端测试（base 有 Flask 无 pytest、satellite-py310 有 pytest 无 Flask、geoview py3.7 且 conda.sh 指向失效路径），而"能跑"的容器里又埋着三个连环坑。
+
+**标准命令**（主树全量回归，40 秒）：
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sh \
+  -e PROJ_LIB=/opt/conda/envs/MMSeg310/share/proj \
+  -e GDAL_DATA=/opt/conda/envs/MMSeg310/share/gdal \
+  -e PROJ_DATA=/opt/conda/envs/MMSeg310/share/proj \
+  -v "D:\项目\YunNan:/app" yunnan-runtime:current \
+  -c "cd /app/backend && pip install -q pytest 2>/dev/null; python -m pytest test_*.py -q --tb=line -p no:cacheprovider"
+```
+
+**三个坑（每个都实测踩过）**：
+1. **运行容器挂的是 worktree**：yunnan-backend 等五个容器的 /app 源码挂载来自 `.worktrees/feat-project-hub-low-coupling-foundation`，`docker exec` 进去跑测的是旧分支代码，不代表 main。
+2. **docker cp 主树进运行容器 = 双包崩溃**：容器里已有 /app/backend 的 applications 包，再 cp 一份到 /main-backend 会造出两个同名包，`pkgutil`/`get_root_path` 解析抛 `ValueError: PurePosixPath('/') has an empty name`，51 个测试 1.4 秒全崩。要么整容器只挂一份代码，要么别混。
+3. **MSYS 路径改写制造假失败**：Git-Bash 下 `docker run -e VAR=/linux/path` 的参数会被静默改写成 `D:/Git/linux/path`——GDAL/PROJ 齐刷刷报 "Cannot find proj.db"，9 个测试假失败（与技巧 14 旧坑同源但更隐蔽：值在容器里看是 Windows 路径才露馅）。凡 `docker run -e`/`-v` 涉及 Linux 绝对路径，一律加 `MSYS_NO_PATHCONV=1`。
+4. **镜像有 ENTRYPOINT**：`docker run image sh -c ...` 的 sh 会变成 entrypoint 的参数（报 `sleep: invalid option -- 'c'`），必须 `--entrypoint sh`。
+
+**判定基线**：当前 main 全绿口径 360 passed / 10 skipped / 149 subtests（pytest 9.1.1，容器内装）。
+
+### 15. open-code-review 委托模式做全量审查（2026-09-20）✅
+
+**解决什么问题**：要对 4 万行陌生/半陌生代码做甲方验收级审查，纯人读既慢又漏。
+
+**做法**：
+1. `npm i -g @alibaba-group/open-code-review`，用 **delegate 模式**（无需 LLM 配置）：`ocr delegate rule <files>` 按语言组输出系统规则（Python 详规/JS 详规/默认五轴），`ocr delegate preview` 看文件筛选。
+2. 按 OCR 的 smart-file-packaging 思想分包（模块+语言+关联文件归并，单包 ≤6k 行，上下文隔离），每包一个并行 agent，prompt 里注入规则文件 + 项目契约 + 输出格式（file:line/证据/触发条件/修法）与反合理化铁律（精确优先、安全类先确认攻击面、并发类先确认上下文）。
+3. **反思环节**（OCR 评论反思模块思想）：汇总后逐条亲自读代码复核再动手——本轮 7 包产出 ~70 条，复核砍掉误报、确认两包独立收敛同一 P1（60MB vs 8GB）后才修。
+4. 修复回归后按 severity 汇报，快照沉淀在 docs/code-review/。
+
+**为什么好**：规则来自实战检验的确定性管线而非即兴发挥；分包并行把 4 万行压到 40 分钟出全部 findings；强制证据格式让误报在复核环节现形。
+
+**本项目实例（2026-09-20）**：docs/code-review/20260920-audit.md——7 包 70+ 条 findings，P1×9 当晚全部修复，后端 353→360 全绿、miner 47→48、双前端构建绿。
+
+
 ---
 
 ## 二、想不出测试思路时的检查单
