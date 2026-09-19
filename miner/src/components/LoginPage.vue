@@ -37,7 +37,8 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['login']);
-const username = ref('admin');
+// 不预填真实账号名：公开登录页直接暴露有效账号会降低暴力破解成本
+const username = ref('');
 const password = ref('');
 
 const submitLogin = () => {

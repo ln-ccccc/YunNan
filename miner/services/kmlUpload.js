@@ -1,6 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 
+// 与前端上传入口的 50MB 上限对齐；服务端必须自设上限（2026-09-20 审查 P2），
+// 否则登录用户可循环提交超大文本填满共享磁盘
+const MAX_KML_CONTENT_BYTES = 50 * 1024 * 1024;
+
 export function saveKmlUpload({ uploadRoot, filename, content }) {
   const originalName = String(filename || '').trim();
   const safeName = path.basename(originalName);
@@ -11,6 +15,9 @@ export function saveKmlUpload({ uploadRoot, filename, content }) {
   const text = String(content || '');
   if (!text.trim()) {
     throw new Error('KML 内容不能为空');
+  }
+  if (Buffer.byteLength(text, 'utf-8') > MAX_KML_CONTENT_BYTES) {
+    throw new Error('KML 文件超过 50MB 上限');
   }
 
   const resolvedRoot = path.resolve(uploadRoot);

@@ -54,6 +54,8 @@
         :landTypeList="landTypeList"
         :miningMethodList="miningMethodList"
         :changeAreaStats="changeAreaStats"
+        :collapsed="rightSidebarCollapsed"
+        @toggle="rightSidebarCollapsed = !rightSidebarCollapsed"
       />
     </main>
 
@@ -135,6 +137,7 @@ const projectApi = createProjectWorkspaceApi({
 const showMineDetail = ref(false);
 const showInferenceModal = ref(false);
 const showTrendReportModal = ref(false);
+const rightSidebarCollapsed = ref(false);
 const selectedMine = ref({});
 const selectedTab = ref('NDVI');
 const mapContainerRef = ref(null);

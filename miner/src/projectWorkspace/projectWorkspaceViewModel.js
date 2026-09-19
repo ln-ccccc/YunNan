@@ -74,19 +74,6 @@ export function actionTarget(actionCode) {
 }
 
 
-export function toAssetRow(asset = {}) {
-  return {
-    id: asset.id || '',
-    name: asset.name || '未命名资产',
-    assetType: asset.asset_type || '',
-    format: asset.format || '',
-    status: asset.status || 'registered',
-    version: asset.version ?? null,
-    error: asset.error || null,
-  };
-}
-
-
 export function resolveSpatialWizardStep(spatial = {}) {
   const jobs = Array.isArray(spatial?.jobs) ? spatial.jobs : [];
   if (jobs.some((job) => ['queued', 'running'].includes(job?.status))) return 4;

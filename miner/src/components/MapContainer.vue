@@ -312,6 +312,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   resizeObserver?.disconnect();
+  // Leaflet 实例持有 DOM 事件绑定与图层：App.vue 按 selectedProjectId 用 :key
+  // 重建组件，不 remove() 会整实例泄漏（2026-09-20 审查 P2）
+  map.value?.remove();
+  map.value = null;
 });
 
 defineExpose({

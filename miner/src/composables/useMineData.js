@@ -1,4 +1,4 @@
-import { ref, unref } from 'vue';
+import { ref, unref, onScopeDispose } from 'vue';
 import axios from 'axios';
 import { pollInferenceJob } from '../services/inferencePolling.js';
 
@@ -58,7 +58,8 @@ export function useMineData(projectId) {
   });
 
   const mineChangeMatrix = ref(null);
-  const mineChangeDetails = ref(null);
+  // fetchIndices/fetchChangeMatrix 的竞态序号：过期响应直接丢弃
+  let fetchIndicesSeq = 0;
   const inferenceRunning = ref(false);
   const inferenceResult = ref(null);
   const inferenceError = ref('');
@@ -149,14 +150,18 @@ export function useMineData(projectId) {
   };
 
   const fetchIndices = async (fid) => {
+    // 竞态门控：快速连续点击两座矿山时，后到的旧响应不得覆盖新矿山指标
+    const seq = (fetchIndicesSeq = (fetchIndicesSeq || 0) + 1);
     try {
       const res = await axios.get(apiUrl(projectApiPath(`/mines/indices?fid=${encodeURIComponent(fid)}`)));
+      if (seq !== fetchIndicesSeq) return;
       const merged = unwrap(res) || {};
       mineIndices.value = merged.available === false
         ? { ndvi: buildEmptyIndexEntry(), ndbi: buildEmptyIndexEntry(), ndwi: buildEmptyIndexEntry(), ndsi: buildEmptyIndexEntry() }
         : merged;
-      await fetchChangeMatrix(fid);
+      await fetchChangeMatrix(fid, seq);
     } catch (e) {
+      if (seq !== fetchIndicesSeq) return;
       console.warn('No indices data for FID:', fid);
       mineIndices.value = {
         ndvi: buildEmptyIndexEntry(),
@@ -168,12 +173,14 @@ export function useMineData(projectId) {
     }
   };
 
-  const fetchChangeMatrix = async (fid) => {
+  const fetchChangeMatrix = async (fid, seq = fetchIndicesSeq) => {
     try {
       const res = await axios.get(apiUrl(projectApiPath(`/mines/change-matrix?fid=${encodeURIComponent(fid)}`)));
+      if (seq !== fetchIndicesSeq) return;
       const data = unwrap(res) || {};
       mineChangeMatrix.value = { ...data, has_change_matrix: Boolean(data.has_change_matrix), data_source: data.data_source || 'project_output' };
     } catch (e) {
+      if (seq !== fetchIndicesSeq) return;
       mineChangeMatrix.value = {
         fid: Number(fid),
         headers: [],
@@ -231,14 +238,18 @@ export function useMineData(projectId) {
     URL.revokeObjectURL(url);
   };
 
-  const deleteMines = async () => {
-    throw new Error('当前 miner 后端不支持删除矿山');
-  };
+  // 推理轮询取消位：App.vue 按 selectedProjectId 用 :key 重建组件，
+  // 旧实例的 while 轮询若无取消会以 1s/次无限打后端
+  let inferencePollCancelled = false;
+  onScopeDispose(() => {
+    inferencePollCancelled = true;
+  });
 
   const runProjectInference = async ({ datasetId, year = '', device = 'auto' } = {}) => {
     inferenceRunning.value = true;
     inferenceError.value = '';
     inferenceResult.value = null;
+    inferencePollCancelled = false;
     try {
       const payload = {
         project_id: resolveProjectId(),
@@ -259,16 +270,23 @@ export function useMineData(projectId) {
         onUpdate: (job) => {
           inferenceResult.value = job;
         },
+        isCancelled: () => inferencePollCancelled,
       });
       if (terminalJob.status === 'failed' || terminalJob.status === 'cancelled') {
         throw new Error(terminalJob?.error?.message || `推理任务${terminalJob.status === 'cancelled' ? '已取消' : '失败'}`);
       }
       return terminalJob;
     } catch (e) {
+      if (e?.cancelled) {
+        // 组件已销毁：不再写状态，静默退出轮询链
+        throw e;
+      }
       inferenceError.value = e?.response?.data?.msg || e?.response?.data?.error || e?.message || '推理任务执行失败';
       throw e;
     } finally {
-      inferenceRunning.value = false;
+      if (!inferencePollCancelled) {
+        inferenceRunning.value = false;
+      }
     }
   };
 
@@ -309,7 +327,6 @@ export function useMineData(projectId) {
     mineChangeAreaList,
     mineIndices,
     mineChangeMatrix,
-    mineChangeDetails,
     dataLoadError,
     inferenceRunning,
     inferenceResult,
@@ -326,7 +343,6 @@ export function useMineData(projectId) {
     runProjectInference,
     fetchTrendReport,
     exportTrendReport,
-    deleteMines,
     formatMaybeNumber,
     formatTrend,
     getTrendClass

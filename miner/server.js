@@ -21,7 +21,11 @@ if (/wsl|\\\\wsl\\.localhost/i.test(startupCwd)) {
 
 // Enable CORS and JSON parsing
 app.use(cors());
-app.use(express.json({ limit: '60mb' }));
+// 大体积 JSON 仅限确需大请求体的路由（KML 文本、矿山 GeoJSON 导入，前端另有 50MB 上限）；
+// 全局默认收到 1MB，避免未登录面（如 /api/auth/login）被打大体（2026-09-20 审查 P2）
+app.use('/api/kml', express.json({ limit: '60mb' }));
+app.use('/api/projects', express.json({ limit: '60mb' }));
+app.use(express.json({ limit: '1mb' }));
 const authGuard = requireMinerAuth({ sessionApi: authBackend.session });
 // /api/geoview 下的光谱实时数据代理已删除：Flask 后端从未实现该路由，
 // 每次请求必然 404 且被静默吞掉（2026-09-15 审计 Y2-3），
@@ -65,7 +69,9 @@ app.get('/tiles/:z/:x/:y.png', (req, res) => {
 });
 
 const projectStorageRoot = path.resolve(process.env.PROJECT_STORAGE_ROOT || '/project_storage');
-app.get('/tiles/projects/:projectId/:resourceId/:z/:x/:y.png', (req, res) => {
+// 项目瓦片与 change-matrix 同为项目数据出口，必须同过 authGuard：
+// projectId/resourceId 为可枚举数字，裸路由会被未登录客户端整库拉取底图（2026-09-20 审查 P1）
+app.get('/tiles/projects/:projectId/:resourceId/:z/:x/:y.png', authGuard, (req, res) => {
   const segments = ['projectId', 'resourceId', 'z', 'x', 'y'].map((key) => String(req.params[key] || ''));
   if (!segments.every((value) => /^\d+$/.test(value))) {
     return res.status(400).json({ error: 'Invalid tile path' });
@@ -114,7 +120,9 @@ app.post('/api/kml/upload', (req, res) => {
       filename: req.body?.filename,
       content: req.body?.content
     });
-    res.json(result);
+    // 服务器绝对路径只进服务端日志，不回显给浏览器（AGENTS §6，2026-09-20 审查 P1）
+    console.log(`[kml] 上传成功: ${result.kml_path} -> ${result.kml_path_absolute}`);
+    res.json({ kml_path: result.kml_path });
   } catch (err) {
     // 上传异常细节（含文件系统错误）只进服务端日志，不回显给浏览器
     console.error('[kml] 上传失败:', err);

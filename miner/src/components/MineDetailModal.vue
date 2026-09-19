@@ -112,9 +112,15 @@
 </template>
 
 <script setup>
-import { computed, defineProps, defineEmits, ref, watch, nextTick } from 'vue';
+import { computed, defineProps, defineEmits, ref, watch, nextTick, onUnmounted } from 'vue';
 import * as echarts from 'echarts';
 import { buildClassificationItems, buildMatrixYearLabels } from './mineDetailPresentation.js';
+
+// 切换项目重建组件时释放 echarts 实例（与 RightSidebar 的清理模式对齐）
+onUnmounted(() => {
+  trendChartInst?.dispose();
+  trendChartInst = null;
+});
 
 const props = defineProps({
   visible: Boolean,

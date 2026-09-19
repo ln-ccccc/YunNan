@@ -12,7 +12,6 @@ const {
   formatActionLabel,
   INVALIDATION,
   resolveSpatialWizardStep,
-  toAssetRow,
 } = projectWorkspaceViewModel;
 
 test('formatActivityAction maps audit action codes without inferring business state', () => {
@@ -54,18 +53,6 @@ test('view model exposes fixed invalidation and public asset presentation', () =
   assert.deepEqual(INVALIDATION.snapshot, ['overview', 'assets', 'snapshots', 'activity']);
   assert.equal(formatActionLabel('CONFIGURE_BASEMAP'), '配置空间资源');
   assert.equal(formatActionLabel('UNKNOWN_ACTION'), 'UNKNOWN_ACTION');
-  assert.deepEqual(
-    toAssetRow({ id: 'dataset:1', name: '2024影像', status: 'ready', file_path: 'D:/secret.tif' }),
-    {
-      id: 'dataset:1',
-      name: '2024影像',
-      assetType: '',
-      format: '',
-      status: 'ready',
-      version: null,
-      error: null,
-    },
-  );
 });
 
 test('next actions map only to workspace navigation targets', () => {

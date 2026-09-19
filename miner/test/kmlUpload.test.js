@@ -33,3 +33,16 @@ test('saveKmlUpload rejects non-kml names and blank content', () => {
     /KML 内容不能为空/,
   );
 });
+
+test('saveKmlUpload rejects content over the 50MB server-side cap', () => {
+  const uploadRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kml-upload-'));
+
+  assert.throws(
+    () => saveKmlUpload({
+      uploadRoot,
+      filename: 'huge.kml',
+      content: `<kml>${'x'.repeat(50 * 1024 * 1024 + 1)}</kml>`,
+    }),
+    /超过 50MB 上限/,
+  );
+});

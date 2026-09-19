@@ -16,8 +16,14 @@ export async function pollInferenceJob({
   onUpdate = () => {},
   intervalMs = 1000,
   wait = defaultWait,
+  isCancelled = () => false,
 }) {
   while (true) {
+    if (isCancelled()) {
+      const error = new Error('推理轮询已取消');
+      error.cancelled = true;
+      throw error;
+    }
     const job = await getJob(jobId);
     if (!job || !job.status) {
       throw new Error('推理任务查询未返回有效状态');
