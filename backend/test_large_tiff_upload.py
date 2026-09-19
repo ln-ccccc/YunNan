@@ -107,6 +107,26 @@ class TestUploadSizeGate(LargeTiffUploadBase):
         self.assertTrue(body.get("success"), msg=str(body))
         self.assertEqual(body["data"][0]["raw_tiff_path"], "/tmp/x.tif")
 
+    def test_request_body_over_60mb_passes_http_layer(self):
+        """回归：MAX_CONTENT_LENGTH 曾固定 60MB，>60MB 的上传在 Werkzeug 表单
+        解析阶段即 413，视图内 8GB 闸门与 keep_tiff_raw 路径完全不可达。"""
+        self.login_as_admin()
+        payload = io.BytesIO(b"\x00" * (61 * 1024 * 1024))
+        with patch("applications.api.file.upload_curd") as mock_upload:
+            mock_upload.upload_one.return_value = [("/_uploads/photos/big.tif", 1, "big.tif", "/tmp/big.tif")]
+            response = self.client.post(
+                "/api/file/upload",
+                data={
+                    "files": (payload, "big.tif"),
+                    "type": "地物分类",
+                    "keepRawTiff": "true",
+                },
+                content_type="multipart/form-data",
+            )
+        body = response.get_json()
+        self.assertNotEqual(response.status_code, 413)
+        self.assertTrue(body.get("success"), msg=str(body))
+
 
 class TestUploadOneFastPath(LargeTiffUploadBase):
     """keep_tiff_raw=True 的地物分类快速路径与失败优雅降级。"""

@@ -68,14 +68,14 @@ def _to_float(value):
     text = str(value or "").strip()
     if not text:
         return None
-
-
-def _valid_mine_fid(fid):
-    return isinstance(fid, int) and 0 < fid <= MAX_DB_INT
     try:
         return float(text)
     except Exception:
         return None
+
+
+def _valid_mine_fid(fid):
+    return isinstance(fid, int) and 0 < fid <= MAX_DB_INT
 
 
 def _find_or_create_project(project_name: str, manager: str, min_year, max_year):

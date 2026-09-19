@@ -61,11 +61,23 @@ def create_app(config_name=None):
                 return unauthorized
 
     app.config['SESSION_TYPE'] = 'filesystem'
-    app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024
+    # 上传上限与 8GB 大影像闸门（tiff_processor.MAX_UPLOAD_TIFF_SIZE_MB）保持
+    # 同源：Werkzeug 在表单解析阶段按该值抛 413，若小于视图内闸门会把
+    # 大文件功能在 HTTP 层拦死（2026-09-20 审查 P1）。视图内仍保留逐文件
+    # 硬上限校验与 500MB 预处理闸门。
+    from applications.common.utils.tiff_processor import MAX_UPLOAD_TIFF_SIZE_MB
+
+    app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_TIFF_SIZE_MB * 1024 * 1024
     app.config['JSON_AS_ASCII'] = False
+    allowed_origins = _build_allowed_origins(app)
     CORS(
         app,
-        resources={r"/api/*": {"origins": _build_allowed_origins(app)}},
+        resources={
+            r"/api/*": {"origins": allowed_origins},
+            # /_uploads 影像/结果图要求登录，GeoView(:3000) 前端跨源下载需带 Cookie，
+            # 不配 credentials CORS 会被浏览器拦截（2026-09-20 审查 P1 下载回归）
+            r"/_uploads/*": {"origins": allowed_origins},
+        },
         supports_credentials=True,
     )
 

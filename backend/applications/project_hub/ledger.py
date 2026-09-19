@@ -43,6 +43,10 @@ def _iter_class_counts(feature_collection_json):
         collection = json.loads(feature_collection_json or "null")
     except (TypeError, ValueError):
         return
+    # vector_failed 等状态的成果 current_feature_collection_json 为 NULL，
+    # json.loads("null") 得到 None，必须跳过而非 .get 崩溃
+    if not isinstance(collection, dict):
+        return
     for feature in collection.get("features") or []:
         properties = feature.get("properties") or {}
         yield properties.get("class_code"), properties.get("class_name")

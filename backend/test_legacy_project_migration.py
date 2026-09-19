@@ -202,6 +202,22 @@ class TestLegacyProjectMigration(unittest.TestCase):
         events = [row.event_type for row in ProjectActivityLog.query.filter_by(project_id=project.id).all()]
         self.assertIn("legacy_data_migrated", events)
 
+        # KML 的 TBTYMJ 面积字段必须进入矿山绑定快照（回归：_to_float 曾被截断恒返 None）
+        areas = {binding.mine_fid: binding.area_snapshot for binding in project.mines}
+        self.assertEqual(areas.get(101), 123.5)
+        self.assertEqual(areas.get(102), 88.0)
+        self.assertEqual(areas.get(103), 66.0)
+
+    def test_to_float_parses_kml_area_fields(self):
+        from applications.project_hub.legacy_migration import _to_float
+
+        self.assertIsNone(_to_float(None))
+        self.assertIsNone(_to_float(""))
+        self.assertIsNone(_to_float("not-a-number"))
+        self.assertEqual(_to_float("123.5"), 123.5)
+        self.assertEqual(_to_float(88.0), 88.0)
+        self.assertEqual(_to_float(" 66 "), 66.0)
+
     def test_migrate_legacy_project_data_is_idempotent_for_existing_project(self):
         self._write_kml()
         self._seed_change_outputs()

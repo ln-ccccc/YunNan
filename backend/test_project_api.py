@@ -503,6 +503,111 @@ class TestProjectAPI(unittest.TestCase):
             actor="admin",
         )
 
+    def _seed_spatial_job(self, project_id, status):
+        """造一个带资源的空间任务，用于 retry/cancel 契约测试。"""
+        import uuid as uuid_module
+
+        from applications.models.project_spatial import ProjectSpatialJob, ProjectSpatialResource
+
+        resource = ProjectSpatialResource(
+            project_id=project_id,
+            resource_type="basemap",
+            # (project_id, resource_type, version) 有唯一约束，多次造数递增版本
+            version=ProjectSpatialResource.query.filter_by(
+                project_id=project_id, resource_type="basemap"
+            ).count()
+            + 1,
+            status="failed" if status == "failed" else "pending",
+            source_path=f"projects/{project_id}/basemap/base.tif",
+            source_format="tif",
+        )
+        db.session.add(resource)
+        db.session.flush()
+        job = ProjectSpatialJob(
+            id=str(uuid_module.uuid4()),
+            project_id=project_id,
+            resource_id=resource.id,
+            job_type="basemap_tiles",
+            status=status,
+            stage="queued",
+        )
+        db.session.add(job)
+        db.session.commit()
+        return job
+
+    def test_spatial_job_retry_contract_four_states(self):
+        """契约四态：成功（failed 任务重入队）/ 无数据（任务不存在）/ 失败（服务异常脱敏）。"""
+        self.login_as_admin()
+        project_id = self._create_project("空间任务重试契约项目")
+
+        # 成功：失败任务重试后回到 queued
+        job = self._seed_spatial_job(project_id, "failed")
+        response = self.client.post(f"/api/projects/{project_id}/spatial/jobs/{job.id}/retry")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        body = self._json(response)
+        self.assertTrue(body["success"])
+        self.assertEqual(body["data"]["status"], "queued")
+
+        # 无数据：不存在的任务返回业务失败文案
+        response = self.client.post(f"/api/projects/{project_id}/spatial/jobs/missing-job-id/retry")
+        body = self._json(response)
+        self.assertFalse(body["success"])
+        self.assertIn("空间处理任务不存在", body["msg"])
+
+        # 参数语义错误：非终态任务不允许重试
+        running_job = self._seed_spatial_job(project_id, "queued")
+        response = self.client.post(f"/api/projects/{project_id}/spatial/jobs/{running_job.id}/retry")
+        body = self._json(response)
+        self.assertFalse(body["success"])
+        self.assertIn("只有失败或已取消的任务可以重试", body["msg"])
+
+        # 失败：服务内部异常不回显物理路径
+        private_path = self.storage_root / "private" / "tiles"
+        with patch(
+            "applications.api.project.retry_spatial_job",
+            side_effect=PermissionError(f"无法读取 {private_path}"),
+        ):
+            response = self.client.post(f"/api/projects/{project_id}/spatial/jobs/{job.id}/retry")
+        body = self._json(response)
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(body["success"])
+        self.assertNotIn(str(self.storage_root), body["msg"])
+
+    def test_spatial_job_cancel_contract_four_states(self):
+        self.login_as_admin()
+        project_id = self._create_project("空间任务取消契约项目")
+
+        # 成功：queued 任务直接置为 cancelled
+        job = self._seed_spatial_job(project_id, "queued")
+        response = self.client.post(f"/api/projects/{project_id}/spatial/jobs/{job.id}/cancel")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        body = self._json(response)
+        self.assertTrue(body["success"])
+        self.assertEqual(body["data"]["status"], "cancelled")
+
+        # 无数据：不存在的任务
+        response = self.client.post(f"/api/projects/{project_id}/spatial/jobs/missing-job-id/cancel")
+        body = self._json(response)
+        self.assertFalse(body["success"])
+        self.assertIn("空间处理任务不存在", body["msg"])
+
+        # 语义错误：已终态任务不能再取消（幂等边界）
+        response = self.client.post(f"/api/projects/{project_id}/spatial/jobs/{job.id}/cancel")
+        body = self._json(response)
+        self.assertFalse(body["success"])
+        self.assertIn("任务已经结束", body["msg"])
+
+        # 失败：服务异常脱敏
+        with patch(
+            "applications.api.project.cancel_spatial_job",
+            side_effect=PermissionError("disk error /secret/path"),
+        ):
+            response = self.client.post(f"/api/projects/{project_id}/spatial/jobs/{job.id}/cancel")
+        body = self._json(response)
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(body["success"])
+        self.assertNotIn("/secret/path", body["msg"])
+
     def test_spatial_route_hides_unexpected_storage_error(self):
         self.login_as_admin()
         project_id = self._create_project("空间异常脱敏项目")
@@ -805,6 +910,40 @@ class TestProjectAPI(unittest.TestCase):
         header = [cell.value for cell in workbook["推理成果台账"][1]]
         self.assertIn("推理耗时(秒)", header)
         self.assertIn("总耗时(秒)", header)
+
+    def test_xlsx_export_tolerates_vector_failed_result_with_null_collection(self):
+        """回归：vector_failed 成果的 current_feature_collection_json 为 NULL，
+        台账导出曾因 json.loads("null")->None.get(...) 抛 AttributeError 整单失败。"""
+        self.login_as_admin()
+        project_id = self._create_project("台账含矢量化失败成果项目")
+        from applications.models.classification_result import ClassificationResult
+
+        db.session.add(
+            ClassificationResult(
+                project_id=project_id,
+                mine_fid=101,
+                year=2024,
+                inference_job_id="job-ledger-null",
+                model_id="cc-ln/CUGRS",
+                mine_resource_id=1,
+                current_feature_collection_json=None,
+                vector_status="vector_failed",
+                vector_error="auto vectorization failed",
+            )
+        )
+        db.session.commit()
+
+        response = self.client.post(f"/api/projects/{project_id}/exports", json={"format": "xlsx"})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(self._json(response)["code"], 0)
+        record = ProjectExportRecord.query.filter_by(project_id=project_id, format="xlsx").one()
+        self.assertEqual(record.status, "completed")
+
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(self.storage_root / Path(record.file_path))
+        statuses = [row[3] for row in workbook["推理成果台账"].iter_rows(min_row=2, values_only=True)]
+        self.assertIn("矢量失败", statuses)
 
     def test_csv_export_never_contains_legacy_dataset_file_path(self):
         self.login_as_admin()
