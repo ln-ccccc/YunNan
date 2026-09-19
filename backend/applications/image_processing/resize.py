@@ -10,6 +10,8 @@ def resize(src_dir, save_dir, names,
     temps = list()
     for name in names:
         img = cv2.imread(osp.join(src_dir, name))
+        if img is None:
+            raise ValueError(f"图片读取失败或不存在: {name}")
         if mode == 0:
             img = cv2.resize(img, (1024, 1024))  # 变化检测选0
         if mode == 1:

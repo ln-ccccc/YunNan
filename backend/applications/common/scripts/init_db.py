@@ -17,7 +17,10 @@ HOST = _config('MYSQL_HOST', '127.0.0.1')
 PORT = int(_config('MYSQL_PORT', 3306))
 DATABASE = _config('MYSQL_DATABASE', 'AdminFlask')
 USERNAME = _config('MYSQL_USERNAME', 'root')
-PASSWORD = _config('MYSQL_PASSWORD', '123456')
+# 不再提供 '123456' 弱口令默认值：缺省时跳过初始化连接并告警，
+# 避免脱离 compose 直跑时静默用 root/123456 连库（应用侧 SQLAlchemy 用
+# 空口令会在首次访问时报错，错误路径一致且明确）
+PASSWORD = _config('MYSQL_PASSWORD', '')
 
 
 def is_exist_database():
@@ -89,6 +92,9 @@ def execute_fromfile(filename):
 
 
 def init_db():
+    if not PASSWORD:
+        print('[init_db] MYSQL_PASSWORD 未配置，跳过数据库初始化连接（不再回退默认口令）')
+        return
     if is_exist_database()[0][0] > 0:
         print('数据库%s不为空，不进行初始化操作' % str(DATABASE))
         return

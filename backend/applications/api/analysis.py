@@ -174,12 +174,15 @@ def _classification_history_metadata(project_id, fid, year):
 
 @analysis_api.get('/show/<analysis_type>')
 def show_result(analysis_type):
-    if not hasattr(type_utils, analysis_type):
+    # 白名单校验：hasattr 会放行模块级任意属性（函数/列表等），导致 filter_by(type=<非标量>) 500
+    analysis_type_value = getattr(type_utils, str(analysis_type), None)
+    if not isinstance(analysis_type_value, int):
         return fail_api("当前类型暂未开放")
 
     page = _safe_int(request.args.get('page'), 1)
-    limit = _safe_int(request.args.get('limit'), 10)
-    query = Analysis.query.filter_by(type=getattr(type_utils, analysis_type)).order_by(desc(Analysis.create_time))
+    # per_page 无上界会让单请求整表加载，与 kml_roi_history_list 一致钳制到 100
+    limit = min(100, _safe_int(request.args.get('limit'), 10))
+    query = Analysis.query.filter_by(type=analysis_type_value).order_by(desc(Analysis.create_time))
 
     pagination = query.paginate(page=page, per_page=limit, error_out=False)
     data = model_to_dicts(schema=AnalysisSchema, data=pagination.items)
@@ -225,7 +228,11 @@ def image_pre_api():
         return fail_api("当前模式不支持")
 
     temps = [img_url_handle(u) for u in img_list]
-    imgs = handle(step1_, temps, up_dir, generate_dir)
+    try:
+        imgs = handle(step1_, temps, up_dir, generate_dir)
+    except ValueError as error:
+        # 预处理模块对缺文件/坏图抛带文件名的业务 ValueError，按业务失败返回而非 500
+        return fail_api(str(error))
     for i, img in enumerate(imgs):
         imgs[i] = generate_url + img
     return success_api(data=imgs)
@@ -315,8 +322,13 @@ def spectral_indices_api():
                     fid_stats,
                 )
                 routing["synced_fids"] = publication["synced_fids"]
-            except Exception as sync_error:
-                routing["warnings"].append(f"项目指数同步失败: {sync_error}")
+            except Exception:
+                # 异常原文可能含服务器物理路径/内部状态，不得回显给客户端；
+                # 固定文案下发，细节进服务端日志
+                LOGGER.exception(
+                    "项目指数同步失败 project_id=%s index_type=%s year=%s", project_id, index_type, year
+                )
+                routing["warnings"].append(f"项目指数同步失败: {index_type} {year}")
         result["routing"] = routing
         if routing["warnings"]:
             return success_api(msg="计算完成，项目同步部分失败", data=result)

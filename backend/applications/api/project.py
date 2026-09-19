@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_file, send_from_directory, session
+from werkzeug.exceptions import HTTPException
 
 from applications.api.error_responses import business_or_server_failure
 from applications.auth.guard import login_required
@@ -75,6 +76,10 @@ def _request_actor():
 def _spatial_failure_response(error, message, project_id):
     if isinstance(error, ValueError):
         return fail_api(str(error))
+    if isinstance(error, HTTPException):
+        # 客户端请求体问题（非法 JSON 400 / Content-Type 415）按原状态码收口，
+        # 不吞成 500 + 服务端堆栈日志
+        return fail_api(msg="请求数据不合法，请提交正确的 JSON", status=error.code or 400)
     LOGGER.exception("%s project_id=%s", message, project_id)
     return fail_api(f"{message}，请检查服务日志", status=500)
 
@@ -82,6 +87,8 @@ def _spatial_failure_response(error, message, project_id):
 def _project_hub_failure_response(error, message, project_id=None):
     if isinstance(error, ValueError):
         return fail_api(str(error))
+    if isinstance(error, HTTPException):
+        return fail_api(msg="请求数据不合法，请提交正确的 JSON", status=error.code or 400)
     if project_id is None:
         LOGGER.exception(message)
     else:
@@ -206,8 +213,11 @@ def project_assets_api(project_id):
         return _read_model_success_api(get_project_assets(project_id, filters))
     except ProjectAssetFilterError as error:
         return fail_api(str(error), status=400)
-    except ValueError as error:
-        return fail_api(str(error), status=404)
+    except Exception as exc:
+        # 失败态收口：内部异常只记日志返回通用文案（此前未捕获会裸 500）
+        return business_or_server_failure(
+            exc, "项目资产读取失败", logger=LOGGER, business_status=404
+        )
 
 
 @project_api.get("/<int:project_id>")
@@ -291,17 +301,30 @@ def project_basemap_candidates_api(project_id):
         return _spatial_failure_response(exc, "底图候选读取失败", project_id)
 
 
+def _request_zoom(value, default):
+    """min/max zoom 路由层校验：非整数时返回 None（解释器报错原文不下发客户端）。"""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 @project_api.post("/<int:project_id>/spatial/basemaps")
 @login_required
 def project_basemap_register_api(project_id):
     try:
         payload = request.json or {}
+        min_zoom = _request_zoom(payload.get("min_zoom"), 8)
+        max_zoom = _request_zoom(payload.get("max_zoom"), 15)
+        if min_zoom is None or max_zoom is None:
+            return fail_api(msg="min_zoom/max_zoom 必须是整数", status=422)
         return success_api(
             data=register_basemap(
                 project_id,
                 payload.get("candidate"),
-                payload.get("min_zoom", 8),
-                payload.get("max_zoom", 15),
+                min_zoom,
+                max_zoom,
                 actor=_request_actor(),
             )
         )
@@ -382,7 +405,8 @@ def classification_revision_save_api(project_id, result_id):
                 project_id,
                 result_id,
                 payload,
-                actor=session.get("admin_user_id"),
+                # actor 语义统一为用户名（与其余活动记录一致），混用 user_id 会导致审计无法按人追溯
+                actor=_request_actor(),
                 body_size=len(raw_body),
             )
         )

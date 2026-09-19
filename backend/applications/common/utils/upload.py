@@ -1,3 +1,4 @@
+import logging
 import os
 import os.path as osp
 import uuid
@@ -10,6 +11,8 @@ from applications.extensions import db
 from applications.extensions.init_upload import photos
 from applications.models import Photo
 from applications.schemas import PhotoOutSchema
+
+LOGGER = logging.getLogger(__name__)
 
 
 def get_photo(page, limit):
@@ -65,6 +68,7 @@ def upload_one(photo, mime, type_=0, enable_slicing=False, keep_tiff_raw=False):
             # 切片为场景分类预览依赖；失败（含 >500MB、损坏文件）不再删除
             # 原始文件并拒绝上传——保留原始文件优雅降级，由下游推理链路
             # 给出更精准的错误（移植江西 2026-09-19 验收反馈：2.4GB 影像被拒）
+            LOGGER.exception("TIFF 预处理降级: %s", original_filename)
             processed_files.append({
                 'filename': filename,
                 'mime': mime,

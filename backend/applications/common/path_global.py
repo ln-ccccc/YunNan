@@ -13,8 +13,11 @@ up_url = "/_uploads/photos/"
 def md5_name(name):
     nname = hashlib.md5(str(random.random()).encode()).hexdigest() + "_" + name
     if len(nname) > 100:
-        nname = hashlib.md5(str(random.random()).encode()).hexdigest(
-        ) + "." + name.split(".")[1]
+        # 无扩展名输入显式拒绝（split(".")[1] 会 IndexError）；多段扩展名取最后一段
+        parts = name.rsplit(".", 1)
+        if len(parts) != 2 or not parts[1]:
+            raise ValueError("文件名过长且缺少可用的扩展名")
+        nname = hashlib.md5(str(random.random()).encode()).hexdigest() + "." + parts[1]
     return nname
 
 

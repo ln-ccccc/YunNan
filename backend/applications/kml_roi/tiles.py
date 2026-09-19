@@ -84,7 +84,9 @@ def prepare_tiles(
     # 第 2 组起加 _v2/_v3 后缀，避免瓦片与推理产物同名互相覆盖。
     variant_group_counts: Dict[str, int] = {}
 
-    for fid, geom in features:
+    for raw_fid, geom in features:
+        # fid 进入写盘文件名前必须先过路径校验（写入时点校验，早于 distribute_outputs）
+        fid = validate_fid_path_component(raw_fid)
         occurrence = variant_group_counts.get(fid, 0) + 1
         variant_suffix = "" if occurrence == 1 else f"_v{occurrence}"
         variant_specs: List[Dict] = []
@@ -138,8 +140,8 @@ def scan_year_masks(fid: str, fid_dir: Path) -> List[Tuple[int, Path, Path]]:
     return out
 
 
-def cleanup_output_dir(fid: str, fid_dir: Path, keep_last_years: int = 3) -> int:
-    removed = 0
+def _cleanup_keep_set(fid: str, fid_dir: Path, keep_last_years: int = 3) -> set:
+    """cleanup_output_dir 与 dry-run 预览共用的保留文件名集合（单一来源）。"""
     year_masks = scan_year_masks(fid, fid_dir)
     keep = set()
     if year_masks:
@@ -171,6 +173,12 @@ def cleanup_output_dir(fid: str, fid_dir: Path, keep_last_years: int = 3) -> int
                 "class_ratio_percent.json",
             }
         )
+    return keep
+
+
+def cleanup_output_dir(fid: str, fid_dir: Path, keep_last_years: int = 3) -> int:
+    removed = 0
+    keep = _cleanup_keep_set(fid, fid_dir, keep_last_years)
 
     for p in fid_dir.iterdir():
         if not p.is_file():

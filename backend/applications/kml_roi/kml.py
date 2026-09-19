@@ -14,8 +14,13 @@ def _parse_coordinates(text: str) -> List[List[float]]:
         parts = token.split(",")
         if len(parts) < 2:
             continue
-        lon = float(parts[0])
-        lat = float(parts[1])
+        try:
+            lon = float(parts[0])
+            lat = float(parts[1])
+        except ValueError:
+            # 单个脏 token 跳过（与 _extract_geometry_4326 对坏环的宽容策略一致），
+            # 不让整任务因一处手写错误失败
+            continue
         coords.append([lon, lat])
     if coords and coords[0] != coords[-1]:
         coords.append(coords[0])

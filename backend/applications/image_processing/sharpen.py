@@ -10,6 +10,8 @@ def sharpen(src_dir, save_dir, names):  # src_dir为原图文件夹，save_dir�
     temps = list()
     for name in names:
         im = cv2.imread(osp.join(src_dir, name))
+        if im is None:
+            raise ValueError(f"图片读取失败或不存在: {name}")
         kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=int)
         im = cv2.filter2D(im, -1, kernel)
         new_name = md5_name(name)

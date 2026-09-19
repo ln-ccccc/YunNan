@@ -1,3 +1,4 @@
+import logging
 import re
 
 from flask import Blueprint, request
@@ -19,6 +20,9 @@ from applications.project_hub.inference_inputs import (
     resolve_project_inference_inputs,
 )
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 inference_api = Blueprint("inference_api", __name__, url_prefix="/api/inference")
@@ -124,7 +128,12 @@ def cancel_inference_job_api(job_id):
     job = get_job(job_id)
     if job is None:
         return fail_api("推理任务不存在"), 404
-    return success_api(data=serialize_job(request_job_cancel(job)))
+    try:
+        return success_api(data=serialize_job(request_job_cancel(job)))
+    except Exception:
+        # 取消落库等内部异常只进日志，不向客户端回显细节
+        LOGGER.exception("推理任务取消失败 job_id=%s", job_id)
+        return fail_api("推理任务取消失败，请检查服务日志"), 500
 
 
 @inference_api.get("/capabilities")

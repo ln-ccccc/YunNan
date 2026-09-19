@@ -66,14 +66,16 @@ def analysis_handle(items):
 def history_delete():
     # 无 body / JSON null 时 request.json 为 None，缺省容错避免 TypeError 进全局处理器
     req_json = request.json or {}
-    if 'ids' in req_json:
-        ids = req_json['ids']
-        for id in ids:
-            res = Analysis.query.filter_by(id=id).delete()
-            db.session.commit()
-        return success_api(msg="批量删除成功")
-    return fail_api(msg="参数异常")
-    pass
+    ids = req_json.get('ids')
+    # ids 必须是整型列表：字符串会被逐字符迭代误删（"12" 删掉 id=1 和 id=2），
+    # 非可迭代对象直接 500
+    if not isinstance(ids, list) or not ids or not all(
+        isinstance(item, int) and not isinstance(item, bool) for item in ids
+    ):
+        return fail_api(msg="参数异常：ids 必须是记录 ID 列表")
+    Analysis.query.filter(Analysis.id.in_(ids)).delete(synchronize_session=False)
+    db.session.commit()
+    return success_api(msg="批量删除成功")
 
 
 @history_api.delete('/removeOne')

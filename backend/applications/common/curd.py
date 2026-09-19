@@ -1,28 +1,7 @@
-import datetime
-
 from marshmallow import Schema
 from marshmallow_sqlalchemy import SQLAlchemyAutoSchema
 
 from applications.extensions import db, ma
-
-
-class LogicalDeleteMixin(object):
-    """
-    class Test(db.Model,LogicalDeleteMixin):
-    __tablename__ = 'admin_test'
-    id = db.Column(db.Integer, primary_key=True, comment='角色ID')
-
-    Test.query.filter_by(id=1).soft_delete()
-    Test.query.logic_all()
-    """
-    create_at = db.Column(
-        db.DateTime, default=datetime.datetime.now, comment='创建时间')
-    update_at = db.Column(
-        db.DateTime,
-        default=datetime.datetime.now,
-        onupdate=datetime.datetime.now,
-        comment='创建时间')
-    delete_at = db.Column(db.DateTime, comment='删除时间')
 
 
 def auto_model_jsonify(data, model: db.Model):

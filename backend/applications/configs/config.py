@@ -86,7 +86,9 @@ class ProductionConfig(BaseConfig):
     """生成环境配置"""
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ECHO = False
-    SQLALCHEMY_POOL_RECYCLE = 8
+    # 8 秒回收会造成连接池持续重建 churn（每次低频访问都重做 TCP+认证）；
+    # 常规做法是 3600（须小于 MySQL wait_timeout）
+    SQLALCHEMY_POOL_RECYCLE = 3600
 
     LOG_LEVEL = logging.ERROR
 

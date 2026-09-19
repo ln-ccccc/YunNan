@@ -9,6 +9,8 @@ def CLAHE(src_dir, save_dir, names):
     temps = list()
     for name in names:
         Gn = cv2.imread(osp.join(src_dir, name))
+        if Gn is None:
+            raise ValueError(f"图片读取失败或不存在: {name}")
         B, G, R = cv2.split(Gn)
         clahe = cv2.createCLAHE(
             clipLimit=2, tileGridSize=(8, 8))  # 调节第二个参数可以控制力度大小

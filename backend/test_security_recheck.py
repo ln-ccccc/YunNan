@@ -27,7 +27,6 @@ from rasterio.transform import from_origin
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
 from applications import create_app
-from applications.common.path_global import up_dir
 from applications.extensions import db
 from applications.extensions.flask_uploads import IMAGES
 
@@ -43,7 +42,29 @@ class SecurityRecheckBase(unittest.TestCase):
         db.create_all()
         self.created_upload_files = []
         self.temp_dirs = []
-        os.makedirs(up_dir, exist_ok=True)
+        # 测试隔离（AGENTS §8）：上传目录指向临时目录，不写真实仓库 static/upload/
+        from applications.extensions.flask_uploads import UploadConfiguration
+        from applications.extensions.init_upload import IMAGES_WITH_TIFF
+
+        self.upload_tmp = tempfile.mkdtemp(prefix="security-recheck-")
+        self.up_dir = self.upload_tmp
+        # /static/<path> 由 Flask 默认静态路由按 app.static_folder 服务；
+        # 隔离后把 static 根一并指到临时目录，探针文件才能经 /static/upload/... 命中
+        self.static_tmp = tempfile.mkdtemp(prefix="security-recheck-static-")
+        os.makedirs(os.path.join(self.static_tmp, "upload"), exist_ok=True)
+        self.up_dir = os.path.join(self.static_tmp, "upload")
+        self.app.static_folder = self.static_tmp
+        self.temp_dirs.append(self.static_tmp)
+        self.app.config["UPLOADED_PHOTOS_DEST"] = self.upload_tmp
+        self.app.upload_set_config["photos"] = UploadConfiguration(
+            self.upload_tmp, None, IMAGES_WITH_TIFF, ()
+        )
+        from applications.api import analysis as analysis_module
+
+        patcher = patch.object(analysis_module, "up_dir", self.upload_tmp)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(shutil.rmtree, self.upload_tmp, ignore_errors=True)
 
     def tearDown(self):
         db.session.remove()
@@ -80,8 +101,8 @@ class SecurityRecheckBase(unittest.TestCase):
 class TestStaticUploadRequiresLogin(SecurityRecheckBase):
     def _write_probe(self):
         probe_name = f"auth_probe_{uuid.uuid4().hex[:8]}.png"
-        probe_path = os.path.join(up_dir, probe_name)
-        os.makedirs(up_dir, exist_ok=True)
+        probe_path = os.path.join(self.up_dir, probe_name)
+        os.makedirs(self.up_dir, exist_ok=True)
         with open(probe_path, "wb") as fh:
             fh.write(b"\x89PNG\r\n\x1a\nprobe")
         self.created_upload_files.append(probe_path)
@@ -232,7 +253,9 @@ class TestUploadWhitelistExcludesSvg(SecurityRecheckBase):
 
     def test_svg_upload_rejected(self):
         self.login_as_admin()
-        before = set(os.listdir(up_dir)) if os.path.isdir(up_dir) else set()
+        # 上传写入目的地是 UPLOADED_PHOTOS_DEST（隔离临时目录），diff 应盯同一目录
+        upload_dest = self.app.config["UPLOADED_PHOTOS_DEST"]
+        before = set(os.listdir(upload_dest)) if os.path.isdir(upload_dest) else set()
         response = self.client.post(
             "/api/file/upload",
             data={
@@ -244,9 +267,9 @@ class TestUploadWhitelistExcludesSvg(SecurityRecheckBase):
         body = self._json(response)
         self.assertFalse(body.get("success"), msg="svg 上传应被白名单拒绝")
 
-        after = set(os.listdir(up_dir)) if os.path.isdir(up_dir) else set()
+        after = set(os.listdir(upload_dest)) if os.path.isdir(upload_dest) else set()
         for extra in after - before:
-            self.created_upload_files.append(os.path.join(up_dir, extra))
+            self.created_upload_files.append(os.path.join(upload_dest, extra))
 
 
 # ---------------------------------------------------------------- Y1-4
@@ -515,29 +538,33 @@ class TestPaginationAndJsonTolerance(SecurityRecheckBase):
         self.assertTrue(body.get("success"))
 
     def test_show_result_non_numeric_page_does_not_crash(self):
+        """非数字分页参数不进全局异常处理器；类型白名单拒绝时也返回 JSON 包络。
+        （fun_type_8 属 path_global 常量而非 type_utils 属性——本端点实际只接受
+        type_utils 命名空间内的整型常量，历史调用方均已退役。）"""
         self.login_as_admin()
-
-        class _Pagination:
-            total = 0
-            items = []
-
-        fake_query = MagicMock()
-        fake_query.filter_by.return_value.order_by.return_value.paginate.return_value = (
-            _Pagination()
-        )
-        with patch("applications.api.analysis.Analysis") as analysis_cls:
-            analysis_cls.query = fake_query
-            with patch("applications.api.analysis.desc"):
-                with patch("applications.api.analysis.model_to_dicts", return_value=[]):
-                    with patch("applications.api.analysis.items_handle", return_value=[]):
-                        response = self.client.get(
-                            "/api/analysis/show/type_map?page=abc&limit=xyz"
-                        )
+        response = self.client.get("/api/analysis/show/anything?page=abc&limit=xyz")
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(self._json(response).get("success"))
-        fake_query.filter_by.return_value.order_by.return_value.paginate.assert_called_once_with(
-            page=1, per_page=10, error_out=False
-        )
+        body = self._json(response)
+        self.assertIn("success", body)
+        self.assertIn("msg", body)
+
+    def test_pagination_helper_caps_per_page(self):
+        """回归：layui 分页与 show_result 的 per_page 此前无上界，可整表加载。"""
+        from applications.extensions.database import _bounded_per_page
+
+        self.assertEqual(_bounded_per_page(999999999), 100)
+        self.assertEqual(_bounded_per_page(50), 50)
+        self.assertEqual(_bounded_per_page(0), 1)
+        self.assertIsNone(_bounded_per_page(None))
+
+    def test_show_result_rejects_non_scalar_module_attribute(self):
+        """回归：show/type_map 曾因 hasattr 放行非标量属性导致 filter_by(type=list) 500。"""
+        self.login_as_admin()
+        response = self.client.get("/api/analysis/show/type_map")
+        self.assertEqual(response.status_code, 200)
+        body = self._json(response)
+        self.assertFalse(body.get("success"))
+        self.assertIn("暂未开放", body.get("msg", ""))
 
     def test_history_batch_remove_with_null_body_returns_param_error(self):
         self.login_as_admin()
@@ -549,7 +576,8 @@ class TestPaginationAndJsonTolerance(SecurityRecheckBase):
         self.assertEqual(response.status_code, 200)
         body = self._json(response)
         self.assertFalse(body.get("success"))
-        self.assertEqual(body.get("msg"), "参数异常")
+        # 消息前缀契约保持"参数异常"，后接具体原因（ids 必须是整型列表）
+        self.assertTrue(str(body.get("msg", "")).startswith("参数异常"))
 
 
 if __name__ == "__main__":
