@@ -101,6 +101,18 @@ def run_loaded_mmseg_tiles(
     return failed_tiles, tile_errors
 
 
+def estimate_inference_timeout_seconds(base_seconds, tiles):
+    """512 网格切片数 → 任务超时秒数（移植江西 2026-09-19 口径）。
+
+    切片数 × 单片 3 秒 × 2 倍裕量（图斑模式实际瓦片数是网格子集，此值为
+    上界，宁高估不误杀），夹在配置基线与 4 小时之间——只增不减：运维经
+    INFERENCE_JOB_TIMEOUT_SECONDS 抬高基线始终生效。
+    """
+    if base_seconds <= 0:
+        return base_seconds
+    return max(int(base_seconds), min(14400, int(tiles) * 2 * 3))
+
+
 class InferenceWorker:
     def __init__(
         self,
@@ -267,6 +279,24 @@ class InferenceWorker:
             tile_runner=self._tile_runner,
         )
 
+    def _job_timeout_for(self, payload):
+        """任务级超时按影像规模放宽（移植江西 2026-09-19）。
+
+        GB 级影像的图斑裁剪+推理远超 1 小时兜底时限，曾被 deadline 误杀。
+        影像读不出（损坏/占位）时回落配置值，由推理本身给出更准确的错误。
+        """
+        base = self.job_timeout_seconds
+        if base <= 0:
+            return base
+        try:
+            import rasterio
+
+            with rasterio.open(payload.get("old_tif_path")) as src:
+                tiles = ((src.height + 511) // 512) * ((src.width + 511) // 512)
+            return estimate_inference_timeout_seconds(base, tiles)
+        except Exception:
+            return base
+
     def run_job(self, job):
         if self.model is None:
             self.initialize()
@@ -303,7 +333,7 @@ class InferenceWorker:
         process_model = self.model
         restore_process_device = False
         self.job_deadline = (
-            time.monotonic() + self.job_timeout_seconds
+            time.monotonic() + self._job_timeout_for(payload)
             if self.job_timeout_seconds > 0
             else None
         )

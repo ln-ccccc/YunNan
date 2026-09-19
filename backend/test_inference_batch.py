@@ -1,8 +1,10 @@
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -189,6 +191,70 @@ class TestInferenceBatching(unittest.TestCase):
                 should_cancel=should_cancel,
             )
         self.assertIn("INFERENCE_CANCELLED", str(ctx.exception))
+
+
+class TestGpuCacheRelease(unittest.TestCase):
+    """每 chunk 推理完成后释放 GPU 缓存块（移植江西 2026-09-18 验收反馈）。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.input_dir = Path(self.temp_dir.name) / "tiles"
+        self.output_dir = Path(self.temp_dir.name) / "out"
+        self.input_dir.mkdir()
+        self.addCleanup(self.temp_dir.cleanup)
+
+    def _fake_torch(self):
+        torch = types.ModuleType("torch")
+        torch.cuda = Mock()
+        torch.cuda.is_available = Mock(return_value=True)
+        torch.cuda.empty_cache = Mock()
+        return torch
+
+    def test_empty_cache_called_once_per_chunk(self):
+        names = _write_tiles(self.input_dir, 5)
+        fake_torch = self._fake_torch()
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            summary = run_inference_with_model(
+                _FakeModel(),
+                input_dir=str(self.input_dir),
+                output_dir=str(self.output_dir),
+                file_names=names,
+                batch_size=2,
+                forward_fn=FakeForward(),
+            )
+        self.assertEqual(summary["success"], 5)
+        # 5 张瓦片、批大小 2 → 3 个 chunk，每 chunk 收尾各释放一次
+        self.assertEqual(fake_torch.cuda.empty_cache.call_count, 3)
+
+    def test_no_cuda_available_skips_empty_cache(self):
+        names = _write_tiles(self.input_dir, 2)
+        fake_torch = self._fake_torch()
+        fake_torch.cuda.is_available = Mock(return_value=False)
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            summary = run_inference_with_model(
+                _FakeModel(),
+                input_dir=str(self.input_dir),
+                output_dir=str(self.output_dir),
+                file_names=names,
+                batch_size=1,
+                forward_fn=FakeForward(),
+            )
+        self.assertEqual(summary["success"], 2)
+        fake_torch.cuda.empty_cache.assert_not_called()
+
+    def test_missing_torch_module_does_not_break_inference(self):
+        names = _write_tiles(self.input_dir, 2)
+        # sys.modules 中置 None 使 `import torch` 抛 ImportError（无 Torch 环境）
+        with patch.dict(sys.modules, {"torch": None}):
+            summary = run_inference_with_model(
+                _FakeModel(),
+                input_dir=str(self.input_dir),
+                output_dir=str(self.output_dir),
+                file_names=names,
+                batch_size=1,
+                forward_fn=FakeForward(),
+            )
+        self.assertEqual(summary["success"], 2)
 
 
 if __name__ == "__main__":

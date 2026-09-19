@@ -30,7 +30,17 @@ def upload_one(photo, mime, type_=0, enable_slicing=False, keep_tiff_raw=False):
     processed_files = []
     raw_tiff_path = full_path if is_tiff_file(filename) else None
 
-    if is_tiff_file(filename):
+    if is_tiff_file(filename) and keep_tiff_raw:
+        # 地物分类（图斑切片推理）快速路径（移植江西 2026-09-19）：只需原始
+        # tif 本体，不切片、不生成预览 PNG，也不受 500MB 预处理闸门影响——
+        # GB 级县级影像经此直传后由推理链路按图斑窗口裁剪流式处理
+        processed_files.append({
+            'filename': filename,
+            'mime': mime,
+            'path': full_path,
+            'display_name': original_filename,
+        })
+    elif is_tiff_file(filename):
         try:
             results = process_uploaded_tiff(
                 full_path,
@@ -51,13 +61,16 @@ def upload_one(photo, mime, type_=0, enable_slicing=False, keep_tiff_raw=False):
                     'display_name': res['filename'],
                 })
 
-        except Exception as e:
-            if os.path.exists(full_path):
-                try:
-                    os.remove(full_path)
-                except Exception:
-                    pass
-            raise ValueError(f"TIFF 文件处理失败: {str(e)}")
+        except Exception:
+            # 切片为场景分类预览依赖；失败（含 >500MB、损坏文件）不再删除
+            # 原始文件并拒绝上传——保留原始文件优雅降级，由下游推理链路
+            # 给出更精准的错误（移植江西 2026-09-19 验收反馈：2.4GB 影像被拒）
+            processed_files.append({
+                'filename': filename,
+                'mime': mime,
+                'path': full_path,
+                'display_name': original_filename,
+            })
     else:
         processed_files.append({
             'filename': filename,

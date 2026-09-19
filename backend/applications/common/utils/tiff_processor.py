@@ -28,8 +28,12 @@ import numpy as np
 from PIL import Image
 
 # 配置常量
-MAX_TIFF_SIZE_MB = 500  # 最大文件大小 (MB)
+MAX_TIFF_SIZE_MB = 500  # 切片预览/整图读内存路径的最大文件大小 (MB)
 MAX_TIFF_SIZE_BYTES = MAX_TIFF_SIZE_MB * 1024 * 1024
+# 上传硬上限（8GB，移植江西 2026-09-19 大文件支持）：地物分类推理按矿山
+# 图斑 bbox 窗口裁剪，内存与影像大小解耦；MAX_TIFF_SIZE_MB 仅约束
+# process_uploaded_tiff（切片+预览渲染整图读内存）等预处理环节
+MAX_UPLOAD_TIFF_SIZE_MB = 8192
 LARGE_IMAGE_THRESHOLD = (1024, 1024) # 大图阈值 (width, height)
 SLICE_SIZE = 1024 # 切片大小
 

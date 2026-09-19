@@ -296,6 +296,20 @@ def run_inference_with_model(
                 print(f"[MMSeg] Error processing {filename}: {e}", file=sys.stderr)
             _progress()
 
+        # 本批结果均已拷贝至 CPU：先释放对结果对象（pred 为 GPU 张量）的引用，
+        # 再释放 GPU 缓存块，把缓存分配器保留池压回常驻模型水位——大影像多
+        # 图斑一次送入数十片瓦片时保留池随片数累积，观感显存瞬间打满
+        # （移植江西 2026-09-18 验收反馈）
+        det_outputs = None
+        imgs = None
+        try:
+            import torch
+        except ImportError:
+            pass
+        else:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     return {
         "status": "completed",
         "total": len(file_names),

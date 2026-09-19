@@ -100,6 +100,16 @@
 
 **本项目实例（2026-09-07）**：挂载 `backend/model/*.pth`（1.9G）与 `miner/yunnan.kml`（3.2M）后，`test_inference_runner` 与 `test_yunnan_project_seed` 各 1 例由错转绿，坐实数据限制分类。
 
+### 9b. 容器内跑上传类测试：只读挂载与 Git Bash 路径转换陷阱 ✅
+
+**解决什么问题**：上传/写盘类用例在「源码只读挂载」的容器里集体 `OSError: Read-only file system`，容易误判为代码回归；Git Bash 下 `docker run -w /app/...` 的容器路径被 MSYS 转成 Windows 路径直接启动失败。
+
+**做法**：① 写盘依赖（上传目录等）在测试 `setUp` 里改指 `tempfile.mkdtemp()`，不依赖源码树可写；② 涉及 flask_uploads 的用例注意：`UploadSet` 的目标在 `configure_uploads` 时已定死，运行期改 `app.config["UPLOADED_PHOTOS_DEST"]` **无效**，必须替换 `app.upload_set_config["photos"] = UploadConfiguration(临时目录, None, IMAGES_WITH_TIFF, ())`；③ Git Bash 跑 docker 加 `MSYS_NO_PATHCONV=1` 前缀。确需写源码树内目录的历史用例（如探针文件落 `static/upload`），去掉挂载 `:ro`（该目录已在 .gitignore）。
+
+**为什么好**：测试与挂载方式解耦后，同一份用例在本机与 CI 容器（无论 ro/rw）行为一致；陷阱条目避免下次重复踩 20 分钟。
+
+**本项目实例（2026-09-19）**：`test_large_tiff_upload` 初跑 3 例 Errno 30，按①②改造后 `:ro` 挂载全绿；`test_security_recheck` 的探针用例属历史设计，rw 挂载跑过。
+
 ### 10. 黄金样例 fixture：固定 ID 与时间、整 JSON 比对 ✅
 
 **解决什么问题**：断言逐字段手写容易漏字段、且随实现漂移；动态 ID/时间戳导致测试脆弱或诱导开发者"删掉动态字段再比"，比了寂寞。

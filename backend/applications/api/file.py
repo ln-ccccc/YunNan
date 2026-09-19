@@ -6,7 +6,7 @@ from applications.api.error_responses import business_or_server_failure
 from applications.auth.guard import ensure_logged_in
 from applications.common.utils import type_utils, upload as upload_curd
 from applications.common.utils.http import fail_api
-from applications.common.utils.tiff_processor import MAX_TIFF_SIZE_MB, is_tiff_file
+from applications.common.utils.tiff_processor import MAX_UPLOAD_TIFF_SIZE_MB, is_tiff_file
 
 file_api = Blueprint('file_api', __name__, url_prefix='/api/file')
 LOGGER = logging.getLogger(__name__)
@@ -32,8 +32,11 @@ def upload_api():
             size_bytes = photo.tell()
             photo.seek(0)
             size_mb = size_bytes / (1024 * 1024)
-            if size_mb > MAX_TIFF_SIZE_MB:
-                return fail_api(f"TIFF 文件 '{photo.filename}' 大小 ({size_mb:.1f}MB) 超过限制 ({MAX_TIFF_SIZE_MB}MB)")
+            # 上限放宽至 8GB（移植江西 2026-09-19）：地物分类推理按图斑窗口
+            # 裁剪，内存与影像大小解耦；500MB 限制仅保留在切片预览/整图读
+            # 内存的预处理环节（process_uploaded_tiff 内部闸门）
+            if size_mb > MAX_UPLOAD_TIFF_SIZE_MB:
+                return fail_api(f"TIFF 文件 '{photo.filename}' 大小 ({size_mb:.1f}MB) 超过硬上限 ({MAX_UPLOAD_TIFF_SIZE_MB}MB)")
 
     data = []
     is_slice_str = request.form.get('isSlice', 'false')

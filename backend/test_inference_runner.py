@@ -6,7 +6,9 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import MagicMock, Mock, call, patch
+
+import numpy as np
 
 
 def load_runner_module():
@@ -824,6 +826,113 @@ class TestInferenceRunner(unittest.TestCase):
             worker.run_job(job)
 
         self.assertEqual(job_store.finish_job.call_args.kwargs["status"], "succeeded")
+
+
+class TestJobTimeoutEstimation(unittest.TestCase):
+    """任务超时按影像规模放宽（移植江西 2026-09-19）：GB 级影像推理远超
+    1 小时兜底时限，曾被固定 deadline 误杀。"""
+
+    def _make_worker(self, worker_module, *, timeout=3600, pipeline_runner=None):
+        return worker_module.InferenceWorker(
+            device_resolver=Mock(),
+            model_loader=Mock(),
+            inference_fn=Mock(),
+            pipeline_runner=pipeline_runner or Mock(return_value={"status": "completed"}),
+            job_store=Mock(),
+            runtime_root=Path(tempfile.gettempdir()),
+            job_timeout_seconds=timeout,
+        )
+
+    def test_formula_boundaries(self):
+        worker_module = load_worker_module()
+        estimate = worker_module.estimate_inference_timeout_seconds
+        # 切片数×6 秒不超过基线时维持基线
+        self.assertEqual(estimate(3600, 1), 3600)
+        self.assertEqual(estimate(3600, 600), 3600)
+        # 超过基线后按切片数放宽
+        self.assertEqual(estimate(3600, 601), 3606)
+        # 上限 4 小时夹逼
+        self.assertEqual(estimate(3600, 100000), 14400)
+        # 配置基线高于估算时尊重配置（只增不减）
+        self.assertEqual(estimate(20000, 1), 20000)
+        # 0/负值表示不启用超时
+        self.assertEqual(estimate(0, 100000), 0)
+
+    def test_timeout_extended_for_large_image(self):
+        worker_module = load_worker_module()
+        worker = self._make_worker(worker_module)
+        # 30000×30000 → 59×59=3481 片 → 41772s 夹到 14400（4 小时）
+        fake_rasterio = MagicMock()
+        fake_rasterio.open.return_value.__enter__.return_value = types.SimpleNamespace(
+            height=30000, width=30000
+        )
+        fake_rasterio.open.return_value.__exit__.return_value = False
+        with patch.dict(sys.modules, {"rasterio": fake_rasterio}):
+            seconds = worker._job_timeout_for({"old_tif_path": "big.tif"})
+        self.assertEqual(seconds, 14400)
+
+    def test_timeout_falls_back_to_base_when_raster_unreadable(self):
+        worker_module = load_worker_module()
+        worker = self._make_worker(worker_module)
+        self.assertEqual(worker._job_timeout_for({"old_tif_path": "missing.tif"}), 3600)
+        self.assertEqual(worker._job_timeout_for({}), 3600)
+
+    def test_small_image_keeps_configured_base(self):
+        worker_module = load_worker_module()
+        worker = self._make_worker(worker_module)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            import rasterio
+            from rasterio.transform import from_bounds
+
+            tif_path = str(Path(temp_dir) / "small.tif")
+            with rasterio.open(
+                tif_path,
+                "w",
+                driver="GTiff",
+                height=512,
+                width=512,
+                count=3,
+                dtype="uint8",
+                transform=from_bounds(100.0, 25.0, 100.1, 25.1, 512, 512),
+            ) as dst:
+                dst.write(np.zeros((3, 512, 512), dtype=np.uint8))
+            self.assertEqual(worker._job_timeout_for({"old_tif_path": tif_path}), 3600)
+
+    def test_run_job_uses_estimated_deadline(self):
+        worker_module = load_worker_module()
+        deadline_margin = {}
+
+        def pipeline_runner(**_kwargs):
+            deadline_margin["value"] = worker.job_deadline - time.monotonic()
+            return {"status": "completed"}
+
+        worker = self._make_worker(worker_module, pipeline_runner=pipeline_runner)
+        job = types.SimpleNamespace(
+            id="job-estimate",
+            status="running",
+            cancel_requested=False,
+            request_payload_json=json.dumps(
+                {
+                    "old_tif_path": "big.tif",
+                    "new_tif_path": "big.tif",
+                    "kml_path": "roi.kml",
+                    "output_root": "outputs",
+                }
+            ),
+        )
+        fake_rasterio = MagicMock()
+        fake_rasterio.open.return_value.__enter__.return_value = types.SimpleNamespace(
+            height=30000, width=30000
+        )
+        fake_rasterio.open.return_value.__exit__.return_value = False
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker.runtime_root = Path(temp_dir)
+            with patch.dict(sys.modules, {"rasterio": fake_rasterio}):
+                worker.run_job(job)
+
+        # pipeline 执行时距 deadline 应接近 4 小时上限，而非配置的 1 小时
+        self.assertGreater(deadline_margin["value"], 3600)
+        self.assertLessEqual(deadline_margin["value"], 14400)
 
 
 if __name__ == "__main__":

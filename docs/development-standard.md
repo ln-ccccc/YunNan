@@ -214,6 +214,15 @@ try {
 } finally { Pop-Location }
 ```
 
+大文件上传与长时推理（8GB 上传闸门、地物分类 keep_tiff_raw 快速路径、任务超时按影像规模估算、逐 chunk GPU 缓存释放；移植江西 2026-09-19）：
+
+```powershell
+Push-Location backend
+try {
+    python -B -m unittest test_large_tiff_upload test_inference_batch test_inference_runner -v
+} finally { Pop-Location }
+```
+
 API 层异常处理约定：`except Exception` 分支一律使用 `applications/api/error_responses.py::business_or_server_failure`——业务校验异常（ValueError/FileNotFoundError）回显原文，其余只记服务端日志并返回通用文案 + 500；不得新增 `fail_api(str(exc))` 直回显。
 
 推理入口与发布（含 mock，不代表真实 GPU 验收）：
