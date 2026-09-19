@@ -16,7 +16,7 @@ from rasterio.transform import from_origin
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
 from applications import create_app
-from applications.common.path_global import generate_dir, generate_url, up_dir, up_url
+from applications.common.path_global import generate_url, up_url
 from applications.extensions import db
 from applications.kml_roi.index_sync import sync_miner_index_rows
 from applications.kml_roi.kml import load_kml_features
@@ -37,8 +37,29 @@ class TestSpectralIndicesAPI(unittest.TestCase):
         db.create_all()
         self.login_as_admin()
 
-        os.makedirs(up_dir, exist_ok=True)
-        os.makedirs(generate_dir, exist_ok=True)
+        # 测试隔离（AGENTS §8）：上传/生成目录指向临时目录，不写真实仓库
+        # static/upload/；范式与 test_large_tiff_upload 一致
+        from applications.extensions.flask_uploads import UploadConfiguration
+        from applications.extensions.init_upload import IMAGES_WITH_TIFF
+
+        self.upload_tmp = tempfile.mkdtemp(prefix="spectral-isolated-")
+        self.up_dir = self.upload_tmp
+        self.generate_dir = os.path.join(self.upload_tmp, "res")
+        os.makedirs(self.generate_dir, exist_ok=True)
+        self.app.config["UPLOADED_PHOTOS_DEST"] = self.upload_tmp
+        self.app.upload_set_config["photos"] = UploadConfiguration(
+            self.upload_tmp, None, IMAGES_WITH_TIFF, ()
+        )
+        from applications.api import analysis as analysis_module
+
+        for target, value in (
+            ("up_dir", self.up_dir),
+            ("generate_dir", self.generate_dir),
+        ):
+            patcher = patch.object(analysis_module, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(shutil.rmtree, self.upload_tmp, ignore_errors=True)
 
         self.created_upload_files = []
         self.created_result_files = []
@@ -81,7 +102,7 @@ class TestSpectralIndicesAPI(unittest.TestCase):
 
     def _make_tif(self, band_count, basename_prefix="spec"):
         fname = f"{basename_prefix}_{uuid.uuid4().hex[:8]}.tif"
-        fpath = os.path.join(up_dir, fname)
+        fpath = os.path.join(self.up_dir, fname)
         height, width = 16, 16
         transform = from_origin(0, 0, 1, 1)
 
@@ -109,7 +130,7 @@ class TestSpectralIndicesAPI(unittest.TestCase):
 
     def _make_constant_geo_tif(self, basename_prefix="geo"):
         fname = f"{basename_prefix}_{uuid.uuid4().hex[:8]}.tif"
-        fpath = os.path.join(up_dir, fname)
+        fpath = os.path.join(self.up_dir, fname)
         height, width = 4, 4
         transform = from_origin(100, 21, 1, 1)
         arr = np.zeros((4, height, width), dtype=np.float32)
@@ -145,13 +166,13 @@ class TestSpectralIndicesAPI(unittest.TestCase):
         for url in result_urls:
             if isinstance(url, str) and url.startswith(generate_url):
                 relative = url[len(generate_url):]
-                local = os.path.join(generate_dir, relative)
+                local = os.path.join(self.generate_dir, relative)
                 self.created_result_files.append(local)
 
         latest = Analysis.query.filter_by(type=8).order_by(Analysis.id.desc()).first()
         if latest and latest.before_img and latest.before_img.startswith(generate_url):
             relative = latest.before_img[len(generate_url):]
-            local = os.path.join(generate_dir, relative)
+            local = os.path.join(self.generate_dir, relative)
             self.created_result_files.append(local)
 
     def test_ndvi_success_and_persisted_metadata(self):
@@ -435,7 +456,7 @@ class TestSpectralIndicesAPI(unittest.TestCase):
                     "project_id": project["id"],
                     "list": [{
                         "src": up_url + tif,
-                        "raw_tiff_path": os.path.join(up_dir, tif),
+                        "raw_tiff_path": os.path.join(self.up_dir, tif),
                     }],
                     "index_type": "NDVI",
                     "year": "2024",
