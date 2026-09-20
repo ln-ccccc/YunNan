@@ -1,12 +1,8 @@
 <template>
   <div class="dashboard">
     <TheHeader
-      :weatherIcon="weatherIcon"
-      :temperature="temperature"
-      :airQuality="airQuality"
       :currentDate="currentDate"
       :currentTime="currentTime"
-      :getAqiClass="getAqiClass"
       :username="username"
       :secondaryActionLabel="headerActionLabel"
       :projectId="projectId"
@@ -108,7 +104,7 @@ import MineDetailModal from './MineDetailModal.vue';
 import InferenceModal from './InferenceModal.vue';
 import TrendReportModal from './TrendReportModal.vue';
 
-import { useWeather } from '../composables/useWeather';
+import { useClock } from '../composables/useClock';
 import { useMineData } from '../composables/useMineData';
 import { createWindowResizeListener } from '../composables/windowResizeListener.js';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
@@ -149,8 +145,8 @@ const imageryAssetsLoading = ref(false);
 const imageryAssetsError = ref('');
 
 const {
-  currentDate, currentTime, temperature, weatherIcon, airQuality, getAqiClass, fetchRealtimeEnvironmentAt,
-} = useWeather();
+  currentDate, currentTime,
+} = useClock();
 
 const {
   allMinesData,
@@ -247,7 +243,6 @@ const handleSelectMine = async ({ feature, center }) => {
   selectedTab.value = 'NDVI';
 
   await fetchIndices(properties.FID_1);
-  fetchRealtimeEnvironmentAt(center.lat, center.lng);
 };
 
 const focusByFid = (fid) => {
@@ -301,7 +296,6 @@ const handleExportTrendReport = async (filters = {}) => {
 
 onMounted(() => {
   loadData();
-  fetchRealtimeEnvironmentAt(25.6, 100.2);
   resizeListener.attach();
 });
 

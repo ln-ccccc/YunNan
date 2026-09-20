@@ -4,13 +4,6 @@
       <div class="logo-area">
         <h1 class="title">矿山生态修复智能监测平台</h1>
       </div>
-      <div class="weather-widget">
-        <span class="weather-icon">{{ weatherIcon }}</span>
-        <div class="weather-info">
-          <span class="temp">{{ temperature }}°C</span>
-          <span class="aqi" :class="getAqiClass(airQuality)">空气{{ airQuality }}</span>
-        </div>
-      </div>
     </div>
     <div class="header-right">
       <div class="time-widget">{{ currentDate }} {{ currentTime }}</div>
@@ -47,12 +40,8 @@
 import { buildGeoViewUrl } from '../navigation/geoviewNavigation.js';
 
 const props = defineProps({
-  weatherIcon: String,
-  temperature: [Number, String],
-  airQuality: String,
   currentDate: String,
   currentTime: String,
-  getAqiClass: Function,
   username: {
     type: String,
     default: '',
@@ -110,41 +99,6 @@ const goToGeoView = () => {
   -webkit-background-clip: text;
   color: transparent;
 }
-
-.weather-widget {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 15px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 20px;
-}
-
-.weather-info {
-  display: flex;
-  flex-direction: column;
-  font-size: 12px;
-  line-height: 1.2;
-}
-
-.temp {
-  font-weight: bold;
-  color: #f1c40f;
-}
-
-.aqi {
-  padding: 1px 4px;
-  border-radius: 4px;
-  font-size: 10px;
-  color: #fff;
-}
-
-.aqi-1 { background: rgba(0, 228, 0, 0.6); }
-.aqi-2 { background: rgba(255, 255, 0, 0.6); color: #000; }
-.aqi-3 { background: rgba(255, 126, 0, 0.6); }
-.aqi-4 { background: rgba(255, 0, 0, 0.6); }
-.aqi-5 { background: rgba(153, 0, 76, 0.6); }
-.aqi-6 { background: rgba(126, 0, 35, 0.6); }
 
 .secondary-btn,
 .system-btn {
