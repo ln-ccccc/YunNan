@@ -1,6 +1,16 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import axios from 'axios';
 
+// 决策⑤（2026-09-20）：实时天气/空气走浏览器直连公网 open-meteo，内网离线部署
+// 必然失败且会把矿山坐标发往第三方——默认关闭。联网环境演示需要时，在构建
+// 环境显式设置 VITE_ENABLE_WEATHER=true 开启。
+export function isWeatherEnabled(env) {
+  const flag = String(env?.VITE_ENABLE_WEATHER ?? '').trim().toLowerCase();
+  return flag === 'true' || flag === '1';
+}
+
+const weatherEnabled = isWeatherEnabled(import.meta.env);
+
 export function useWeather() {
   const currentDate = ref('');
   const currentTime = ref('');
@@ -8,6 +18,12 @@ export function useWeather() {
   const weatherIcon = ref('🌤️');
   const airQuality = ref('良');
   const humidity = ref('--');
+
+  if (!weatherEnabled) {
+    // 关闭态显示诚实占位，不发任何外网请求
+    weatherIcon.value = '—';
+    airQuality.value = '暂无';
+  }
 
   let timeInterval = null;
 
@@ -49,6 +65,7 @@ export function useWeather() {
   };
 
   const fetchRealtimeEnvironmentAt = async (lat, lon) => {
+    if (!weatherEnabled) return;
     try {
       const weatherUrl = 'https://api.open-meteo.com/v1/forecast';
       const airUrl = 'https://air-quality-api.open-meteo.com/v1/air-quality';

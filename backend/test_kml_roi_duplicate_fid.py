@@ -5,8 +5,8 @@
    无 shapely 回退路径却不去重——两条路径行为矛盾；
 2. tiles.prepare_tiles 同 fid 第二个 feature 覆盖同名瓦片产物，
    且 variants_by_fid[fid] 被整组覆盖；
-3. kml_merge.merge_kml_increment 的 base 内同 fid 多 Placemark 只记最后一个，
-   替换后其余同 fid 残留，合并结果出现重复 fid。
+3.（已移除）kml_merge 的同 fid 残留缺陷——该模块随 2026-09-20 决策⑥
+   删除（生产零调用的旧链路），本文件仅保留仍在生产链路上的 1/2 两项回归。
 
 硬性约束：fid 唯一（云南主链路 565 矿山）时行为与历史完全一致，
 既有 test_kml_roi_pipeline / test_spectral_indices 中的相关用例即为其回归门。
@@ -24,7 +24,6 @@ import numpy as np
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
 from applications.kml_roi.kml import load_kml_features
-from applications.kml_roi.kml_merge import merge_kml_increment
 from applications.kml_roi.spatial_index import filter_features_by_bounds
 from applications.kml_roi.tiles import prepare_tiles
 
@@ -153,62 +152,12 @@ class PrepareTilesDuplicateFidTests(unittest.TestCase):
         self.assertEqual(len(variants["24"]), 1)
 
 
-class MergeKmlDuplicateFidTests(unittest.TestCase):
-    """Y2-1c：base 内同 fid 多 Placemark 必须全部参与合并，结果无重复 fid。"""
-
-    def test_base_duplicate_fid_placemarks_all_replaced(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            base_kml = Path(tmp_dir) / "base.kml"
-            incoming_kml = Path(tmp_dir) / "incoming.kml"
-            base_kml.write_text(
-                _kml_document(
-                    _placemark_xml("100", 100.0, 20.0, 101.0, 21.0)
-                    + _placemark_xml("100", 106.0, 20.0, 107.0, 21.0)
-                ),
-                encoding="utf-8",
-            )
-            incoming_kml.write_text(
-                _kml_document(_placemark_xml("100", 102.0, 20.0, 103.0, 21.0)),
-                encoding="utf-8",
-            )
-
-            summary = merge_kml_increment(base_kml, incoming_kml)
-            self.assertEqual(summary["updated"], 1)
-            self.assertEqual(summary["inserted"], 0)
-
-            features = load_kml_features(base_kml)
-            fids = [fid for fid, _ in features]
-            self.assertEqual(fids.count("100"), 1)
-            ring = features[0][1]["coordinates"][0]
-            xs = [pt[0] for pt in ring]
-            # 保留的是 incoming 的几何，base 的两个旧图斑都不残留
-            self.assertTrue(all(102.0 <= x <= 103.0 for x in xs), msg=str(xs))
-
-    def test_incoming_duplicate_fid_collapses_to_one(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            base_kml = Path(tmp_dir) / "base.kml"
-            incoming_kml = Path(tmp_dir) / "incoming.kml"
-            base_kml.write_text(
-                _kml_document(_placemark_xml("100", 100.0, 20.0, 101.0, 21.0)),
-                encoding="utf-8",
-            )
-            incoming_kml.write_text(
-                _kml_document(
-                    _placemark_xml("100", 102.0, 20.0, 103.0, 21.0)
-                    + _placemark_xml("100", 104.0, 20.0, 105.0, 21.0)
-                ),
-                encoding="utf-8",
-            )
-
-            merge_kml_increment(base_kml, incoming_kml)
-            fids = [fid for fid, _ in load_kml_features(base_kml)]
-            self.assertEqual(fids.count("100"), 1)
-
-
 class DuplicateFidPipelineTests(unittest.TestCase):
     """Y2-1 端到端：同 fid 双 Placemark KML，两个图斑都被切片/推理/落盘。
 
     推理器用 fake（真实链路在 GPU 验收批次覆盖），瓦片裁切与产物分发走真实实现。
+    （原 Y2-1c 合并链路用例随 kml_merge 模块一并移除——2026-09-20 决策⑥：
+    该链路生产零调用，保留仅有"复活即直写 miner/"的契约风险。）
     """
 
     @staticmethod

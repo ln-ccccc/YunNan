@@ -49,36 +49,6 @@ def load_caller_module():
             sys.modules["applications.common.path_global"] = previous_path_global
 
 
-def load_service_module():
-    package_names = ("applications", "applications.kml_roi")
-    previous = {name: sys.modules.get(name) for name in package_names}
-    previous_merge = sys.modules.get("applications.kml_roi.kml_merge")
-    try:
-        for name in package_names:
-            package = types.ModuleType(name)
-            package.__path__ = []
-            sys.modules[name] = package
-        merge_module = types.ModuleType("applications.kml_roi.kml_merge")
-        merge_module.merge_kml_increment = Mock()
-        sys.modules["applications.kml_roi.kml_merge"] = merge_module
-
-        module_path = Path(__file__).parent / "applications" / "kml_roi" / "service.py"
-        spec = importlib.util.spec_from_file_location("kml_roi_service_test", module_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        for name, module in previous.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
-        if previous_merge is None:
-            sys.modules.pop("applications.kml_roi.kml_merge", None)
-        else:
-            sys.modules["applications.kml_roi.kml_merge"] = previous_merge
-
-
 def load_worker_module():
     module_name = "inference_worker_test"
     module_path = Path(__file__).parent / "applications" / "inference" / "worker.py"
@@ -305,10 +275,6 @@ class TestInferenceRunner(unittest.TestCase):
         caller = load_caller_module()
 
         self.assertFalse(hasattr(caller, "_patch_mmdet_mmcv_guard"))
-
-    def test_parse_last_json_rejects_missing_json(self):
-        with self.assertRaisesRegex(RuntimeError, "未返回有效 JSON"):
-            load_service_module()._parse_last_json("plain log output")
 
     def test_worker_reuses_loaded_model_across_jobs(self):
         worker_module = load_worker_module()

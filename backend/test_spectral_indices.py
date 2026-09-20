@@ -19,8 +19,6 @@ from applications import create_app
 from applications.common.path_global import generate_url, up_url
 from applications.extensions import db
 from applications.kml_roi.index_sync import sync_miner_index_rows
-from applications.kml_roi.kml import load_kml_features
-from applications.kml_roi.kml_merge import merge_kml_increment
 from applications.models.analysis import Analysis
 from applications.models.project import ProjectMineBinding
 from applications.models.project_spatial import ProjectSpatialResource
@@ -299,38 +297,6 @@ class TestSpectralIndicesAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["code"], 1)
         self.assertIn("波段序号超出范围", body["msg"])
-
-    def test_kml_merge_inserts_and_updates_by_fid(self):
-        tmp = tempfile.mkdtemp()
-        self.temp_dirs.append(tmp)
-        base_kml = os.path.join(tmp, "base.kml")
-        incoming_kml = os.path.join(tmp, "incoming.kml")
-        with open(base_kml, "w", encoding="utf-8") as f:
-            f.write(
-                """<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
-                <Placemark><name>100</name><Polygon><outerBoundaryIs><LinearRing><coordinates>
-                100,20,0 101,20,0 101,21,0 100,21,0 100,20,0
-                </coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
-                </Document></kml>"""
-            )
-        with open(incoming_kml, "w", encoding="utf-8") as f:
-            f.write(
-                """<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
-                <Placemark><name>100</name><Polygon><outerBoundaryIs><LinearRing><coordinates>
-                102,20,0 103,20,0 103,21,0 102,21,0 102,20,0
-                </coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
-                <Placemark><name>101</name><Polygon><outerBoundaryIs><LinearRing><coordinates>
-                104,20,0 105,20,0 105,21,0 104,21,0 104,20,0
-                </coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
-                </Document></kml>"""
-            )
-
-        summary = merge_kml_increment(Path(base_kml), Path(incoming_kml))
-        self.assertEqual(summary["updated"], 1)
-        self.assertEqual(summary["inserted"], 1)
-        features = load_kml_features(Path(base_kml))
-        self.assertEqual([fid for fid, _ in features].count("100"), 1)
-        self.assertEqual([fid for fid, _ in features].count("101"), 1)
 
     def test_sync_miner_index_rows_upserts_year_column(self):
         tmp = tempfile.mkdtemp()
