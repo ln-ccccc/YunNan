@@ -311,10 +311,6 @@ export default {
         this.revisions = revisionPayload?.revisions || [];
         this.activeClassCode = Number(result?.classes?.[0]?.class_code ?? 0);
         this.tileTemplate = resolveSecureTileTemplate(result?.map_manifest?.api_tile_url, global.BASEURL);
-        await this.$nextTick();
-        if (isEditableVectorStatus(result.vector_status)) {
-          this.initializeMap();
-        }
       } catch (error) {
         if (seq !== this.reloadSeq) {
           return;
@@ -323,6 +319,18 @@ export default {
       } finally {
         if (seq === this.reloadSeq) {
           this.loading = false;
+          // 地图初始化必须在 loading 落为 false 之后：编辑器主体（含地图容器）
+          // 被 v-else-if="loading" 的骨架屏门控，loading=true 期间 $refs.mapContainer
+          // 不存在，此前在 try 内 nextTick 时机初始化会静默早退——地图永不渲染
+          // （2026-09-20 GUI 实测发现的 P1）
+          await this.$nextTick();
+          if (
+            this.result &&
+            !this.loadError &&
+            isEditableVectorStatus(this.result.vector_status)
+          ) {
+            this.initializeMap();
+          }
         }
       }
     },

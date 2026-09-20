@@ -195,6 +195,18 @@ MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sh \
 
 **本项目实例（2026-09-20）**：docs/code-review/20260920-audit.md——7 包 70+ 条 findings，P1×9 当晚全部修复，后端 353→360 全绿、miner 47→48、双前端构建绿。
 
+### 16. GUI 实跑巡检：后台标签会制造"伪缺陷"（2026-09-20）✅
+
+**解决什么问题**：用内嵌浏览器自动化巡检 GUI 时，若标签页处于 `visibility: hidden`（宿主窗口未聚焦/面板未激活），会稳定复现两类**假 bug**：① 键盘/点击事件不路由（按 Enter 不提交表单、Playwright click 全部 actionability 超时）；② Vue `<transition>` 状态机卡死（`fade-enter-from` 永不移除，弹窗点 × 视觉上关不掉）——根因是 rAF 冻结，切回前台后自愈。
+
+**做法**：
+1. 巡检前先断言 `document.visibilityState === 'visible'`，hidden 时的交互类结论一律不作数。
+2. hidden 环境下改用 **DOM 注入**（`element.click()` / `dispatchEvent` + `performance.getEntriesByType('resource')` 对账网络请求）验证数据流；视觉/过渡结论留给前台。
+3. 用 `window.__errors` 收集器（error + unhandledrejection）全程伴随巡检，零 JS 错误是硬门槛。
+4. `:refs` 依赖的初始化要警惕 `v-if` 门控时序——**GUI 实跑抓到的真 P1**：分类成果编辑器在 `loading=true`（骨架屏门控）期间调 `initializeMap()`，`$refs.mapContainer` 不存在而静默早退，地图永不渲染；修复=初始化移到 `loading=false` 之后的 nextTick，并加源码顺序守护测试。
+
+**为什么好**：伪缺陷会消耗信任与排查时间（先查环境再定性，砍掉两例）；而纯单测/构建永远抓不到"refs 时序"这类只有真实组件挂载才暴露的缺陷——GUI 实跑是最后一道验收门。
+
 
 ---
 
