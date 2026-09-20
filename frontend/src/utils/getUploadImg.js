@@ -1,5 +1,7 @@
 import { flashHistoryGetPage, historyGetPage } from "@/api/history"
 import global from '@/global'
+import { h, ref } from 'vue'
+import { ElNotification } from 'element-plus'
 import { showFullScreenLoading } from "@/utils/loading";
 import { getKmlRoiJob, kmlRoiInfer } from "@/api/upload";
 import {
@@ -7,6 +9,7 @@ import {
   buildInterpretationHistoryCards,
   groupUploadSourcesByTiff
 } from "@/utils/interpretationContext.mjs";
+import { checkUploadLimits, isDisconnectError } from "@/utils/uploadGuards.mjs";
 
 const inferenceTerminalStatuses = new Set([
   'succeeded',
@@ -22,9 +25,29 @@ const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mill
 // 任务卡死在非终态时避免无限轮询
 const MAX_POLL_ATTEMPTS = 3700;
 
+// 断线自愈（江西 7f4e4d0 同款）：瞬时网络抖动不终止轮询，连续失败约 2 分钟
+// 才按断链处理——后端任务仍在执行，一次断网不打死流程
+const MAX_POLL_CONSECUTIVE_FAILURES = 120;
+
 async function waitForKmlRoiJob(jobId) {
+  let consecutiveFailures = 0;
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
-    const response = await getKmlRoiJob(jobId);
+    let response;
+    try {
+      response = await getKmlRoiJob(jobId);
+      consecutiveFailures = 0;
+    } catch (error) {
+      const status = error?.response?.status;
+      if (typeof status === 'number' && status >= 400 && status < 500) throw error;
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= MAX_POLL_CONSECUTIVE_FAILURES) {
+        const wrapped = new Error('推理任务查询持续失败，连接可能已中断');
+        wrapped.disconnect = true;
+        throw wrapped;
+      }
+      await wait(1000);
+      continue;
+    }
     const job = response?.data?.data;
     if (!job?.status) throw new Error("推理任务查询未返回有效状态");
     if (inferenceTerminalStatuses.has(job.status)) return job;
@@ -69,9 +92,17 @@ function goCompress(type, num) {
   }).catch(() => { });
 }
 
+// 上传进行位：模块级单例——组件随路由卸载不重置，防止路由往返触发并发两组
+// 8GB 上传（江西 F4 同款教训：组件内 state 守卫在切页后失效）
+let uploadInFlight = false;
+
 function upload(type, funUrl) {
   if (this.fileList.length === 0) {
     this.$message.error("请上传图片！");
+    return;
+  }
+  if (uploadInFlight) {
+    this.$message.warning("已有一次上传正在进行，请等待完成或先取消");
     return;
   }
 
@@ -83,6 +114,18 @@ function upload(type, funUrl) {
       this.$message.error("请先填写4位年份（YYYY），用于KML ROI结果命名");
       return;
     }
+  }
+
+  // 本地预检（江西 F2 同款）：超限秒拒，不再把 GB 级无效请求白发到服务端
+  const rawFiles = [];
+  for (const item of this.fileList) {
+    const rawFile = item?.raw || item;
+    if (rawFile) rawFiles.push(rawFile);
+  }
+  const limits = checkUploadLimits(rawFiles.map((file) => ({ name: file.name, size: file.size })));
+  if (!limits.ok) {
+    this.$message.error(limits.message);
+    return;
   }
 
   formData.append("type", type);
@@ -101,7 +144,41 @@ function upload(type, funUrl) {
 
   if (isSegmentation) formData.append("keepRawTiff", 'true');
 
-  this.createSrc(formData).then((res) => {
+  // 上传进度 + 可取消（江西 F2 同款）：duration=0 常驻通知，结束/取消必须显式关闭
+  const controller = new AbortController();
+  const percent = ref(0);
+  const progressBody = {
+    name: 'UploadProgressBody',
+    setup() {
+      return () => h('div', { style: 'display:flex;align-items:center;gap:12px;' }, [
+        h('span', `已上传 ${percent.value}%`),
+        h('button', {
+          type: 'button',
+          style: 'border:none;border-radius:4px;padding:4px 10px;cursor:pointer;color:#fff;background:#409eff;',
+          onClick: () => controller.abort(),
+        }, '取消上传'),
+      ]);
+    },
+  };
+  const notification = ElNotification({
+    title: '影像上传中',
+    message: h(progressBody),
+    duration: 0,
+    showClose: false,
+  });
+  uploadInFlight = true;
+
+  this.createSrc(formData, {
+    signal: controller.signal,
+    onUploadProgress: (event) => {
+      if (event?.total) {
+        percent.value = Math.min(99, Math.round((event.loaded / event.total) * 100));
+      }
+    },
+  }).then((res) => {
+    notification.close();
+    uploadInFlight = false;
+    percent.value = 100;
     const uploadItems = res.data.data || [];
     this.uploadSrc.list = uploadItems.map((item) => item.src);
 
@@ -195,7 +272,10 @@ function upload(type, funUrl) {
         this.fileList = [];
         this.getMore();
       })().catch((err) => {
-        const msg = err?.response?.data?.msg || err?.message || "Flash 推理失败";
+        // 断链语义（江西 083985f 同款）：任务可能仍在后端执行，不误报"推理失败"
+        const msg = isDisconnectError(err)
+          ? '连接已中断，任务可能仍在后端执行，请稍后在历史记录中查看结果'
+          : (err?.response?.data?.msg || err?.message || "Flash 推理失败");
         this.$message.error(msg);
       });
     } else {
@@ -218,7 +298,27 @@ function upload(type, funUrl) {
         }).catch(() => { })
     }
     this.$refs.upload?.clearFiles?.();
-  }).catch(() => { })
+  }).catch((err) => {
+    notification.close();
+    uploadInFlight = false;
+    // 业务失败（code!==0）已被 requestfile 拦截器提示，这里只处理 HTTP/网络层
+    const cancelled = err?.code === 'ERR_ABORTED' || err?.code === 'canceled'
+      || /cancel|abort/i.test(String(err?.message || ''));
+    if (cancelled) {
+      this.$message.info('已取消上传');
+      return;
+    }
+    if (isDisconnectError(err)) {
+      this.$message.error('连接已中断，请检查网络后重试');
+      return;
+    }
+    if (err?.response) {
+      this.$message.error(err?.response?.data?.msg || '上传失败，请重试');
+    }
+  }).finally(() => {
+    // 兜底复位：then 分支已复位，防御提前 return 路径（如非 tif 提示）
+    uploadInFlight = false;
+  })
 }
 
 export { getUploadImg, goCompress, upload }

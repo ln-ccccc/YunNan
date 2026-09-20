@@ -1,10 +1,13 @@
 import { requestfile } from "@/api/requestfile.js"
 import {request} from "@/api/request.js"
-export function createSrc(formdata) {
+export function createSrc(formdata, options = {}) {
     return requestfile({
         method: 'POST',
         url: '/api/file/upload',
         data:formdata,
+        // 透传上传进度回调与取消信号（8GB 大文件 UX：进度可取消，江西 F2 同款）
+        signal: options.signal,
+        onUploadProgress: options.onUploadProgress,
         transformRequest: [function(data, headers) {
             delete headers.post['Content-Type']
             return data

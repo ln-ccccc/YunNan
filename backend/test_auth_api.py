@@ -57,6 +57,50 @@ class TestAuthAPI(unittest.TestCase):
         self.assertEqual(user.username, "admin")
         self.assertTrue(verify_admin_password("admin", "Secret123!"))
 
+    def test_bootstrap_admin_survives_multi_worker_insert_race(self):
+        """gunicorn 双 worker 首启空库竞态（江西 03247b9 同款）：两个 worker 同时
+        查不到账号并同时插入，后提交者 UNIQUE 冲突——必须回滚改更新而非崩溃循环。"""
+        from unittest.mock import patch
+
+        from applications.auth.service import sync_admin_from_env, verify_admin_password
+        from applications.extensions import db
+        from applications.models import AdminUser
+
+        os.environ["ADMIN_USERNAME"] = "admin"
+        os.environ["ADMIN_PASSWORD"] = "Secret123!"
+        self.app.config["ADMIN_USERNAME"] = "admin"
+        self.app.config["ADMIN_PASSWORD"] = "Secret123!"
+
+        # 预置"另一 worker 已插入"的行，但让本次调用竞态窗口内的第一次查询看不到它，
+        # UNIQUE 冲突回滚后的复查走真实查询
+        seeded = AdminUser(username="admin", password_hash="placeholder", is_active=True)
+        db.session.add(seeded)
+        db.session.commit()
+
+        real_query = AdminUser.query
+
+        class _SeqQuery:
+            """第一次 first() 返回 None（模拟竞态窗口），其后返回真实查询结果。"""
+
+            def __init__(self):
+                self.calls = 0
+
+            def filter_by(self, **_kwargs):
+                return self
+
+            def first(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return None
+                return real_query.filter_by(username="admin").first()
+
+        with patch.object(AdminUser, "query", _SeqQuery()):
+            user = sync_admin_from_env()
+
+        self.assertIsNotNone(user)
+        self.assertEqual(user.id, seeded.id)
+        self.assertTrue(verify_admin_password("admin", "Secret123!"))
+
     def test_login_logout_and_session_guard(self):
         self.sync_admin("Secret123!")
 

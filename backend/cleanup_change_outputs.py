@@ -14,6 +14,12 @@ def _preview_output_dir(fid: str, fid_dir: Path, keep_last_years: int = 3) -> li
     return sorted(p.name for p in fid_dir.iterdir() if p.is_file() and p.name not in keep)
 
 
+def is_fid_directory(name) -> bool:
+    """只把纯数字目录当成果 fid 目录（江西 6fc814a 同款守卫）：
+    非数字目录（U 前缀整图产物、备份、手工放置物）一律不动，防止误清。"""
+    return str(name).isdigit()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output_root", required=True)
@@ -31,8 +37,12 @@ def main() -> int:
     if not root.exists():
         raise FileNotFoundError(str(root))
 
+    if args.fid and not is_fid_directory(args.fid):
+        raise SystemExit(f"--fid 只接受纯数字 fid（收到：{args.fid}）")
+
     removed_total = 0
     visited = 0
+    skipped = []
 
     if args.fid:
         d = root / str(args.fid)
@@ -48,6 +58,9 @@ def main() -> int:
         return 0
 
     for d in sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name):
+        if not is_fid_directory(d.name):
+            skipped.append(d.name)
+            continue
         fid = d.name
         if args.apply:
             removed_total += cleanup_output_dir(fid, d, keep_last_years=args.keep_last_years)
@@ -59,7 +72,10 @@ def main() -> int:
         if args.limit and visited >= args.limit:
             break
 
-    print({"visited": visited, "removed": removed_total} if args.apply else {"dry_run": True, "visited": visited})
+    summary = {"visited": visited, "removed": removed_total} if args.apply else {"dry_run": True, "visited": visited}
+    if skipped:
+        summary["skipped_non_fid_dirs"] = skipped
+    print(summary)
     return 0
 
 

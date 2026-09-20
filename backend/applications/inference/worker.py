@@ -12,6 +12,31 @@ from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
 
+# SIGKILL/断电下任务暂存目录不会被正常清理（run_job 的成功清理与失败
+# keep_failed_workdir 都走不到），单任务可达 GB 级；江西 3e82f47 同款：
+# worker 启动时按目录 mtime 清扫超龄残留。24h 阈值保证不影响活跃任务
+# （长任务超时上限 1h + 余量）。
+STALE_WORKDIR_MAX_AGE_SECONDS = 24 * 3600
+
+
+def sweep_stale_workdirs(runtime_root, max_age_seconds=STALE_WORKDIR_MAX_AGE_SECONDS):
+    """删除 runtime_root 下 mtime 超龄的暂存目录，返回被删除的目录名列表。"""
+    root = Path(runtime_root)
+    if not root.is_dir():
+        return []
+    removed = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            age = time.time() - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age >= max_age_seconds:
+            shutil.rmtree(entry, ignore_errors=True)
+            removed.append(entry.name)
+    return removed
+
 
 def _default_model_forward_runner(model):
     import numpy as np
@@ -468,6 +493,9 @@ class InferenceWorker:
             recovered = self.job_store.recover_abandoned_jobs(worker_host, self.worker_id)
             if recovered:
                 logger.warning("已将 %s 个上一个 Worker 进程遗留的任务标记为失败", recovered)
+        removed = sweep_stale_workdirs(self.runtime_root)
+        if removed:
+            logger.warning("启动清扫 %s 个超龄(>24h)任务暂存目录: %s", len(removed), removed)
         last_heartbeat = 0.0
         while not should_stop():
             now = time.monotonic()
