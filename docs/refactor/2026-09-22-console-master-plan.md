@@ -102,3 +102,15 @@
 ## 6. 明确不做（本期边界重申）
 
 人工从零新建分类结果；原始影像在线瓦片叠加浏览；Excel 批量新建项目；RBAC/多用户权限；要素级修订 diff 审计（记为 v2 候选：ClassificationEditAudit.details_json 扩展）；修订回滚（vector-result-v1 契约维持）。
+
+## 7. 执行结果（M1-M4 全部交付，2026-09-22 当日）
+
+| 期 | 提交 | 核心交付 | 验证 |
+| --- | --- | --- | --- |
+| M1 主控台骨架+看板 | f84bd36 | AppShell 七模块左导航+占位、StatsOverviewPanel 五卡+地类占比、feature_count 冗余列、项目卡片两新字段 | backend 404/0、miner 61/61、GUI |
+| M2 项目管理增强 | 363fe18 | 删除（仅归档可删+目录入 trash）、批量归档/删除、快照导入、项目档案面板 | backend 613/0、miner 64/64、GUI |
+| M3 图斑溯源 | 80ea1d0 | traceability 聚合端点、成果清单端点、详情溯源视图、#/editing 编辑导航 | backend 717/0、miner 64/64、GUI（矿山 713） |
+| M4 体验完善 | 739ebac | 图层显隐/比例尺/经纬网、影像管理页、搜索页（矿山 ID 跨项目定位）、设置页 | backend 717/0、miner 64/64、GUI |
+
+最终基线：backend 717 passed / 0 failed、miner 64/64、frontend 44/44、双构建零错误。
+导航施标：七模块中五模块独立页面（projects/imagery/editing/search/settings），智能解译与数据管理标注"项目工作台内操作"（发起推理与导出/快照本就在工作台流程内）。
