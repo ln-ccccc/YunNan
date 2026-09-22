@@ -57,6 +57,8 @@ from applications.project_hub.project_map import (
     get_project_mine_indices,
     get_project_stats,
     get_project_trend_report,
+    list_project_original_imagery,
+    resolve_project_original_imagery_download,
     search_project_mines,
 )
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
@@ -477,6 +479,31 @@ def project_mines_indices_api(project_id):
         return business_or_server_failure(
             exc, "项目数据读取失败", logger=LOGGER, business_status=404
         )
+
+
+@project_api.get("/<int:project_id>/mines/original-imagery")
+@login_required
+def project_mines_original_imagery_api(project_id):
+    try:
+        return success_api(data=list_project_original_imagery(project_id, request.args.get("fid")))
+    except Exception as exc:
+        return business_or_server_failure(
+            exc, "项目数据读取失败", logger=LOGGER, business_status=404
+        )
+
+
+@project_api.get("/<int:project_id>/mines/original-imagery/<job_id>/download")
+@login_required
+def project_mines_original_imagery_download_api(project_id, job_id):
+    try:
+        path = resolve_project_original_imagery_download(project_id, job_id)
+    except FileNotFoundError as exc:
+        return fail_api(str(exc)), 404
+    except Exception as exc:
+        return business_or_server_failure(
+            exc, "原始影像读取失败", logger=LOGGER, business_status=404
+        )
+    return send_file(path, as_attachment=True, download_name=path.name)
 
 
 @project_api.get("/<int:project_id>/mines/change-matrix")

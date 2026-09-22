@@ -76,6 +76,27 @@ export const projectApi = {
   getProjectDetail(projectId, cookie) {
     return requestJson('GET', `/api/projects/${projectId}`, { cookie });
   },
+  getProjectOriginalImagery(projectId, fid, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    const safeFid = positiveRouteId(fid, '矿山');
+    return requestJson(
+      'GET',
+      `/api/projects/${safeProjectId}/mines/original-imagery?fid=${encodeURIComponent(safeFid)}`,
+      { cookie },
+    );
+  },
+  getProjectOriginalImageryDownload(projectId, jobId, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    const safeJobId = String(jobId ?? '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(safeJobId)) {
+      throw new Error('推理任务标识不合法');
+    }
+    return requestBinary(
+      'GET',
+      `/api/projects/${safeProjectId}/mines/original-imagery/${safeJobId}/download`,
+      { cookie, timeoutMs: 600000 },
+    );
+  },
   getProjectOverview(projectId, cookie) {
     return requestJson('GET', `/api/projects/${projectId}/overview`, { cookie });
   },

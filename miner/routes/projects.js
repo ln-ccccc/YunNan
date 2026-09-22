@@ -128,6 +128,25 @@ export function createProjectRoutes({
   router.get('/:projectId/mines/search', relay('GET', () => '/mines/search', { query: true }));
   router.get('/:projectId/mines/indices', relay('GET', () => '/mines/indices', { query: true }));
   router.get('/:projectId/mines/change-matrix', relay('GET', () => '/mines/change-matrix', { query: true }));
+
+  // 地物分类原始影像溯源（列表 + 下载）：路径由后端按任务记录解析，BFF 只做转发
+  router.get('/:projectId/mines/original-imagery', relay('GET', () => '/mines/original-imagery', { query: true }));
+
+  router.get('/:projectId/mines/original-imagery/:jobId/download', async (req, res) => {
+    try {
+      relayBinary(
+        res,
+        await projectApi.getProjectOriginalImageryDownload(
+          req.params.projectId,
+          req.params.jobId,
+          requestCookie(req),
+        ),
+      );
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
   router.get('/:projectId/mines/trend-report', relay('GET', () => '/mines/trend-report', { query: true }));
 
   router.get('/:projectId/overview', async (req, res) => {

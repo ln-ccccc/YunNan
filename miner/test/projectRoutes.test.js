@@ -365,3 +365,60 @@ test('createProjectRoutes proxies project inference images through the backend',
     cookie: 'admin_user_id=7',
   }]);
 });
+
+test('createProjectRoutes relays original imagery list with fid query', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      // relay() 走通用 request（与 change-matrix 同路径），按方法+路径断言
+      async request(method, path, { query, cookie } = {}) {
+        calls.push({ method, path, query, cookie });
+        return { status: 200, body: { success: true, code: 0, data: { fid: 713, items: [] } } };
+      },
+    },
+  });
+  const response = await withServer(router, '/1/mines/original-imagery?fid=713');
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.data.fid, 713);
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[0].path, '/api/projects/1/mines/original-imagery');
+  assert.equal(calls[0].query.fid, '713');
+});
+
+test('createProjectRoutes relays original imagery download as binary with attachment name', async () => {
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectOriginalImageryDownload(projectId, jobId, cookie) {
+        assert.equal(projectId, '1');
+        assert.match(jobId, /^[0-9a-f-]{36}$/);
+        assert.match(String(cookie), /session=/);
+        return {
+          status: 200,
+          contentType: 'image/tiff',
+          body: Buffer.from('II* fake-tif-bytes'),
+        };
+      },
+    },
+  });
+  const response = await withServer(
+    router,
+    '/1/mines/original-imagery/38d04109-6dda-4a0e-aabb-ccddeeff0011/download',
+    { headers: { cookie: 'session=abc' } },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'image/tiff');
+  assert.equal(await response.text(), 'II* fake-tif-bytes');
+});
+
+test('createProjectRoutes rejects a malformed original imagery download job id', async () => {
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectOriginalImageryDownload() {
+        throw new Error('should not reach upstream');
+      },
+    },
+  });
+  const response = await withServer(router, '/1/mines/original-imagery/not-a-uuid/download');
+  assert.equal(response.status, 400);
+});

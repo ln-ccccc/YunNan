@@ -58,6 +58,7 @@ export function useMineData(projectId) {
   });
 
   const mineChangeMatrix = ref(null);
+  const mineOriginalImagery = ref(null);
   // fetchIndices/fetchChangeMatrix 的竞态序号：过期响应直接丢弃
   let fetchIndicesSeq = 0;
   const inferenceRunning = ref(false);
@@ -189,6 +190,51 @@ export function useMineData(projectId) {
         has_change_matrix: false,
         data_source: 'none'
       };
+    }
+    await fetchOriginalImagery(fid, seq);
+  };
+
+  // 地物分类原始影像（溯源）：与变化矩阵同竞态门控，列表轻量随详情一并拉取
+  const fetchOriginalImagery = async (fid, seq = fetchIndicesSeq) => {
+    try {
+      const res = await axios.get(apiUrl(projectApiPath(`/mines/original-imagery?fid=${encodeURIComponent(fid)}`)));
+      if (seq !== fetchIndicesSeq) return;
+      mineOriginalImagery.value = unwrap(res) || { fid: Number(fid), items: [] };
+    } catch (e) {
+      if (seq !== fetchIndicesSeq) return;
+      mineOriginalImagery.value = { fid: Number(fid), items: [] };
+    }
+  };
+
+  // 溯源下载：经 BFF 流式转发，blob 落盘；上游 502/错误体是 JSON 时给出提示
+  const downloadOriginalImagery = async (item) => {
+    const jobId = item?.jobId;
+    if (!jobId) return;
+    try {
+      const res = await axios.get(
+        apiUrl(projectApiPath(`/mines/original-imagery/${encodeURIComponent(jobId)}/download`)),
+        { responseType: 'blob' },
+      );
+      const contentType = String(res?.headers?.['content-type'] || '');
+      if (contentType.includes('application/json')) {
+        const text = await (res.data instanceof Blob ? res.data.text() : Promise.resolve(String(res.data)));
+        let msg = '原始影像下载失败';
+        try { msg = JSON.parse(text).msg || msg; } catch (_) {}
+        window.alert(msg);
+        return;
+      }
+      const blob = res.data instanceof Blob ? res.data : new Blob([res.data]);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = item.filename || `original_${jobId}.tif`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn('原始影像下载失败:', e);
+      window.alert('原始影像下载失败，请稍后重试');
     }
   };
 
@@ -327,6 +373,8 @@ export function useMineData(projectId) {
     mineChangeAreaList,
     mineIndices,
     mineChangeMatrix,
+    mineOriginalImagery,
+    downloadOriginalImagery,
     dataLoadError,
     inferenceRunning,
     inferenceResult,

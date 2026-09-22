@@ -60,12 +60,14 @@
       :mineData="selectedMine"
       :indicesData="mineIndices"
       :changeMatrixData="mineChangeMatrix"
+      :originalImageryData="mineOriginalImagery"
       :selectedTab="selectedTab"
       :formatMaybeNumber="formatMaybeNumber"
       :formatTrend="formatTrend"
       :getTrendClass="getTrendClass"
       @close="showMineDetail = false"
       @tab-change="selectedTab = $event"
+      @download-original="downloadOriginalImagery"
     />
 
     <InferenceModal
@@ -168,6 +170,8 @@ const {
   dataLoadError,
   mineIndices,
   mineChangeMatrix,
+  mineOriginalImagery,
+  downloadOriginalImagery,
   loadData,
   applyFilters,
   resetFilters,

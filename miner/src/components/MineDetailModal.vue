@@ -23,11 +23,11 @@
           </div>
 
           <div class="tabs">
-            <button v-for="tab in ['NDVI', 'NDBI', 'NDWI', 'NDSI', 'Change Matrix', 'Classification']"
+            <button v-for="tab in ['NDVI', 'NDBI', 'NDWI', 'NDSI', 'Change Matrix', 'Classification', 'Original']"
               :key="tab"
               :class="{ active: selectedTab === tab }"
               @click="$emit('tab-change', tab)">
-              {{ tab === 'Change Matrix' ? '变化矩阵' : (tab === 'Classification' ? '地物分类' : tab) }}
+              {{ tab === 'Change Matrix' ? '变化矩阵' : (tab === 'Classification' ? '地物分类' : (tab === 'Original' ? '原始影像' : tab)) }}
             </button>
           </div>
 
@@ -77,6 +77,30 @@
             <div v-else class="no-data">暂无地物分类结果</div>
           </template>
 
+          <template v-else-if="selectedTab === 'Original'">
+            <div v-if="originalImageryItems.length" class="original-imagery-container">
+              <div v-for="item in originalImageryItems" :key="item.key" class="imagery-row">
+                <div class="imagery-main">
+                  <div class="imagery-title">{{ item.title }}</div>
+                  <div class="imagery-meta">
+                    <span class="imagery-name">{{ item.filename }}</span>
+                    <span>{{ item.sizeText }}</span>
+                    <span>推理时间: {{ item.timeText }}</span>
+                  </div>
+                </div>
+                <div class="imagery-side">
+                  <span class="imagery-status">{{ item.statusText }}</span>
+                  <button
+                    v-if="item.downloadable"
+                    class="imagery-download-btn"
+                    @click="$emit('download-original', item)"
+                  >下载</button>
+                </div>
+              </div>
+            </div>
+            <div v-else class="no-data">暂无原始影像记录（该矿山未参与过项目推理）</div>
+          </template>
+
           <template v-else>
             <div v-if="currentIndexData && currentIndexData.available === false" class="no-data">
               {{ currentIndexData.message || `${selectedTab} 指数源文件缺失` }}
@@ -114,7 +138,7 @@
 <script setup>
 import { computed, defineProps, defineEmits, ref, watch, nextTick, onUnmounted } from 'vue';
 import * as echarts from 'echarts';
-import { buildClassificationItems, buildMatrixYearLabels } from './mineDetailPresentation.js';
+import { buildClassificationItems, buildMatrixYearLabels, buildOriginalImageryItems } from './mineDetailPresentation.js';
 
 // 切换项目重建组件时释放 echarts 实例（与 RightSidebar 的清理模式对齐）
 onUnmounted(() => {
@@ -127,19 +151,21 @@ const props = defineProps({
   mineData: Object,
   indicesData: Object,
   changeMatrixData: Object,
+  originalImageryData: Object,
   selectedTab: String,
   formatMaybeNumber: Function,
   formatTrend: Function,
   getTrendClass: Function
 });
 
-const emit = defineEmits(['close', 'tab-change']);
+const emit = defineEmits(['close', 'tab-change', 'download-original']);
 
 const trendChartRef = ref(null);
 let trendChartInst = null;
 const currentIndexData = computed(() => props.indicesData?.[props.selectedTab?.toLowerCase()] || null);
 const classificationItems = computed(() => buildClassificationItems(props.changeMatrixData));
 const matrixYearLabels = computed(() => buildMatrixYearLabels(props.changeMatrixData));
+const originalImageryItems = computed(() => buildOriginalImageryItems(props.originalImageryData));
 
 const formatLabel = (label) => {
   if (!label) return '';
@@ -420,6 +446,44 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
   background: rgba(255, 255, 255, 0.8);
   border-radius: 4px;
 }
+
+.original-imagery-container {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.imagery-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.imagery-main { flex: 1; min-width: 0; }
+.imagery-title { font-size: 14px; margin-bottom: 4px; }
+.imagery-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #8da3b6; }
+.imagery-name { word-break: break-all; }
+
+.imagery-side { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.imagery-status { font-size: 12px; color: #8da3b6; }
+.imagery-download-btn {
+  background: rgba(78, 205, 196, 0.15);
+  border: 1px solid #4ecdc4;
+  color: #4ecdc4;
+  border-radius: 4px;
+  padding: 4px 14px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.imagery-download-btn:hover { background: #4ecdc4; color: #000; }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }

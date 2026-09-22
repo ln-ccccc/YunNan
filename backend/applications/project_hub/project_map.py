@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from applications.models.inference_job import InferenceJob
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.spatial_service import sanitize_public_geojson_value
@@ -214,3 +215,91 @@ def get_project_change_matrix(project_id, fid):
             "message": "暂无项目数据",
         }
     return payload
+
+
+def _payload_dict(raw):
+    try:
+        payload = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def list_project_original_imagery(project_id, fid, item_limit=50):
+    """矿山维度列出地物分类推理所用的原始影像（溯源，2026-09-22）。
+
+    数据源是 InferenceJob.request_payload_json——归一化后的 new_tif_path 指向
+    项目 inputs 目录中的拷贝；按 (输入路径, 年份) 去重。路径只做服务端解析、
+    存储根包含性检查与存在性标注，物理路径不出现在返回 DTO 里。
+    """
+    try:
+        fid_value = int(fid)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("FID 必须是整数") from exc
+    project = _project(project_id)
+    if not any(binding.mine_fid == fid_value for binding in project.mines):
+        raise ValueError("矿山不属于当前项目")
+
+    storage_root = get_storage_root()
+    items = []
+    seen = set()
+    jobs = (
+        InferenceJob.query.filter_by(project_id=project.id)
+        .order_by(InferenceJob.create_time.desc())
+        .limit(400)
+    )
+    for job in jobs:
+        payload = _payload_dict(job.request_payload_json)
+        mine_fids = {str(entry) for entry in (payload.get("mine_fids") or [])}
+        if str(fid_value) not in mine_fids:
+            continue
+        input_text = str(payload.get("new_tif_path") or payload.get("old_tif_path") or "")
+        if not input_text:
+            continue
+        try:
+            input_path = Path(input_text).expanduser().resolve()
+            input_path.relative_to(storage_root)
+        except (ValueError, OSError):
+            continue
+        year_text = str(payload.get("year") or "").strip()
+        key = (str(input_path), year_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        file_exists = input_path.is_file()
+        year_value = int(year_text) if year_text.isdigit() and len(year_text) == 4 else None
+        items.append({
+            "job_id": job.id,
+            "year": year_value,
+            "filename": input_path.name,
+            "size_bytes": input_path.stat().st_size if file_exists else None,
+            "file_exists": file_exists,
+            "job_status": job.status,
+            "created_at": job.create_time.isoformat() if job.create_time else None,
+        })
+        if len(items) >= item_limit:
+            break
+    return {"fid": fid_value, "items": items}
+
+
+def resolve_project_original_imagery_download(project_id, job_id):
+    """溯源下载：按任务记录解析输入影像，并强制位于本项目 inputs 根内。"""
+    project = _project(project_id)
+    job = InferenceJob.query.filter_by(id=str(job_id or ""), project_id=project.id).first()
+    if job is None:
+        raise FileNotFoundError("推理任务不存在")
+    payload = _payload_dict(job.request_payload_json)
+    input_text = str(payload.get("new_tif_path") or payload.get("old_tif_path") or "")
+    if not input_text:
+        raise FileNotFoundError("任务未记录原始影像")
+    input_root = resolve_storage_path(
+        get_storage_root(), Path("projects") / str(project.id) / "inputs"
+    )
+    path = Path(input_text).expanduser().resolve()
+    try:
+        path.relative_to(input_root)
+    except ValueError:
+        raise FileNotFoundError("原始影像不在项目输入目录中") from None
+    if not path.is_file():
+        raise FileNotFoundError("原始影像文件不存在")
+    return path
