@@ -121,36 +121,18 @@ import {
   isEditableVectorStatus,
   resolveSecureTileTemplate,
 } from '@/utils/classificationEditor.mjs';
+import {
+  classColor as resolveClassColor,
+  classColorExpression,
+} from '@/utils/classificationColors.mjs';
 import { readClassificationResultContext } from '@/utils/classificationResultContext.mjs';
 
 
 const FALLBACK_CENTER = [104.2, 25.1];
 const FALLBACK_ZOOM = 5;
-const CLASS_COLORS = {
-  0: '#00ff00',
-  1: '#008000',
-  2: '#ff0000',
-  3: '#ffff00',
-  4: '#ff00ff',
-  5: '#00bfff',
-};
 
 function emptyFeatureCollection() {
   return { type: 'FeatureCollection', features: [] };
-}
-
-function classColorExpression() {
-  return [
-    'match',
-    ['get', 'user_class_code'],
-    0, CLASS_COLORS[0],
-    1, CLASS_COLORS[1],
-    2, CLASS_COLORS[2],
-    3, CLASS_COLORS[3],
-    4, CLASS_COLORS[4],
-    5, CLASS_COLORS[5],
-    '#2bb6ad',
-  ];
 }
 
 function drawStyles() {
@@ -491,9 +473,7 @@ export default {
       }
     },
     classColor(definition) {
-      const rgb = definition?.rgb;
-      if (Array.isArray(rgb) && rgb.length === 3) return `rgb(${rgb.join(',')})`;
-      return CLASS_COLORS[definition?.class_code] || '#2bb6ad';
+      return resolveClassColor(definition);
     },
     formatTime(value) {
       if (!value) return '时间未知';
