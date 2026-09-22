@@ -123,6 +123,8 @@
 登录→路由守卫✓；地物分类页 TiffUploadCard 全要素渲染✓；页面内 fetch 真实 tif 字节+DataTransfer 注入选择✓（"已选择 1 个"）；standalone 通道（无项目上下文）：上传→同步推理→"Pro 推理完成"→通知正常关闭✓；项目态 job 通道（?project_id=1 + e2e_drill.tif）：路由 201 建任务→轮询打点→取消按钮点击→"已请求取消"→**"已取消推理，未生成结果"终态文案**✓（后端 worker 真终止，DB 落 cancelled）；上传失败反馈（坏字节 tif）：错误 toast 弹出且单条✓；断链（回归容器抢 CPU 致请求夭折）："连接已中断"分支✓；常驻通知 close 修复：build B 实测两通知正常消失✓。
 未完成项：最终 build（IIFE toast 守卫增量）的 standalone 复验被 **Docker Desktop 宿主机端口代理假死**阻断（容器内服务健康、宿主 000，环境故障与本轮代码无关）；该增量仅 5 行 toast 守卫，其行为已在前一 build 逐路径验证。
 
+**2026-09-22 终验补记（环境修复后全量重跑，全部通过）**：环境处置=后端容器重启（加载白名单改动）+ 前端容器经 compose 重建（`-p yunnan --env-file .env --env-file image_bundle.env -f docker-compose.prod.yml -f docker-compose.local.yml up -d frontend`，楔死的 3000 端口转发随新发布恢复；重建后容器内重跑 npm run build）。终验结果（最终构建 + 新后端代码，DOM 注入级，页面 hidden 按 playbook 技巧16）：登录守卫✓；standalone 全通道（真实 tif 上传→路由→同步推理→**通知全部关闭→零 JS 错误**）✓；项目态 E2E（?project_id=1 + e2e_drill.tif→job 7f5a59dc→轮询 8 次→点击取消→**DB 落 status=cancelled/cancel_requested=1**→通知关闭→历史自动刷新）✓；白名单运行栈实测（standalone 响应仅 mode/job/matched_fids/project_id/warnings，vector_path 不再外泄）✓；404 精简页（双按钮、零死 CSS 残留）✓；光谱页全要素（上传卡+六项参数表单+开始计算）✓。
+
 ### 三套技能验收
 
 1. **open-code-review（委托模式）**：`ocr delegate rule` 对 GeoView 后端消费面（analysis/inference/file.py）取 Python 规则组核验；改动面规则注入三路审查任务书。
