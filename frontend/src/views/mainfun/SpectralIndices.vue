@@ -153,6 +153,13 @@
 import { createSrc, imgUpload } from "@/api/upload";
 import { getUploadImg } from "@/utils/getUploadImg";
 import { readProjectId } from "@/utils/interpretationContext.mjs";
+import {
+  createUploadItems,
+  filesFromInputEvent,
+  isValidTiff,
+  normalizeSelectedItems,
+  readDroppedItems,
+} from "@/utils/tiffSelection.mjs";
 import { historyDeleteOne } from "@/api/history";
 import Tabinfor from "@/components/Tabinfor";
 import Bottominfor from "@/components/Bottominfor";
@@ -199,42 +206,9 @@ export default {
     openFilePicker() {
       this.$refs.fileInput && this.$refs.fileInput.click();
     },
-    isValidTiff(fileLike) {
-      const raw = fileLike?.raw || fileLike?.file || fileLike;
-      const name = String(fileLike?.relativePath || raw?.webkitRelativePath || raw?.name || "");
-      const suffix = name.substring(name.lastIndexOf(".") + 1).toLowerCase();
-      return ["tif", "tiff"].includes(suffix);
-    },
-    normalizeSelectedItems(inputFiles) {
-      return inputFiles.map((item) => {
-        if (item?.raw) return item;
-        if (item?.file) {
-          return {
-            raw: item.file,
-            relativePath: item.relativePath || item.file.webkitRelativePath || item.file.name,
-          };
-        }
-        return {
-          raw: item,
-          relativePath: item?.webkitRelativePath || item?.name,
-        };
-      });
-    },
-    createUploadItems(files) {
-      return files.map((item, index) => {
-        const raw = item.raw;
-        return {
-          name: item.relativePath || raw.webkitRelativePath || raw.name,
-          size: raw.size,
-          status: "ready",
-          uid: `${raw.name}-${raw.lastModified}-${index}`,
-          raw,
-        };
-      });
-    },
     replaceFileList(inputFiles) {
-      const normalizedFiles = this.normalizeSelectedItems(inputFiles);
-      const validFiles = normalizedFiles.filter((file) => this.isValidTiff(file));
+      const normalizedFiles = normalizeSelectedItems(inputFiles);
+      const validFiles = normalizedFiles.filter((file) => isValidTiff(file));
       const invalidCount = normalizedFiles.length - validFiles.length;
       if (invalidCount > 0) {
         this.$message.warning(`已忽略 ${invalidCount} 个非 tif/tiff 文件`);
@@ -244,23 +218,23 @@ export default {
         this.$message.error("只允许上传 tif / tiff 格式,请重新上传");
         return;
       }
-      this.fileList = this.createUploadItems(validFiles);
+      this.fileList = createUploadItems(validFiles);
     },
     handleFileSelect(event) {
-      const rawFiles = Array.from(event?.target?.files || []);
+      const rawFiles = filesFromInputEvent(event);
       if (rawFiles.length === 0) return;
       this.replaceFileList(rawFiles);
       event.target.value = "";
     },
     handleFolderSelect(event) {
-      const rawFiles = Array.from(event?.target?.files || []);
+      const rawFiles = filesFromInputEvent(event);
       if (rawFiles.length === 0) return;
       this.replaceFileList(rawFiles);
       event.target.value = "";
     },
     async handleNativeDrop(event) {
       const items = Array.from(event?.dataTransfer?.items || []);
-      const filesFromDrop = await this.readDroppedItems(items);
+      const filesFromDrop = await readDroppedItems(items);
       if (filesFromDrop.length > 0) {
         this.replaceFileList(filesFromDrop);
         return;
@@ -269,55 +243,6 @@ export default {
       if (rawFiles.length > 0) {
         this.replaceFileList(rawFiles);
       }
-    },
-    async readDroppedItems(items) {
-      if (!items.length) return [];
-      const entries = items
-        .map((item) => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
-        .filter(Boolean);
-      if (!entries.length) return [];
-      const files = [];
-      for (const entry of entries) {
-        const entryFiles = await this.walkFileTree(entry);
-        files.push(...entryFiles);
-      }
-      return files;
-    },
-    walkFileTree(entry, parentPath = "") {
-      if (!entry) return Promise.resolve([]);
-      if (entry.isFile) {
-        return new Promise((resolve) => {
-          entry.file((file) => {
-            resolve([{
-              file,
-              relativePath: parentPath ? `${parentPath}/${file.name}` : file.name,
-            }]);
-          }, () => resolve([]));
-        });
-      }
-      if (!entry.isDirectory) return Promise.resolve([]);
-
-      const directoryPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-      const reader = entry.createReader();
-      return new Promise((resolve) => {
-        const allEntries = [];
-        const readBatch = () => {
-          reader.readEntries(async (batch) => {
-            if (!batch.length) {
-              let files = [];
-              for (const child of allEntries) {
-                const childFiles = await this.walkFileTree(child, directoryPath);
-                files = files.concat(childFiles);
-              }
-              resolve(files);
-              return;
-            }
-            allEntries.push(...batch);
-            readBatch();
-          }, () => resolve([]));
-        };
-        readBatch();
-      });
     },
     clearQueue() {
       this.fileList = [];

@@ -400,6 +400,13 @@ import {
 } from "@/api/history";
 import { getUploadImg, goCompress, upload } from "@/utils/getUploadImg";
 import { readProjectId } from "@/utils/interpretationContext.mjs";
+import {
+  createUploadItems,
+  filesFromInputEvent,
+  isValidTiff,
+  normalizeSelectedItems,
+  readDroppedItems,
+} from "@/utils/tiffSelection.mjs";
 import { selectClahe, selectFilter, selectSharpen, selectSmooth, } from "@/utils/preHandle";
 import ImgShow from "@/components/ImgShow";
 import Tabinfor from "@/components/Tabinfor";
@@ -532,37 +539,57 @@ export default {
         this.$refs.fileInput.click();
       }
     },
-    isValidTiff(fileLike) {
-      const raw = fileLike?.raw || fileLike?.file || fileLike;
-      const name = String(fileLike?.relativePath || raw?.webkitRelativePath || raw?.name || "");
-      const fileSuffix = name.substring(name.lastIndexOf(".") + 1);
-      return ["tif", "tiff", "TIF", "TIFF"].includes(fileSuffix);
+    replaceFileList(inputFiles) {
+      const normalizedFiles = normalizeSelectedItems(inputFiles);
+      const validFiles = normalizedFiles.filter((file) => isValidTiff(file));
+      const invalidCount = normalizedFiles.length - validFiles.length;
+      if (invalidCount > 0) {
+        this.$message.warning(`已忽略 ${invalidCount} 个非 tif/tiff 文件`);
+      }
+      if (validFiles.length === 0) {
+        this.fileList = [];
+        this.cutVisible = false;
+        this.canUpload = false;
+        this.$message.error("只允许上传 tif / tiff 格式,请重新上传");
+        return;
+      }
+      if (validFiles.length > 1) {
+        this.disableCutForBatchUpload();
+      }
+      this.fileList = createUploadItems(validFiles);
+      this.setPreviewFile(validFiles[validFiles.length - 1]);
     },
-    normalizeSelectedItems(inputFiles) {
-      return inputFiles.map((item) => {
-        if (item?.raw) return item;
-        if (item?.file) {
-          return {
-            raw: item.file,
-            relativePath: item.relativePath || item.file.webkitRelativePath || item.file.name,
-          };
-        }
-        return {
-          raw: item,
-          relativePath: item?.webkitRelativePath || item?.name,
-        };
-      });
+    handleUploadChange(file, uploadFiles) {
+      const rawFiles = (uploadFiles || [])
+        .map((item) => item?.raw || item)
+        .filter(Boolean);
+      this.replaceFileList(rawFiles);
     },
-    createUploadItems(files) {
-      return files.map((item, index) => {
-        const raw = item.raw;
-        return {
-        name: item.relativePath || raw.webkitRelativePath || raw.name,
-        size: raw.size,
-        status: "ready",
-        uid: `${raw.name}-${raw.lastModified}-${index}`,
-        raw,
-      }});
+    handleFileSelect(event) {
+      const rawFiles = filesFromInputEvent(event);
+      if (rawFiles.length === 0) return;
+      this.replaceFileList(rawFiles);
+      event.target.value = "";
+    },
+    handleFolderSelect(event) {
+      const rawFiles = filesFromInputEvent(event);
+      if (rawFiles.length === 0) return;
+      this.disableCutForBatchUpload();
+      this.replaceFileList(rawFiles);
+      event.target.value = "";
+    },
+    async handleNativeDrop(event) {
+      const items = Array.from(event?.dataTransfer?.items || []);
+      const filesFromDrop = await readDroppedItems(items);
+      if (filesFromDrop.length > 0) {
+        this.disableCutForBatchUpload();
+        this.replaceFileList(filesFromDrop);
+        return;
+      }
+      const rawFiles = Array.from(event?.dataTransfer?.files || []);
+      if (rawFiles.length > 0) {
+        this.replaceFileList(rawFiles);
+      }
     },
     setPreviewFile(fileLike) {
       const file = fileLike?.raw || fileLike?.file || fileLike;
@@ -583,107 +610,6 @@ export default {
         this.isNotCut = true;
         this.$message.warning("整文件夹/批量上传不支持上传时编辑，已自动关闭编辑模式");
       }
-    },
-    replaceFileList(inputFiles) {
-      const normalizedFiles = this.normalizeSelectedItems(inputFiles);
-      const validFiles = normalizedFiles.filter((file) => this.isValidTiff(file));
-      const invalidCount = normalizedFiles.length - validFiles.length;
-      if (invalidCount > 0) {
-        this.$message.warning(`已忽略 ${invalidCount} 个非 tif/tiff 文件`);
-      }
-      if (validFiles.length === 0) {
-        this.fileList = [];
-        this.cutVisible = false;
-        this.canUpload = false;
-        this.$message.error("只允许上传 tif / tiff 格式,请重新上传");
-        return;
-      }
-      if (validFiles.length > 1) {
-        this.disableCutForBatchUpload();
-      }
-      this.fileList = this.createUploadItems(validFiles);
-      this.setPreviewFile(validFiles[validFiles.length - 1]);
-    },
-    handleUploadChange(file, uploadFiles) {
-      const rawFiles = (uploadFiles || [])
-        .map((item) => item?.raw || item)
-        .filter(Boolean);
-      this.replaceFileList(rawFiles);
-    },
-    handleFileSelect(event) {
-      const rawFiles = Array.from(event?.target?.files || []);
-      if (rawFiles.length === 0) return;
-      this.replaceFileList(rawFiles);
-      event.target.value = "";
-    },
-    handleFolderSelect(event) {
-      const rawFiles = Array.from(event?.target?.files || []);
-      if (rawFiles.length === 0) return;
-      this.disableCutForBatchUpload();
-      this.replaceFileList(rawFiles);
-      event.target.value = "";
-    },
-    async handleNativeDrop(event) {
-      const items = Array.from(event?.dataTransfer?.items || []);
-      const filesFromDrop = await this.readDroppedItems(items);
-      if (filesFromDrop.length > 0) {
-        this.disableCutForBatchUpload();
-        this.replaceFileList(filesFromDrop);
-        return;
-      }
-      const rawFiles = Array.from(event?.dataTransfer?.files || []);
-      if (rawFiles.length > 0) {
-        this.replaceFileList(rawFiles);
-      }
-    },
-    async readDroppedItems(items) {
-      if (!items.length) return [];
-      const entries = items
-        .map((item) => item.webkitGetAsEntry ? item.webkitGetAsEntry() : null)
-        .filter(Boolean);
-      if (!entries.length) return [];
-      const files = [];
-      for (const entry of entries) {
-        const entryFiles = await this.walkFileTree(entry);
-        files.push(...entryFiles);
-      }
-      return files;
-    },
-    walkFileTree(entry, parentPath = "") {
-      if (!entry) return Promise.resolve([]);
-      if (entry.isFile) {
-        return new Promise((resolve) => {
-          entry.file((file) => {
-            resolve([{
-              file,
-              relativePath: parentPath ? `${parentPath}/${file.name}` : file.name,
-            }]);
-          }, () => resolve([]));
-        });
-      }
-      if (!entry.isDirectory) return Promise.resolve([]);
-
-      const directoryPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-      const reader = entry.createReader();
-      return new Promise((resolve) => {
-        const allEntries = [];
-        const readBatch = () => {
-          reader.readEntries(async (batch) => {
-            if (!batch.length) {
-              let files = [];
-              for (const child of allEntries) {
-                const childFiles = await this.walkFileTree(child, directoryPath);
-                files = files.concat(childFiles);
-              }
-              resolve(files);
-              return;
-            }
-            allEntries.push(...batch);
-            readBatch();
-          }, () => resolve([]));
-        };
-        readBatch();
-      });
     },
     select() {
       this.isNotCut = this.$refs.cut.checked;
