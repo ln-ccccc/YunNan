@@ -1,6 +1,6 @@
 const backendBaseUrl = (process.env.GEOVIEW_BACKEND_URL || 'http://localhost:5008').replace(/\/$/, '');
 
-async function requestJson(method, path, { query, body, cookie } = {}) {
+async function requestJson(method, path, { query, body, cookie, timeoutMs = 15000 } = {}) {
   const url = new URL(`${backendBaseUrl}${path}`);
   Object.entries(query || {}).forEach(([key, value]) => {
     if (value !== null && value !== undefined && value !== '') {
@@ -15,7 +15,7 @@ async function requestJson(method, path, { query, body, cookie } = {}) {
       ...(cookie ? { cookie } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await response.text();
   let parsed;
@@ -113,6 +113,19 @@ export const projectApi = {
   listClassificationResults(projectId, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');
     return requestJson('GET', `/api/projects/${safeProjectId}/classification-results`, { cookie });
+  },
+  listImageryCandidates(projectId, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    return requestJson('GET', `/api/projects/${safeProjectId}/imagery/candidates`, { cookie });
+  },
+  clipImagery(projectId, body, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    return requestJson('POST', `/api/projects/${safeProjectId}/imagery/clip`, { body, cookie });
+  },
+  sliceImagery(projectId, body, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    // GB 级影像切片是长请求（读全图分窗写片），超时放宽到 10 分钟
+    return requestJson('POST', `/api/projects/${safeProjectId}/imagery/slice`, { body, cookie, timeoutMs: 600000 });
   },
   getMineTraceability(projectId, fid, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');

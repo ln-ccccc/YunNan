@@ -513,6 +513,48 @@ def project_mines_original_imagery_api(project_id):
         )
 
 
+@project_api.get("/<int:project_id>/imagery/candidates")
+@login_required
+def project_imagery_candidates_api(project_id):
+    """可操作影像清单（S3）：数据集 imagery + 推理输入。"""
+    try:
+        from applications.project_hub.imagery_processing import list_imagery_candidates
+
+        return success_api(data=list_imagery_candidates(project_id))
+    except Exception as exc:
+        return business_or_server_failure(
+            exc, "影像清单读取失败", logger=LOGGER, business_status=404
+        )
+
+
+@project_api.post("/<int:project_id>/imagery/clip")
+@login_required
+def project_imagery_clip_api(project_id):
+    """范围裁剪（S3）：多边形/矿山边界 + 外扩（米）。"""
+    try:
+        from applications.project_hub.imagery_processing import ImageryProcessingError, clip_imagery
+
+        return success_api(data=clip_imagery(project_id, request.get_json(silent=True) or {}))
+    except ImageryProcessingError as exc:
+        return fail_api(str(exc)), 400
+    except Exception as exc:
+        return business_or_server_failure(exc, "影像裁剪失败", logger=LOGGER)
+
+
+@project_api.post("/<int:project_id>/imagery/slice")
+@login_required
+def project_imagery_slice_api(project_id):
+    """自动切片（S3）：固定像素/固定面积网格，实体切片登记数据集。"""
+    try:
+        from applications.project_hub.imagery_processing import ImageryProcessingError, slice_imagery
+
+        return success_api(data=slice_imagery(project_id, request.get_json(silent=True) or {}))
+    except ImageryProcessingError as exc:
+        return fail_api(str(exc)), 400
+    except Exception as exc:
+        return business_or_server_failure(exc, "影像切片失败", logger=LOGGER)
+
+
 @project_api.get("/<int:project_id>/mines/<int:fid>/traceability")
 @login_required
 def project_mine_traceability_api(project_id, fid):

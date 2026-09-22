@@ -132,6 +132,30 @@ export function createProjectRoutes({
   // 地物分类原始影像溯源（列表 + 下载）：路径由后端按任务记录解析，BFF 只做转发
   router.get('/:projectId/mines/original-imagery', relay('GET', () => '/mines/original-imagery', { query: true }));
 
+  router.get('/:projectId/imagery/candidates', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.listImageryCandidates(req.params.projectId, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+  router.post('/:projectId/imagery/clip', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.clipImagery(req.params.projectId, req.body || {}, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+  router.post('/:projectId/imagery/slice', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.sliceImagery(req.params.projectId, req.body || {}, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
   router.get('/:projectId/classification-results', relay('GET', () => '/classification-results'));
   router.get('/:projectId/mines/:fid/traceability', relay('GET', (req) => `/mines/${encodeURIComponent(req.params.fid)}/traceability`));
 
