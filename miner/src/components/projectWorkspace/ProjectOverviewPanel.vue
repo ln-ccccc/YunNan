@@ -38,7 +38,10 @@
             :disabled="busy"
             @click="$emit('archive')"
           >归档</button>
-          <button v-else class="ghost-btn" type="button" :disabled="busy" @click="$emit('restore')">恢复</button>
+          <template v-else>
+            <button class="ghost-btn" type="button" :disabled="busy" @click="$emit('restore')">恢复</button>
+            <button class="danger-btn" type="button" :disabled="busy" @click="$emit('delete')">删除项目</button>
+          </template>
         </div>
       </div>
 
@@ -121,7 +124,7 @@ defineProps({
   },
 });
 
-defineEmits(['edit', 'refresh', 'archive', 'restore', 'open-map', 'start-inference', 'run-action']);
+defineEmits(['edit', 'refresh', 'archive', 'restore', 'open-map', 'start-inference', 'run-action', 'delete']);
 
 function formatLifecycleStatus(status) {
   return {
@@ -279,4 +282,14 @@ button {
     grid-template-columns: 1fr;
   }
 }
+.danger-btn {
+  background: rgba(192, 57, 43, 0.1);
+  border: 1px solid #c0392b;
+  color: #c0392b;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.danger-btn:hover { background: #c0392b; color: #fff; }
 </style>

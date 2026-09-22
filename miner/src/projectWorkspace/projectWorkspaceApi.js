@@ -69,6 +69,10 @@ export function createProjectWorkspaceApi({ http = axios, baseUrl = '' } = {}) {
     },
     archiveProject: (projectId) => data(http.post(url(`/api/projects/${projectId}/archive`), {})),
     restoreProject: (projectId) => data(http.post(url(`/api/projects/${projectId}/restore`), {})),
+    deleteProject: (projectId) => data(http.delete(url(`/api/projects/${projectId}`))),
+    batchArchiveProjects: (projectIds) => data(http.post(url('/api/projects/batch/archive'), { project_ids: projectIds })),
+    batchDeleteProjects: (projectIds) => data(http.post(url('/api/projects/batch/delete'), { project_ids: projectIds })),
+    importBackupManifest: (projectId, manifest) => data(http.post(url(`/api/projects/${projectId}/backups/import`), { manifest })),
     restoreSnapshot: (projectId, snapshotId) => data(http.post(
       url(`/api/projects/${projectId}/backups/${snapshotId}/restore`),
       {},

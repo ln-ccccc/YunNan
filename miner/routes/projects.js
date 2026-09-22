@@ -233,6 +233,43 @@ export function createProjectRoutes({
     }
   });
 
+  // M2 项目管理增强：删除 / 批量 / 快照导入
+  router.delete('/:projectId', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.deleteProject(req.params.projectId, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+
+  router.post('/batch/archive', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.batchArchiveProjects(req.body || {}, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+
+  router.post('/batch/delete', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.batchDeleteProjects(req.body || {}, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+
+  router.post('/:projectId/backups/import', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.importBackupManifest(req.params.projectId, req.body || {}, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+
   router.post('/:projectId/archive', async (req, res) => {
     try {
       relayJson(res, await projectApi.archiveProject(req.params.projectId, req.body || {}, requestCookie(req)));

@@ -422,3 +422,62 @@ test('createProjectRoutes rejects a malformed original imagery download job id',
   const response = await withServer(router, '/1/mines/original-imagery/not-a-uuid/download');
   assert.equal(response.status, 400);
 });
+
+test('createProjectRoutes relays project delete with DELETE method', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async deleteProject(projectId, cookie) {
+        calls.push({ projectId, cookie });
+        return { status: 200, body: { success: true, code: 0, data: { id: Number(projectId), deleted: true } } };
+      },
+    },
+  });
+  const response = await withServer(router, '/5', { method: 'DELETE' });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.data.deleted, true);
+  assert.equal(calls[0].projectId, '5');
+});
+
+test('createProjectRoutes relays batch archive with project_ids body', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async batchArchiveProjects(body, cookie) {
+        calls.push({ body, cookie });
+        return { status: 200, body: { success: true, code: 0, data: { succeeded: 1, failed: 0 } } };
+      },
+    },
+  });
+  const response = await withServer(router, '/batch/archive', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ project_ids: [3] }),
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls[0].body, { project_ids: [3] });
+  assert.equal(body.data.succeeded, 1);
+});
+
+test('createProjectRoutes relays backup manifest import', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async importBackupManifest(projectId, body, cookie) {
+        calls.push({ projectId, body });
+        return { status: 200, body: { success: true, code: 0, data: { project_id: Number(projectId) } } };
+      },
+    },
+  });
+  const manifest = { snapshot_version: 1, summary: {}, mines: [], datasets: [], exports: [], activities: [] };
+  const response = await withServer(router, '/7/backups/import', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ manifest }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(calls[0].projectId, '7');
+  assert.deepEqual(calls[0].body.manifest, manifest);
+});

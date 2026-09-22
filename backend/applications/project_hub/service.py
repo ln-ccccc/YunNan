@@ -720,6 +720,94 @@ def archive_project(project_id, actor="system"):
     return _serialize_summary(project)
 
 
+class ProjectDeleteNotAllowed(ValueError):
+    """活动项目不可直接删除（须先归档）——携带 409 语义。"""
+
+
+def delete_project(project_id, actor="system"):
+    """删除项目（M2 计划 §3：仅归档项目可删）。
+
+    - DB 软删（deleted_at 置位，审计轨迹保留，列表默认过滤）；
+    - project_storage/projects/<id>/ 整目录移入 trash/<id>_<时间戳>/（不物理清除，
+      误删可人工移回恢复）；
+    - 活动项目必须先归档，防止误删在建数据。
+    """
+    project = _get_project_or_404(project_id)
+    if project.status != "archived":
+        raise ProjectDeleteNotAllowed("仅已归档项目可以删除，请先归档项目")
+
+    from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+
+    storage_root = get_storage_root()
+    project_root = resolve_storage_path(storage_root, Path("projects") / str(project.id))
+    trash_target = None
+    if project_root.exists():
+        trash_root = resolve_storage_path(storage_root, Path("trash"))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        trash_target = trash_root / f"{project.id}_{timestamp}_{uuid.uuid4().hex[:8]}"
+        trash_root.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(project_root), str(trash_target))
+
+    project.deleted_at = datetime.now()
+    _append_activity(
+        project.id,
+        "project_deleted",
+        {"trash_target": trash_target.name if trash_target else None},
+        actor=actor,
+        target={"type": "project", "id": str(project.id)},
+    )
+    db.session.commit()
+    return {
+        "id": project.id,
+        "name": project.name,
+        "deleted": True,
+        "trash_target": trash_target.name if trash_target else None,
+    }
+
+
+def batch_archive_projects(project_ids, actor="system"):
+    """批量归档：逐项复用单项目服务，部分失败不影响其余项（逐项报告结果）。"""
+    results = []
+    for raw_id in project_ids or []:
+        try:
+            project_id = int(raw_id)
+        except (TypeError, ValueError):
+            results.append({"project_id": raw_id, "ok": False, "msg": "项目 ID 不合法"})
+            continue
+        try:
+            summary = archive_project(project_id, actor=actor)
+            results.append({"project_id": project_id, "ok": True, "name": summary.get("name")})
+        except ValueError as exc:
+            results.append({"project_id": project_id, "ok": False, "msg": str(exc)})
+    succeeded = sum(1 for item in results if item.get("ok"))
+    return {"results": results, "succeeded": succeeded, "failed": len(results) - succeeded}
+
+
+def batch_delete_projects(project_ids, actor="system"):
+    """批量删除：同批量归档（活动项目逐项报"须先归档"，其余照删）。"""
+    results = []
+    for raw_id in project_ids or []:
+        try:
+            project_id = int(raw_id)
+        except (TypeError, ValueError):
+            results.append({"project_id": raw_id, "ok": False, "msg": "项目 ID 不合法"})
+            continue
+        try:
+            outcome = delete_project(project_id, actor=actor)
+            results.append({
+                "project_id": project_id,
+                "ok": True,
+                "name": outcome.get("name"),
+                "trash_target": outcome.get("trash_target"),
+            })
+        except ProjectDeleteNotAllowed as exc:
+            results.append({"project_id": project_id, "ok": False, "msg": str(exc)})
+        except ValueError as exc:
+            results.append({"project_id": project_id, "ok": False, "msg": str(exc)})
+    succeeded = sum(1 for item in results if item.get("ok"))
+    return {"results": results, "succeeded": succeeded, "failed": len(results) - succeeded}
+
+
 def restore_project(project_id, actor="system"):
     project = _get_project_or_404(project_id)
     project.status = "active"
@@ -1403,6 +1491,110 @@ def _validate_backup_manifest(manifest, project_id, backup_id):
             if not isinstance(item, dict) or any(field not in item for field in fields):
                 raise ProjectStorageValidationError("配置快照内容不合法")
     return manifest
+
+
+def _validate_import_manifest(manifest):
+    """导入校验：结构同 _validate_backup_manifest，但不要求 project_id/backup_id 匹配
+    （跨环境迁移时 ID 必然不同）。"""
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("snapshot_version") != 1
+        or not isinstance(manifest.get("summary"), dict)
+    ):
+        raise ProjectStorageValidationError("导入的配置快照内容不合法")
+    required_fields = {
+        "mines": ("mine_fid",),
+        "datasets": ("dataset_kind", "display_name", "file_path"),
+        "exports": ("format",),
+        "activities": ("event_type",),
+    }
+    for section, fields in required_fields.items():
+        items = manifest.get(section)
+        if not isinstance(items, list):
+            raise ProjectStorageValidationError("导入的配置快照内容不合法")
+        for item in items:
+            if not isinstance(item, dict) or any(field not in item for field in fields):
+                raise ProjectStorageValidationError("导入的配置快照内容不合法")
+    return manifest
+
+
+def import_backup_manifest(project_id, manifest, actor="system"):
+    """跨环境快照导入（M2 计划 §3）：上传 manifest JSON 应用到目标项目。
+
+    与 restore_backup 的差异：ID 不匹配场景合法（只校验结构）；不覆盖目标项目
+    的活动时间线（导入记一条 project_imported 事件，原 activities 仅存档不重放）；
+    mines/datasets 覆盖式重建（与 restore 同口径），exports 忽略（跨环境路径无意义）。
+    """
+    from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+
+    manifest = _validate_import_manifest(manifest)
+    project = _get_project_or_404(project_id)
+    try:
+        summary = manifest["summary"]
+        project.name = summary.get("name") or project.name
+        project.region = summary.get("region")
+        project.manager = summary.get("manager")
+        project.remark = summary.get("remark")
+        project.monitor_start_year = summary.get("monitor_start_year")
+        project.monitor_end_year = summary.get("monitor_end_year")
+
+        ProjectMineBinding.query.filter_by(project_id=project.id).delete()
+        ProjectDataset.query.filter_by(project_id=project.id).delete()
+        db.session.flush()
+
+        for item in manifest["mines"]:
+            db.session.add(
+                ProjectMineBinding(
+                    project_id=project.id,
+                    mine_fid=item["mine_fid"],
+                    mine_name_snapshot=item.get("mine_name_snapshot"),
+                    city_snapshot=item.get("city_snapshot"),
+                    area_snapshot=item.get("area_snapshot"),
+                    status_snapshot=item.get("status_snapshot"),
+                    sort_order=item.get("sort_order") or 0,
+                )
+            )
+        for item in manifest["datasets"]:
+            db.session.add(
+                ProjectDataset(
+                    project_id=project.id,
+                    dataset_kind=item["dataset_kind"],
+                    display_name=item["display_name"],
+                    file_path=item["file_path"],
+                    source_format=item.get("source_format"),
+                    mine_fid=item.get("mine_fid"),
+                    year_start=item.get("year_start"),
+                    year_end=item.get("year_end"),
+                    slice_config_json=_json_dump(item.get("slice_config_json")),
+                )
+            )
+
+        # 导入的 manifest 原样存档（追溯导入来源），活动只记一条事件
+        storage_root = get_storage_root()
+        import_dir = resolve_storage_path(
+            storage_root, Path("projects") / str(project.id) / "imports"
+        )
+        import_dir.mkdir(parents=True, exist_ok=True)
+        import_path = import_dir / f"manifest_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.json"
+        write_json_atomic(import_path, manifest)
+
+        _append_activity(
+            project.id,
+            "project_imported",
+            {
+                "source_project_id": manifest.get("project_id"),
+                "source_backup_id": manifest.get("backup_id"),
+                "mines": len(manifest["mines"]),
+                "datasets": len(manifest["datasets"]),
+            },
+            actor=actor,
+            target={"type": "project", "id": str(project.id)},
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    return get_project_overview(project.id)
 
 
 def restore_backup(project_id, backup_id, actor="system"):

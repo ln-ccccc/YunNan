@@ -96,6 +96,20 @@ export const projectApi = {
   getProjectDetail(projectId, cookie) {
     return requestJson('GET', `/api/projects/${projectId}`, { cookie });
   },
+  deleteProject(projectId, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    return requestJson('DELETE', `/api/projects/${safeProjectId}`, { cookie });
+  },
+  batchArchiveProjects(body, cookie) {
+    return requestJson('POST', '/api/projects/batch/archive', { body, cookie });
+  },
+  batchDeleteProjects(body, cookie) {
+    return requestJson('POST', '/api/projects/batch/delete', { body, cookie });
+  },
+  importBackupManifest(projectId, body, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    return requestJson('POST', `/api/projects/${safeProjectId}/backups/import`, { body, cookie });
+  },
   getProjectOriginalImageryDownload(projectId, jobId, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');
     const safeJobId = String(jobId ?? '');

@@ -23,15 +23,20 @@ from applications.project_hub.classification_results import (
 from applications.project_hub.assets import ProjectAssetFilterError
 from applications.project_hub.project_storage import ProjectStorageValidationError
 from applications.project_hub.service import (
+    ProjectDeleteNotAllowed,
     archive_project,
+    batch_archive_projects,
+    batch_delete_projects,
     create_backup,
     create_dataset,
     create_export,
     create_project,
+    delete_project,
     get_project_assets,
     get_project_detail,
     get_project_overview,
     get_project_timeline,
+    import_backup_manifest,
     list_backups,
     list_exports,
     list_projects,
@@ -552,6 +557,48 @@ def project_timeline_api(project_id):
         return _project_hub_failure_response(exc, "项目活动读取失败", project_id)
 
 
+@project_api.delete("/<int:project_id>")
+@login_required
+def project_delete_api(project_id):
+    """删除项目（M2）：仅归档项目可删；目录移入 trash 可人工恢复。"""
+    try:
+        return success_api(data=delete_project(project_id, actor=_request_actor()))
+    except ProjectDeleteNotAllowed as exc:
+        return fail_api(str(exc), status=409)
+    except ValueError as exc:
+        return fail_api(str(exc), status=404)
+    except Exception as exc:
+        return business_or_server_failure(exc, "项目删除失败", logger=LOGGER)
+
+
+@project_api.post("/batch/archive")
+@login_required
+def project_batch_archive_api():
+    payload = request.get_json(silent=True) or {}
+    project_ids = payload.get("project_ids")
+    if not isinstance(project_ids, list) or not project_ids:
+        return fail_api("project_ids 必须是非空数组", status=422)
+    if len(project_ids) > 100:
+        return fail_api("单次批量操作最多 100 个项目", status=422)
+    return success_api(
+        data=batch_archive_projects(project_ids, actor=_request_actor())
+    )
+
+
+@project_api.post("/batch/delete")
+@login_required
+def project_batch_delete_api():
+    payload = request.get_json(silent=True) or {}
+    project_ids = payload.get("project_ids")
+    if not isinstance(project_ids, list) or not project_ids:
+        return fail_api("project_ids 必须是非空数组", status=422)
+    if len(project_ids) > 100:
+        return fail_api("单次批量操作最多 100 个项目", status=422)
+    return success_api(
+        data=batch_delete_projects(project_ids, actor=_request_actor())
+    )
+
+
 @project_api.post("/<int:project_id>/archive")
 @login_required
 def project_archive_api(project_id):
@@ -609,6 +656,27 @@ def project_backup_create_api(project_id):
     except Exception:
         LOGGER.exception("项目配置快照创建失败 project_id=%s", project_id)
         return fail_api("项目配置快照创建失败，请检查服务日志", status=500)
+
+
+@project_api.post("/<int:project_id>/backups/import")
+@login_required
+def project_backup_import_api(project_id):
+    """跨环境快照导入（M2）：JSON body 直传 manifest（与 KML 上传同模式）。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("manifest"), dict):
+        return fail_api("请求必须包含 manifest 对象", status=422)
+    try:
+        return success_api(
+            data=import_backup_manifest(
+                project_id, payload["manifest"], actor=_request_actor()
+            )
+        )
+    except ProjectStorageValidationError as exc:
+        return fail_api(str(exc), status=422)
+    except ValueError as exc:
+        return fail_api(str(exc), status=404)
+    except Exception as exc:
+        return business_or_server_failure(exc, "快照导入失败", logger=LOGGER)
 
 
 @project_api.get("/<int:project_id>/backups")

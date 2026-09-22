@@ -24,11 +24,14 @@
         :filters="filters"
         :loading="listSlice.loading"
         :error="listSlice.error"
+        v-model:checked-ids="checkedProjectIds"
         @select="selectProject"
         @update:filters="updateFilters"
         @reset="resetFilters"
         @refresh="loadProjects(currentProjectId)"
         @create="startCreateProject"
+        @batch-archive="batchArchiveProjects"
+        @batch-delete="batchDeleteProjectsWithConfirm"
       />
 
       <main class="project-main">
@@ -52,6 +55,7 @@
             @refresh="refreshCurrent(INVALIDATION.project)"
             @archive="archiveProject"
             @restore="restoreProject"
+            @delete="deleteProjectWithConfirm"
             @open-map="openMap"
             @start-inference="startInference"
             @run-action="runNextAction"
@@ -118,6 +122,11 @@
             @create-snapshot="createSnapshot"
             @restore-snapshot="restoreSnapshot"
           />
+
+          <ProjectArchivePanel
+            :project-id="currentProjectId"
+            @imported="refreshCurrent(INVALIDATION.project)"
+          />
         </template>
 
         <section v-else-if="listSlice.loading" class="panel empty-detail">
@@ -141,6 +150,7 @@ import ProjectActivityPanel from './projectWorkspace/ProjectActivityPanel.vue';
 import ProjectAssetsPanel from './projectWorkspace/ProjectAssetsPanel.vue';
 import ProjectDatasetRegistrationPanel from './projectWorkspace/ProjectDatasetRegistrationPanel.vue';
 import ProjectExportSnapshotPanel from './projectWorkspace/ProjectExportSnapshotPanel.vue';
+import ProjectArchivePanel from './projectWorkspace/ProjectArchivePanel.vue';
 import ProjectForm from './projectWorkspace/ProjectForm.vue';
 import ProjectOverviewPanel from './projectWorkspace/ProjectOverviewPanel.vue';
 import ProjectSelector from './projectWorkspace/ProjectSelector.vue';
@@ -164,6 +174,7 @@ const projectFormGate = createSelectionGate();
 
 const filters = ref({ name: '', region: '', status: '', monitorYear: '' });
 const statsPanelRef = ref(null);
+const checkedProjectIds = ref([]);
 const assetFilters = ref({ type: '', status: '' });
 const currentProjectId = ref(null);
 const listSlice = reactive(createSlice());
@@ -493,6 +504,69 @@ async function archiveProject() {
   } catch (error) {
     if (isCurrentProjectOperation(operation)) {
       slices.overview.error = messageFrom(error, '项目归档失败');
+    }
+  } finally {
+    if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
+  }
+}
+
+async function batchArchiveProjects(projectIds) {
+  if (!Array.isArray(projectIds) || !projectIds.length) return;
+  if (!window.confirm(`确认归档选中的 ${projectIds.length} 个项目？`)) return;
+  try {
+    const result = await api.batchArchiveProjects(projectIds);
+    const { succeeded, failed } = result || {};
+    window.alert(`批量归档完成：成功 ${succeeded ?? 0} 项，失败 ${failed ?? 0} 项`);
+    checkedProjectIds.value = [];
+    await loadProjects(currentProjectId.value);
+  } catch (error) {
+    window.alert(messageFrom(error, '批量归档失败，请稍后重试'));
+  }
+}
+
+async function batchDeleteProjectsWithConfirm(projectIds) {
+  if (!Array.isArray(projectIds) || !projectIds.length) return;
+  const message = [
+    `确认删除选中的 ${projectIds.length} 个项目？`,
+    '',
+    '· 仅已归档项目会被删除；活动项目将逐项报告"须先归档"',
+    '· 存储目录移入回收区（trash），可人工恢复',
+  ].join('\n');
+  if (!window.confirm(message)) return;
+  try {
+    const result = await api.batchDeleteProjects(projectIds);
+    const lines = (result?.results || [])
+      .map((r) => (r.ok ? `✓ ${r.project_id} 已删除` : `✗ ${r.project_id}：${r.msg}`));
+    window.alert([`批量删除：成功 ${result?.succeeded ?? 0}，失败 ${result?.failed ?? 0}`, ...lines].join('\n'));
+    checkedProjectIds.value = [];
+    await loadProjects(null);
+  } catch (error) {
+    window.alert(messageFrom(error, '批量删除失败，请稍后重试'));
+  }
+}
+
+async function deleteProjectWithConfirm() {
+  const summary = overview.value?.summary || {};
+  const message = [
+    `确认删除项目「${summary.name || currentProjectId.value}」？`,
+    '',
+    '· 项目将从列表移除（数据库保留审计记录）',
+    '· 项目存储目录将移入回收区（trash），可由管理员人工恢复',
+    '· 该操作仅对已归档项目可用',
+  ].join('\n');
+  if (!window.confirm(message)) return;
+  const operation = startProjectOperation();
+  if (!operation) return;
+  try {
+    await api.deleteProject(operation.projectId);
+    if (!isCurrentProjectOperation(operation)) return;
+    // 项目已删：清当前选中，刷新列表与看板
+    currentProjectId.value = null;
+    beginProjectRequest({ reset: true });
+    await loadProjects(null);
+  } catch (error) {
+    if (isCurrentProjectOperation(operation)) {
+      slices.overview.error = messageFrom(error, '项目删除失败');
     }
   } finally {
     if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;

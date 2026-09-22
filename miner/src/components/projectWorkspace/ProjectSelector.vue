@@ -30,6 +30,14 @@
         {{ loading ? '加载中…' : '刷新列表' }}
       </button>
       <button class="primary-btn" type="button" @click="$emit('create')">新建项目</button>
+      <template v-if="checkedIds.length">
+        <button class="secondary-btn" type="button" @click="$emit('batch-archive', checkedIds)">
+          批量归档（{{ checkedIds.length }}）
+        </button>
+        <button class="danger-btn" type="button" @click="$emit('batch-delete', checkedIds)">
+          批量删除（{{ checkedIds.length }}）
+        </button>
+      </template>
     </div>
 
     <div class="panel-title-row">
@@ -41,15 +49,25 @@
     <div class="project-card-list">
       <p v-if="loading && !visibleItems.length" class="empty-block">项目列表加载中…</p>
       <template v-else>
-        <button
+        <div
           v-for="item in visibleItems"
           :key="item.id"
-          class="project-card"
-          :class="{ active: isSelected(item.id) }"
-          :aria-pressed="isSelected(item.id)"
-          type="button"
-          @click="$emit('select', item.id)"
+          class="project-card-row"
         >
+          <input
+            class="project-check"
+            type="checkbox"
+            :checked="checkedIds.includes(item.id)"
+            :aria-label="`选择项目 ${item.name}`"
+            @change="toggleChecked(item.id)"
+          />
+          <button
+            class="project-card"
+            :class="{ active: isSelected(item.id) }"
+            :aria-pressed="isSelected(item.id)"
+            type="button"
+            @click="$emit('select', item.id)"
+          >
           <span class="project-card-top">
             <strong>{{ item.name || '未命名项目' }}</strong>
             <span class="status-pill">{{ formatLifecycleStatus(item.lifecycle_status || item.status) }}</span>
@@ -61,6 +79,7 @@
             解译进度：{{ formatInference(item.latest_inference) }}
           </span>
         </button>
+        </div>
         <p v-if="!visibleItems.length" class="empty-block">暂无匹配项目</p>
       </template>
     </div>
@@ -93,6 +112,15 @@ const formatInference = (latest) => {
   return `${text}（${time}）`;
 };
 
+const checkedIds = defineModel('checkedIds', { type: Array, default: () => [] });
+
+const toggleChecked = (projectId) => {
+  const current = new Set(checkedIds.value);
+  if (current.has(projectId)) current.delete(projectId);
+  else current.add(projectId);
+  checkedIds.value = Array.from(current);
+};
+
 const props = defineProps({
   items: {
     type: Array,
@@ -116,7 +144,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(['select', 'update:filters', 'reset', 'refresh', 'create']);
+const emit = defineEmits(['select', 'update:filters', 'reset', 'refresh', 'create', 'toggle-check', 'batch-archive', 'batch-delete']);
 
 const lifecycleStatuses = ['draft', 'active', 'completed', 'archived'];
 const visibleItems = computed(() => filterProjects(props.items, props.filters));
@@ -259,6 +287,19 @@ select {
     grid-template-columns: 1fr;
   }
 }
+.project-card-row { display: flex; align-items: flex-start; gap: 8px; }
+.project-check { margin-top: 10px; width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
+.project-card { flex: 1; }
+.danger-btn {
+  background: rgba(192, 57, 43, 0.1);
+  border: 1px solid #c0392b;
+  color: #c0392b;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.danger-btn:hover { background: #c0392b; color: #fff; }
 .project-card-inference {
   font-size: 12px;
   color: #5a7d75;
