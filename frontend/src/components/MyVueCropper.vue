@@ -211,13 +211,13 @@ export default {
               this.fileList = [];
               this.$message.success("上传成功！");
               this.$emit('child-refresh')
-            }).catch((rej)=>{})
+            }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '上传失败，请重试'); })
           } else if (funtype === "目标检测") {
             this.imgUpload(this.uploadSrc,'object_detection').then((res) => {
               this.fileList = [];
               this.$message.success("上传成功！");
               this.$emit('child-refresh')
-            }).catch((rej)=>{})
+            }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '上传失败，请重试'); })
           }
           else if (funtype === "场景分类") {
             delete this.uploadSrc.prehandle
@@ -226,7 +226,7 @@ export default {
               this.fileList = [];
               this.$message.success("上传成功！");
               this.$emit('child-refresh')
-            }).catch((rej)=>{})
+            }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '上传失败，请重试'); })
           }
           else if(funtype === "图像复原"){
             delete this.uploadSrc.prehandle
@@ -235,10 +235,10 @@ export default {
               this.fileList = [];
               this.$message.success("上传成功！");
               this.$emit('child-refresh')
-            }).catch((rej)=>{})
+            }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '上传失败，请重试'); })
           }
           this.$emit("cut-changed", false);
-        }).catch((rej)=>{})
+        }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '上传失败，请重试'); })
       });
     },
     base64toFile(dataurl, filename) {

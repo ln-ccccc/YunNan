@@ -56,6 +56,9 @@ test('buildProjectInferenceCards uses backend result URLs', () => {
   );
 
   assert.equal(cards[0].record_id, '101|2022');
+  // 项目推理卡片必须带 project 标记：删除入口据此走"请在项目中管理"拦截，
+  // 否则会落进 flash 的 fid|year 误删端点弹"记录不存在"（2026-09-22 契约审查）
+  assert.equal(cards[0].record_source, 'project');
   assert.equal(
     cards[0].after_img,
     'http://127.0.0.1:5008/api/projects/7/outputs/inference/101/101+2022.png',

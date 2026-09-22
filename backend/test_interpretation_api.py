@@ -76,6 +76,8 @@ class TestInterpretationAPI(unittest.TestCase):
         payload = self._json(response)["data"]
         self.assertEqual(payload["mode"], "standalone")
         self.assertIsNone(payload["job"])
+        # 响应白名单：standalone 分支同样不外泄 vector_path 物理路径
+        self.assertNotIn("vector_path", payload)
         self.assertEqual(InferenceJob.query.count(), 0)
 
     def test_matched_project_creates_scoped_job_and_copies_input(self):
@@ -110,6 +112,9 @@ class TestInterpretationAPI(unittest.TestCase):
         payload = self._json(response)["data"]
         self.assertEqual(payload["mode"], "project")
         self.assertEqual(payload["matched_fids"], [101, 102])
+        # 响应白名单：scope 中的服务器物理路径/内部资源 id 不得外泄（2026-09-22 契约审查）
+        self.assertNotIn("vector_path", payload)
+        self.assertNotIn("mine_resource_id", payload)
         self.assertEqual(payload["job"]["project_id"], project["id"])
         public_request = payload["job"]["request"]
         self.assertEqual(public_request["mine_fids"], [101, 102])

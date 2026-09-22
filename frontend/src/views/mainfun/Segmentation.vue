@@ -396,7 +396,9 @@ export default {
       this.cutVisible = false;
       this.fileList = [];
     },
-    // TiffUploadCard select 联动：空=全部被拒（收起裁剪弹层）；多文件=批量，自动关裁剪；末张进裁剪预览
+    // TiffUploadCard select 联动：空=全部被拒（收起裁剪弹层）；>1 文件=批量，自动关裁剪。
+    // 注：与旧版的差异——旧代码"选择整个文件夹"即使只含 1 个 tiff 也强制关裁剪并告警，
+    // 现统一为按文件数判定（单个 tiff 无论来源都可进裁剪），属有意简化
     onFilesSelected(items) {
       if (items.length === 0) {
         this.cutVisible = false;

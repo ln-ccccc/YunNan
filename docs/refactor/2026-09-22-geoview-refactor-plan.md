@@ -106,3 +106,47 @@
 ### 未测项与后续
 
 - P7 验收（backend 容器回归、真实浏览器 GUI 巡检、OCR+五轴+high-intensity-testing 三套技能）结果见验收记录一节（验收完成后补写）。
+
+## 8. P7 验收记录（2026-09-22）
+
+### 回归门
+
+| 门 | 结果 |
+| --- | --- |
+| backend 容器全量 pytest（主树挂载，权威跑法） | **363 passed / 0 failed / 10 skipped / 149 subtests**（修复轮后复跑，与基线持平；含新增 vector_path 白名单断言） |
+| frontend node --test | **37/37**（基线 21 例 → 37 例） |
+| frontend npm run build | 零错误 |
+| 真实浏览器 GUI（localhost:3000 实栈，playbook 技巧16 visibilityState 先行） | 见下 |
+
+### GUI 实测记录（真实栈：主树 dist 由容器静态服务）
+
+登录→路由守卫✓；地物分类页 TiffUploadCard 全要素渲染✓；页面内 fetch 真实 tif 字节+DataTransfer 注入选择✓（"已选择 1 个"）；standalone 通道（无项目上下文）：上传→同步推理→"Pro 推理完成"→通知正常关闭✓；项目态 job 通道（?project_id=1 + e2e_drill.tif）：路由 201 建任务→轮询打点→取消按钮点击→"已请求取消"→**"已取消推理，未生成结果"终态文案**✓（后端 worker 真终止，DB 落 cancelled）；上传失败反馈（坏字节 tif）：错误 toast 弹出且单条✓；断链（回归容器抢 CPU 致请求夭折）："连接已中断"分支✓；常驻通知 close 修复：build B 实测两通知正常消失✓。
+未完成项：最终 build（IIFE toast 守卫增量）的 standalone 复验被 **Docker Desktop 宿主机端口代理假死**阻断（容器内服务健康、宿主 000，环境故障与本轮代码无关）；该增量仅 5 行 toast 守卫，其行为已在前一 build 逐路径验证。
+
+### 三套技能验收
+
+1. **open-code-review（委托模式）**：`ocr delegate rule` 对 GeoView 后端消费面（analysis/inference/file.py）取 Python 规则组核验；改动面规则注入三路审查任务书。
+2. **agent-skills 五轴**（对抗遍子代理，写码/审查分离）：正确性轴不通过（P1 上传反馈链断裂）→ 已修；安全轴通过（无 v-html/路径消费/XSS/原型污染面）；性能轴通过（1 条 P3 备注）；可维护性基本通过（死导出已清）；测试轴补 kind 分支/rgb 元素/record_source 断言。
+3. **Zhong-s_Skills high-intensity-testing**：技能自带测试 9/9 绿；review-preflight.py 预检正常（OCR 探测失败时降级 git-fallback 符合设计）；六步工作法落地为三路独立上下文并行审查（契约遍/数据流遍/对抗遍），P0/P1 主控逐条 file:line 复核后修复，发现固化成测试。
+
+### 审查发现与修复（三遍交叉命中标注 ◎=双遍以上）
+
+| 级别 | 发现 | 修复 |
+| --- | --- | --- |
+| P1 ◎ | 上传失败零反馈：silent 灭 toast + 包装错误无 .response 使 catch 分支恒死（连带裁剪器/预处理上传全哑） | createRequestError 保留 response + 错误带 silent 标记 + getUploadImg/SpectralIndices/MyVueCropper/preHandle catch 补分支（silent!==false 守卫避免与拦截器双弹） |
+| P2 ◎ | 多 tiff 取消状态不重臂：取消命中已终态任务（后端 200 空操作）后按钮永久失效 | 新任务创建时重臂 cancelRequested/activeJobId |
+| P2 | buildProjectInferenceCards 无 record_source → 删除落 flash 误删端点弹"记录不存在" | 补 record_source:'project' + 测试 |
+| P2 | kml_roi_inference 201 响应泄露服务器绝对路径 vector_path | 后端响应白名单（mode/project_id/matched_fids/warnings/job）+ 双向断言（注：运行中 gunicorn 需重启才载入，测试已覆盖） |
+| P1(GUI) | element-plus@2.1.10 常驻通知 handle.close() 实测不生效（上传/推理通知滞留屏幕） | persistentNotification 包装：句柄.close→exposed.close→DOM 摘除兜底，GUI 实测消失 |
+| P3 ◎ | 轮询把 kind=backend/auth 确定性失败当断线重试 120 次 | 立即抛出 + 测试 |
+| P3 | classColor rgb 元素非数字产出非法 CSS | every(Number.isFinite) + 测试 |
+| P3 | api/inference 死常量导出；historyDelete（History.vue 删除后遗留）/historyClearByType/getCustomModel 死导出；$refs.upload 死引用 | 全部删除 |
+| P3 | wasCancelled 分支谎称"未生成结果"而 standalone 已入库 | 文案并入 standalone 事实 |
+| P3 | 单文件文件夹选择不再强制关裁剪（相对旧版行为漂移） | 接受为有意简化，注释更正 |
+
+### 遗留观察项（不阻塞，记录备查）
+
+- 上传端点不校验 tif 魔数（.tif 命名的任意字节可入 static/upload），坏文件在推理端以 500"后端出现未处理异常"终结（消息已脱敏无路径泄露）——建议后续把 rasterio 读取错误映射为 400 业务错误。
+- walkFileTree 对超大文件夹无条目上限、子树读取错误静默丢弃（共享化后修它的成本已降低）。
+- 项目模式"一键清空历史"只清 flash 目录（旧有限制）。
+- loading.js 计数器在 silent/非 silent 混合并发时可能提前关他人遮罩（旧代码同构，有防负守卫）。

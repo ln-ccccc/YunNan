@@ -47,6 +47,21 @@ test('waitForInferenceJob treats 4xx as fatal instead of retrying into silence',
   assert.equal(polls, 1, '4xx 不应重试');
 });
 
+test('waitForInferenceJob fails fast on deterministic business/auth errors instead of retrying 120 times', async () => {
+  // kind=backend（HTTP 200 + code!==0）与 kind=auth（会话失效）都不是瞬时网络问题，
+  // 重试 120 次只会把"任务查询失败"误报成"连接可能已中断"
+  for (const kind of ['backend', 'auth']) {
+    let polls = 0;
+    const err = new Error('业务失败');
+    err.kind = kind;
+    await assert.rejects(
+      waitForInferenceJob('j1', { ...FAST, fetchJob: async () => { polls += 1; throw err; } }),
+      (error) => error === err,
+    );
+    assert.equal(polls, 1, `${kind} 不应重试`);
+  }
+});
+
 test('waitForInferenceJob survives transient failures then declares disconnect past the threshold', async () => {
   // 前两次抖动恢复，随后连续失败到阈值 → disconnect 标记
   let calls = 0;

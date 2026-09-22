@@ -20,6 +20,10 @@ test('classColor falls back to the fixed class_code palette then the brand color
   assert.equal(classColor(null), CLASS_COLOR_FALLBACK);
   // rgb 数组残缺（长度不足）不得产生 'rgb(1,2,undefined)'
   assert.equal(classColor({ class_code: 0, rgb: [1, 2] }), '#00ff00');
+  // 元素非有限数字同样回退，不得产出非法 CSS 'rgb(1,2,x)' 让色块静默透明
+  assert.equal(classColor({ class_code: 1, rgb: [1, 2, 'x'] }), '#008000');
+  assert.equal(classColor({ class_code: 1, rgb: [1, 2, NaN] }), '#008000');
+  assert.equal(classColor({ class_code: 1, rgb: [1, 2, null] }), '#008000');
 });
 
 test('classColorExpression maps every palette code onto the paint match expression', () => {

@@ -45,6 +45,9 @@ export function buildProjectInferenceCards(displayResults = [], backendBaseUrl =
     .map((item, index) => ({
       id: index + 1,
       record_id: `${item.fid}|${item.year}`,
+      // 项目推理产出的卡片按项目成果管理：删除入口走"请在项目中管理"拦截，
+      // 而不是落进 flash 的 fid|year 误删端点（2026-09-22 契约审查 P2）
+      record_source: 'project',
       type: '地物分类',
       before_img: backendAssetUrl(backendBaseUrl, item.before_img),
       after_img: backendAssetUrl(backendBaseUrl, item.after_img),

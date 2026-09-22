@@ -29,6 +29,8 @@ export function classColorExpression() {
 // 图例/列表着色：定义带 rgb 数组（如 [0,128,0]）优先，其次 class_code 映射，兜底回退色
 export function classColor(definition) {
   const rgb = definition?.rgb;
-  if (Array.isArray(rgb) && rgb.length === 3) return `rgb(${rgb.join(',')})`;
+  if (Array.isArray(rgb) && rgb.length === 3 && rgb.every((v) => Number.isFinite(v))) {
+    return `rgb(${rgb.join(',')})`;
+  }
   return CLASS_COLORS[definition?.class_code] || CLASS_COLOR_FALLBACK;
 }

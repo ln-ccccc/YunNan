@@ -8,11 +8,18 @@ import { redirectToLegacyLogin } from "@/utils/authRedirect";
 // 错误种类标记（借鉴江西 request.js）：
 // auth=登录失效 / backend=业务 code!==0 / http=有响应的 4xx-5xx /
 // network=无响应的网络层断链 / aborted=调用方主动取消。
+// silent=true 表示请求是静默的（拦截器未弹 toast），调用方 catch 据此判断是否需要自己补提示。
 // 调用方（isDisconnectError、轮询断链自愈、上传取消）按 kind 精确分支，不再解析 message 字符串。
-function createRequestError(kind, message, cause) {
+function createRequestError(kind, message, cause, silent = false) {
   const error = new Error(message);
   error.kind = kind;
-  if (cause) error.cause = cause;
+  error.silent = Boolean(silent);
+  if (cause) {
+    error.cause = cause;
+    // 保留原始 axios response：存量调用点（getUploadImg/SpectralIndices 的
+    // err?.response?.data?.msg 分支）依赖它读取后端详情
+    if (cause.response) error.response = cause.response;
+  }
   return error;
 }
 
@@ -53,7 +60,7 @@ export function request(config) {
       }
       if (response.data.code !== 0) {
         if (!silent) ElMessage.error(response.data.msg);
-        return Promise.reject(createRequestError("backend", response.data.msg || "请求失败"));
+        return Promise.reject(createRequestError("backend", response.data.msg || "请求失败", null, silent));
       }
 
       return response;
@@ -74,12 +81,13 @@ export function request(config) {
         // 网络层断链：任务可能仍在后端执行，调用方按 disconnect 语义区分提示
         const message = "网络异常，请检查后端服务是否启动";
         if (!silent) ElMessage.error(message);
-        return Promise.reject(createRequestError("network", message, error));
+        return Promise.reject(createRequestError("network", message, error, silent));
       }
-      // HTTP 层错误（4xx/5xx/超时）：给出提示，大量调用点自行 .catch 处理时也不会重复弹窗
+      // HTTP 层错误（4xx/5xx/超时）：非 silent 请求给出提示（silent 轮询由调用方统一收口，
+      // 避免断线自愈窗口内每秒刷屏）
       const message = error?.response?.data?.msg || "网络异常，请检查后端服务是否启动";
       if (!silent) ElMessage.error(message);
-      return Promise.reject(createRequestError("http", message, error));
+      return Promise.reject(createRequestError("http", message, error, silent));
     },
   );
 

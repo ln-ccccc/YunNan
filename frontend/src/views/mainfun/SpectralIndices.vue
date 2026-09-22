@@ -171,8 +171,10 @@ export default {
         this.fileList = [];
         this.getMore();
       }).catch((err) => {
-        const msg = err?.response?.data?.msg || "计算失败";
-        this.$message.error(msg);
+        // silent 上传腿拦截器不弹 toast，这里补；非 silent 腿拦截器已弹，避免双提示
+        if (err?.silent !== false) {
+          this.$message.error(err?.message || err?.response?.data?.msg || "计算失败");
+        }
       });
     }
   }

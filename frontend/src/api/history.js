@@ -12,27 +12,11 @@ export function historyGetPage(page,limit,type){
     })
 }
 
-export function historyDelete(data){
-    return request({
-        method:'DELETE',
-        url:'api/history/batchRemove',
-        data
-    })
-}
-
 export function historyDeleteOne(id){
     return request({
         method:'DELETE',
-        url:'api/history/removeOne',
+        url:'/api/history/removeOne',
         data:{ id }
-    })
-}
-
-export function historyClearByType(type){
-    return request({
-        method:'DELETE',
-        url:'api/history/clearByType',
-        data:{ type }
     })
 }
 

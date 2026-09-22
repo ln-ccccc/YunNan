@@ -22,7 +22,8 @@ const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mill
 
 /**
  * 轮询直至任务进入终态（含 cancelled）。
- * - 4xx / 主动取消（kind=aborted）为确定性失败，立即抛出；
+ * - 4xx / 主动取消（kind=aborted）/ 业务失败（kind=backend）/ 登录失效（kind=auth）
+ *   为确定性失败，立即抛出；
  * - 5xx / 网络错误按断线自愈阈值重试，超限抛带 disconnect 标记的错误；
  * - fetchJob 必须注入（返回与 axios response 同构 {data:{data:job}}）。
  */
@@ -47,7 +48,8 @@ export async function waitForInferenceJob(jobId, options = {}) {
       // request.js 包装后原始 axios 错误在 cause 上；两种形态都认
       const status = error?.response?.status ?? error?.cause?.response?.status;
       if (typeof status === 'number' && status >= 400 && status < 500) throw error;
-      if (error?.kind === 'aborted') throw error;
+      // 确定性失败不重试：主动取消、业务失败（code!==0）、登录失效
+      if (error?.kind === 'aborted' || error?.kind === 'backend' || error?.kind === 'auth') throw error;
       consecutiveFailures += 1;
       if (consecutiveFailures >= maxConsecutiveFailures) {
         const wrapped = new Error('推理任务查询持续失败，连接可能已中断');

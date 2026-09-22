@@ -3,6 +3,7 @@ import global from '@/global'
 import { h, ref } from 'vue'
 import { ElNotification } from 'element-plus'
 import { showFullScreenLoading } from "@/utils/loading";
+import { persistentNotification } from "@/utils/persistentNotification.js";
 import { kmlRoiInfer } from "@/api/upload";
 import {
   cancelInferenceJob,
@@ -119,7 +120,7 @@ function upload(type, funUrl) {
       ]);
     },
   };
-  const notification = ElNotification({
+  const notification = persistentNotification({
     title: '影像上传中',
     message: h(progressBody),
     duration: 0,
@@ -181,7 +182,7 @@ function upload(type, funUrl) {
             ]);
           },
         };
-        const inferNotification = ElNotification({
+        const inferNotification = persistentNotification({
           title: 'KML ROI 推理中',
           message: h(inferBody),
           duration: 0,
@@ -205,7 +206,10 @@ function upload(type, funUrl) {
             }
             const createdJob = routed.job || routed;
             if (!createdJob?.id) throw new Error("推理任务创建后未返回任务编号");
+            // 新任务重臂取消：上一任务若在取消请求送达前已终态（后端对终态取消是 200 空操作），
+            // cancelRequested 残留 true 会让本任务及后续的取消按钮永久失效
             activeJobId = createdJob.id;
+            cancelRequested = false;
             inferProgress.value = `第 ${index + 1}/${total} 张推理中（任务 ${createdJob.id}）`;
             const job = await waitForInferenceJob(createdJob.id);
             jobs.push(job);
@@ -273,7 +277,10 @@ function upload(type, funUrl) {
             this.$message.info('已取消推理，已完成部分保留在历史记录');
           }
         } else if (wasCancelled) {
-          this.$message.info('已取消推理，未生成结果');
+          // standalone 影像走的是同步通道，取消只作用于后续 job 任务，已算完的结果不因取消而作废
+          this.$message.info(standaloneHandled
+            ? '已取消推理，未匹配项目的影像结果已保留在历史记录'
+            : '已取消推理，未生成结果');
         } else if (standaloneHandled) {
           this.$message.success("未匹配当前项目矿山，结果仅在解译平台展示");
         } else {
@@ -284,10 +291,15 @@ function upload(type, funUrl) {
         this.getMore();
       })().catch((err) => {
         // 断链语义（江西 083985f 同款）：任务可能仍在后端执行，不误报"推理失败"
-        const msg = isDisconnectError(err)
-          ? '连接已中断，任务可能仍在后端执行，请稍后在历史记录中查看结果'
-          : (err?.response?.data?.msg || err?.message || "Flash 推理失败");
-        this.$message.error(msg);
+        if (isDisconnectError(err)) {
+          this.$message.error('连接已中断，任务可能仍在后端执行，请稍后在历史记录中查看结果');
+          return;
+        }
+        // 非 silent 请求（kmlRoiInfer/imgUpload）拦截器已弹 toast，这里不重复
+        if (err?.silent !== false) {
+          const msg = err?.response?.data?.msg || err?.message || "Flash 推理失败";
+          this.$message.error(msg);
+        }
       });
     } else {
       this.imgUpload(this.uploadSrc, funUrl).then(() => {
@@ -308,15 +320,20 @@ function upload(type, funUrl) {
           this.goCompress(type, this.uploadSrc.list.length)
         }).catch(() => { })
     }
-    this.$refs.upload?.clearFiles?.();
   }).catch((err) => {
     notification.close();
     uploadInFlight = false;
-    // 业务失败（code!==0）已被统一拦截器提示，这里只处理取消/HTTP/网络层
+    // 取消优先；业务/HTTP 失败（silent 下拦截器不弹 toast）与断链在下方分支分别给出反馈
     const cancelled = err?.kind === 'aborted' || err?.code === 'ERR_ABORTED' || err?.code === 'canceled'
       || /cancel|abort/i.test(String(err?.message || ''));
     if (cancelled) {
       this.$message.info('已取消上传');
+      return;
+    }
+    // 业务失败（kind=backend）此前既无拦截器 toast（silent）也无本地分支，全程零反馈；
+    // HTTP 失败（kind=http）同理。这里统一兜底给出后端 msg（包装错误的 message 即后端 msg）
+    if ((err?.kind === 'backend' || err?.kind === 'http') && err?.silent !== false) {
+      this.$message.error(err?.message || err?.response?.data?.msg || '上传失败，请重试');
       return;
     }
     if (isDisconnectError(err)) {

@@ -35,13 +35,6 @@ export function prePhotoHandle(data){
     })
 }
 
-export function getCustomModel(model_type){
-    return request({
-        method:'GET',
-        url:`/api/model/list/${model_type}`
-    })
-}
-
 export function kmlRoiInfer(data){
     return request({
         method:'POST',

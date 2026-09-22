@@ -207,6 +207,39 @@ MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sh \
 
 **为什么好**：伪缺陷会消耗信任与排查时间（先查环境再定性，砍掉两例）；而纯单测/构建永远抓不到"refs 时序"这类只有真实组件挂载才暴露的缺陷——GUI 实跑是最后一道验收门。
 
+### 17. element-plus@2.1.10 常驻通知的 close() 会静默失效（2026-09-22）✅
+
+**解决什么问题**：函数式 `ElNotification({duration:0})` 返回句柄的 `close()` 实测不生效——上传进度/推理进度两个常驻通知在流程结束后**滞留屏幕**（GUI 实测 6 秒后仍在 top:16 全尺寸）。根因：句柄 close 写 `vm.component.proxy.visible = false`，该写入路径在当前 Vue 版本组合下到不了组件内部的 ref。
+
+**做法**：
+1. 自建 `utils/persistentNotification.js` 包装：创建后用"创建前后 `.el-notification` 集合差集"锁定本次 DOM 节点；close 时三级兜底——`句柄.close()` → 节点 `__vueParentComponent.exposed.close()`（走组件自身状态机与销毁记账）→ 直接 `removeChild`。
+2. 判定"通知滞留"别用 `offsetParent`（fixed 定位元素恒为 null，会误报"已关闭"），用 `getBoundingClientRect().width` + `isConnected`。
+
+**为什么好**：这类失效零报错、单测全绿（通知是 DOM 副作用），只有真实浏览器巡检"流程结束后查通知区"才抓得到；包装层一次修复覆盖所有常驻通知场景（上传进度、推理进度、后续任何 duration:0）。
+
+### 18. GUI 文件上传注入：同源字节 + DataTransfer，当心 build 清 dist（2026-09-22）✅
+
+**解决什么问题**：IAB 不支持原生 file chooser，真实上传流程无法用"点选择文件"驱动；而伪造 File（零字节/随机字节）会被后端栅格库拒读，测不到完整链路。
+
+**做法**：
+1. 把真实 tif 临时放进 `frontend/dist/`（容器静态服务目录，同源无 CORS 问题），页面内 `fetch('/__e2e_tmp.tif')` → `new File([blob],name)` → `DataTransfer` → `input.files = dt.files` → `dispatchEvent(new Event('change',{bubbles:true}))`。
+2. `handleFileSelect` 会复位 `input.value`，注入后回读 `files.length===0` 是**正常现象**，以 UI 出现"已选择 N 个"为准确认。
+3. **坑**：`npm run build` 会清空 dist——每次重建后必须重新投放临时文件，否则 fetch 拿到的是 SPA 回退的 index.html 字节（HTTP 200、字节是 HTML），假 tif 流进后端在 rasterio 处爆 500，极易误判成后端 bug。注入前先 `blob.size` 对账。
+4. 测项目态路由需要带 `?project_id=N` 且影像空间匹配项目矿山（可用 DB 里历史 job 的 request_payload 找现成样本）；无项目上下文走 standalone 同步通道，不会建 job。
+
+**为什么好**：让"上传→推理→取消→历史"全链路在真实栈可复现，取消闭环这类跨前后端的状态机只有端到端才能验证。
+
+### 19. 改后端源码 ≠ 运行栈生效：挂载与内存模块的两层真相（2026-09-22）✅
+
+**解决什么问题**：主树代码虽目录挂载进容器，但 gunicorn worker 进程加载的是**启动时**的模块——改完 .py 不重启，接口行为不变，而 traceback 会用**磁盘新源码**对旧行号，出现"traceback 里源码行与函数逻辑对不上"的诡异现象（本次 `_KML_ROI_PUBLIC_FIELDS` 常量行出现在 `kml_roi_inference_api` 帧里，正是新源码+旧字节码的信号）。
+
+**做法**：
+1. 判断运行栈是否已载入新代码：看 traceback 帧的源码行是否与函数名匹配；或 `docker exec <c> sh -c "grep -n <新标记> /app/.../file.py"` 确认磁盘是新、行为是旧 → 需重启。
+2. GUI 验证后端改动前先确认这一点；不重启就用容器一次性 pytest（每次新进程，必然跑新代码）作权威验证。
+3. 宿主机端口全断（curl 000）但 `docker ps` healthy 时，用 `docker exec <c> wget -q -O- http://127.0.0.1:<port>/` 验证容器内服务——区分"Docker Desktop 端口代理假死"（环境故障）与"服务真死"（回归），避免误停用户运行栈。
+
+**为什么好**：把"改了但没生效"和"环境假死"两类排障各收敛成一个 30 秒可判定的检查，避免对着旧行为调试新代码。
+
 
 ---
 

@@ -42,8 +42,8 @@ function selectSharpen(type) {
           this.sharpenImg = res.data.data.map((item)=>{
             return global.BASEURL + item
           })
-        }).catch(()=>{})
-      }).catch((rej)=>{})
+        }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '预处理失败，请重试'); })
+      }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '上传失败，请重试'); })
     }
   }
   }
@@ -87,8 +87,8 @@ function selectSharpen(type) {
             this.claheImg = res.data.data.map((item)=>{
               return global.BASEURL + item
             })
-          }).catch((rej)=>{})
-        }).catch((rej)=>{})
+          }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '上传失败，请重试'); })
+        }).catch((rej)=>{ if (rej?.silent !== false) this.$message.error(rej?.message || '上传失败，请重试'); })
       }
     }
   }

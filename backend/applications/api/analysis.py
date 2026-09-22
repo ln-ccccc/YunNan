@@ -344,14 +344,30 @@ def spectral_indices_api():
         return business_or_server_failure(e, "计算失败", logger=LOGGER)
 
 
+# kml_roi_inference 响应白名单：scope 里还有 vector_path（服务器物理路径）、
+# mine_resource_id 等私有字段，与 serialize_job 的 _PRIVATE_PATH_FIELDS 清洗标准
+# 一致，不外泄（2026-09-22 契约审查 P2；前端只消费 mode/job）
+_KML_ROI_PUBLIC_FIELDS = ('mode', 'project_id', 'matched_fids', 'warnings')
+
+
+def _public_interpretation_payload(result):
+    payload = {key: result[key] for key in _KML_ROI_PUBLIC_FIELDS if key in result}
+    job = result.get('job')
+    if job is not None:
+        payload['job'] = serialize_job(job)
+    else:
+        payload['job'] = None
+    return payload
+
+
 @analysis_api.post('/kml_roi_inference')
 def kml_roi_inference_api():
     try:
         result = prepare_geoview_interpretation(request.get_json(silent=True) or {})
-        job = result.get("job")
+        job = result.get('job')
+        data = _public_interpretation_payload(result)
         if job is None:
-            return success_api(data=result)
-        data = {**result, "job": serialize_job(job)}
+            return success_api(data=data)
         return success_api(data=data), 201
     except (ValueError, FileNotFoundError) as error:
         return fail_api(str(error)), 400
