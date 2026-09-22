@@ -6,6 +6,7 @@ import { showFullScreenLoading } from "@/utils/loading";
 import { persistentNotification } from "@/utils/persistentNotification.js";
 import { kmlRoiInfer, uploadFilesResumable } from "@/api/upload";
 import { shouldUseChunkedUpload } from "@/utils/uploadChunking.mjs";
+import { buildProgressText, pushProgressSample } from "@/utils/uploadProgress.mjs";
 import {
   cancelInferenceJob,
   waitForInferenceJob,
@@ -107,19 +108,30 @@ function upload(type, funUrl) {
 
   const useResumable = rawFiles.some((file) => shouldUseChunkedUpload(file.size));
 
-  // 上传进度 + 可取消（江西 F2 同款）：duration=0 常驻通知，结束/取消必须显式关闭
+  // 上传进度 + 可暂停（S2 升级：百分比·已传/总量·预计剩余时长；暂停后可续传）
   const controller = new AbortController();
   const percent = ref(0);
+  const progressText = ref('0%');
+  let speedState = { samples: [], bytesPerSecond: null };
+  let totalBytesKnown = 0;
+  const updateProgress = (doneBytes, totalBytes, at = Date.now()) => {
+    totalBytesKnown = totalBytes || totalBytesKnown;
+    speedState = pushProgressSample(speedState.samples, at, doneBytes);
+    percent.value = totalBytesKnown > 0
+      ? Math.min(99, Math.floor((doneBytes / totalBytesKnown) * 100))
+      : 0;
+    progressText.value = buildProgressText(doneBytes, totalBytesKnown, speedState.bytesPerSecond);
+  };
   const progressBody = {
     name: 'UploadProgressBody',
     setup() {
       return () => h('div', { style: 'display:flex;align-items:center;gap:12px;' }, [
-        h('span', `已上传 ${percent.value}%`),
+        h('span', progressText.value),
         h('button', {
           type: 'button',
           style: 'border:none;border-radius:4px;padding:4px 10px;cursor:pointer;color:#fff;background:#409eff;',
           onClick: () => controller.abort(),
-        }, '取消上传'),
+        }, '暂停（可续传）'),
       ]);
     },
   };
@@ -143,18 +155,14 @@ function upload(type, funUrl) {
         },
         {
           signal: controller.signal,
-          onProgress: (doneBytes, totalBytes) => {
-            if (totalBytes > 0) {
-              percent.value = Math.min(99, Math.round((doneBytes / totalBytes) * 100));
-            }
-          },
+          onProgress: (doneBytes, totalBytes) => updateProgress(doneBytes, totalBytes),
         },
       )
     : this.createSrc(formData, {
         signal: controller.signal,
         onUploadProgress: (event) => {
           if (event?.total) {
-            percent.value = Math.min(99, Math.round((event.loaded / event.total) * 100));
+            updateProgress(event.loaded, event.total);
           }
         },
       });
@@ -163,6 +171,7 @@ function upload(type, funUrl) {
     notification.close();
     uploadInFlight = false;
     percent.value = 100;
+    progressText.value = '100%';
     const uploadItems = res.data.data || [];
     this.uploadSrc.list = uploadItems.map((item) => item.src);
 
@@ -351,7 +360,7 @@ function upload(type, funUrl) {
     const cancelled = err?.kind === 'aborted' || err?.code === 'ERR_ABORTED' || err?.code === 'canceled'
       || /cancel|abort/i.test(String(err?.message || ''));
     if (cancelled) {
-      this.$message.info('已取消上传');
+      this.$message.info('已暂停上传——重新点击开始处理将从断点续传');
       return;
     }
     // 业务失败（kind=backend）此前既无拦截器 toast（silent）也无本地分支，全程零反馈；
