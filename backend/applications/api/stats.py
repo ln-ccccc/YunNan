@@ -82,9 +82,16 @@ def _latest_results_per_fid_year(project_ids):
         .all()
     )
     latest = {}
+    has_ready = set()
+    for result in rows:
+        key = (result.project_id, result.mine_fid, result.year)
+        if result.vector_status != "vector_failed":
+            has_ready.add(key)
     for result in rows:
         key = (result.project_id, result.mine_fid, result.year)
         if key not in latest:
+            if result.vector_status == "vector_failed" and key in has_ready:
+                continue
             latest[key] = result
     return list(latest.values())
 

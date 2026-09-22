@@ -123,7 +123,8 @@ class TestProjectBatch(ProjectManageBase):
 
 
 class TestBackupImport(ProjectManageBase):
-    def _build_manifest(self, source_project_id, name="迁移项目"):
+    def _build_manifest(self, source_project_id, name="迁移项目", dataset_path_prefix=None):
+        prefix = dataset_path_prefix or f"projects/{source_project_id}/inputs/imagery"
         return {
             "snapshot_version": 1,
             "project_id": source_project_id,
@@ -137,7 +138,9 @@ class TestBackupImport(ProjectManageBase):
                 {"mine_fid": 102, "sort_order": 1},
             ],
             "datasets": [
-                {"dataset_kind": "imagery", "display_name": "影像A", "file_path": "x.tif"},
+                # file_path 必须是本项目根内的路径（收官审查 S1 收口后非法路径整批 422）
+                {"dataset_kind": "imagery", "display_name": "影像A",
+                 "file_path": f"{prefix}/a.tif"},
             ],
             "exports": [{"format": "geojson", "file_path": "out.geojson"}],
             "activities": [{"event_type": "project_created", "created_at": "2026-01-01T00:00:00"}],
@@ -151,7 +154,10 @@ class TestBackupImport(ProjectManageBase):
 
         response = self.client.post(
             f"/api/projects/{target}/backups/import",
-            json={"manifest": self._build_manifest(999, name="迁移后的项目")},
+            json={"manifest": self._build_manifest(
+                999, name="迁移后的项目",
+                dataset_path_prefix=f"projects/{target}/inputs/imagery",
+            )},
         )
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         project = db.session.get(Project, target)
@@ -169,6 +175,21 @@ class TestBackupImport(ProjectManageBase):
         events = [a.event_type for a in project.activities]
         self.assertIn("project_imported", events)
         self.assertEqual(events.count("project_created"), 1)
+
+    def test_import_rejects_dataset_path_outside_project_root(self):
+        """收官审查 S1：manifest 直传任意路径曾被原样入库，间接读取服务器任意栅格。"""
+        self.login_as_admin()
+        target = self._create_project("越界导入目标")
+        manifest = self._build_manifest(999, name="越界尝试")
+        manifest["datasets"] = [
+            {"dataset_kind": "imagery", "display_name": "evil", "file_path": "/etc/passwd"},
+        ]
+        response = self.client.post(
+            f"/api/projects/{target}/backups/import",
+            json={"manifest": manifest},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("不在本项目存储内", response.get_json()["msg"])
 
     def test_import_rejects_malformed_manifest(self):
         self.login_as_admin()

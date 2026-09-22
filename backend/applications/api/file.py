@@ -150,6 +150,10 @@ def upload_session_complete_api(session_id):
 
     # 组装直落上传目标（同卷就地合并，避免三倍磁盘峰值），命名规则与 photos.save 一致
     suffix = Path(session['filename']).suffix
+    # ENVI 数据/头文件走分片通道必然断链（逐会话独立 UUID 词干，头与数据失配）——
+    # 明确拒绝而非推迟到推理才失败（2026-09-22 收官审查 P1）
+    if suffix.lstrip(".").lower() in ("dat", "bin", "hdr"):
+        return fail_api("ENVI 影像暂不支持分片续传通道，请使用单次上传（需 8GB 内）"), 400
     dest_path = upload_root / f"{uuid.uuid4()}{suffix}"
 
     # done 幂等：complete 成功过（响应丢失/批次重试/双标签并发）直接复用上次结果，

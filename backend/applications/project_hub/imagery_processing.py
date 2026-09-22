@@ -45,9 +45,13 @@ def _project_or_404(project_id):
 
 
 def _resolve_source(project, source_key):
-    """数据源解析：优先按 dataset_id（正整数），否则按 storage_key（受控相对路径）。"""
+    """数据源解析：优先按 dataset_id（正整数），否则按相对 storage_key。
+
+    越界/非法路径一律 400（ImageryProcessingError），不回显服务器物理路径
+    （收官审查 P2-1：裸 relative_to 的 ValueError 原文曾被 200 回显）。
+    """
     text = str(source_key or "").strip()
-    if text.isdigit():
+    if text.isascii() and text.isdigit():
         dataset = ProjectDataset.query.filter_by(id=int(text), project_id=project.id).first()
         if dataset is None:
             raise ImageryProcessingError(f"数据集不存在: {text}")
@@ -57,13 +61,22 @@ def _resolve_source(project, source_key):
     else:
         if not text:
             raise ImageryProcessingError("缺少影像来源")
+        storage_root = get_storage_root()
+        project_root = resolve_storage_path(storage_root, Path("projects") / str(project.id))
+        path = None
         try:
-            path = resolve_storage_path(get_storage_root(), Path(text))
+            path = resolve_storage_path(storage_root, Path(text))
         except ValueError:
-            # 也允许项目 inputs 目录内的相对路径
-            project_root = resolve_storage_path(get_storage_root(), Path("projects") / str(project.id))
-            path = (project_root / text).resolve()
-            path.relative_to(project_root)
+            candidate = (project_root / text).resolve()
+            try:
+                candidate.relative_to(project_root)
+                path = candidate
+            except ValueError:
+                raise ImageryProcessingError("影像来源路径不合法") from None
+        try:
+            path.relative_to(storage_root)
+        except ValueError:
+            raise ImageryProcessingError("影像来源路径不合法") from None
     if not path.is_file():
         raise ImageryProcessingError("影像文件不存在")
     return path
@@ -120,10 +133,18 @@ def _append_one_input(items, raster, year):
     items.append({
         "dataset_id": None,
         "display_name": raster.name,
-        "file_path": str(raster),
+        # 相对 storage 根的 key（不向浏览器下发服务器绝对路径，AGENTS §6）
+        "storage_key": _storage_key(raster),
         "year": year,
         **summary,
     })
+
+
+def _storage_key(path):
+    try:
+        return Path(path).resolve().relative_to(get_storage_root()).as_posix()
+    except ValueError:
+        return None
 
 
 def _raster_summary(path):
@@ -165,22 +186,26 @@ def clip_imagery(project_id, payload):
         if minx >= maxx or miny >= maxy:
             raise ImageryProcessingError("裁剪范围无效（零面积）")
 
-        # 外扩：米 → 度（按中心纬度）→ 像素
-        center_lat = math.radians((src.bounds.top + src.bounds.bottom) / 2.0)
-        deg_per_meter_x = 1.0 / (_METERS_PER_DEG_LAT * max(math.cos(center_lat), 1e-6))
-        deg_per_meter_y = 1.0 / _METERS_PER_DEG_LAT
-        buffer_deg_x = buffer_meters * deg_per_meter_x
-        buffer_deg_y = buffer_meters * deg_per_meter_y
-        minx -= buffer_deg_x
-        maxx += buffer_deg_x
-        miny -= buffer_deg_y
-        maxy += buffer_deg_y
+        # 外扩按 src.crs 单位换算：地理系（度）按中心纬度米→度；投影系（米）直接加
+        # （收官审查 C2：投影系曾按度加导致外扩静默失效）
+        if src.crs.is_geographic:
+            center_lat = math.radians((src.bounds.top + src.bounds.bottom) / 2.0)
+            buffer_x = buffer_meters / (_METERS_PER_DEG_LAT * max(math.cos(center_lat), 1e-6))
+            buffer_y = buffer_meters / _METERS_PER_DEG_LAT
+        else:
+            buffer_x = buffer_meters
+            buffer_y = buffer_meters
+        minx -= buffer_x
+        maxx += buffer_x
+        miny -= buffer_y
+        maxy += buffer_y
 
         try:
             window = from_bounds(minx, miny, maxx, maxy, src.transform)
             window = window.intersection(Window(0, 0, src.width, src.height)).round_offsets().round_lengths()
         except Exception:
             raise ImageryProcessingError("裁剪范围与影像无有效重叠") from None
+        _guard_window_bytes(src, window)
         if window.width < 8 or window.height < 8:
             raise ImageryProcessingError("裁剪范围与影像无有效重叠（结果小于 8×8 像素）")
 
@@ -226,7 +251,7 @@ def slice_imagery(project_id, payload):
     mode = str(payload.get("mode") or "").strip()
     tile_pixels = payload.get("tile_pixels")
     tile_area_m2 = payload.get("tile_area_m2")
-    limit = min(int(payload.get("limit") or DEFAULT_SLICE_LIMIT), MAX_SLICE_LIMIT)
+    limit = max(1, min(int(payload.get("limit") or DEFAULT_SLICE_LIMIT), MAX_SLICE_LIMIT))
 
     with rasterio.open(source_path) as src:
         if mode == "grid_pixels":
@@ -269,6 +294,7 @@ def slice_imagery(project_id, payload):
                 if window.width < max(8, tile_w * MIN_TILE_RATIO) or window.height < max(8, tile_h * MIN_TILE_RATIO):
                     skipped.append({"row": row, "col": col, "reason": "边片过小"})
                     continue
+                _guard_window_bytes(src, window)
                 data = src.read(window=window)
                 transform = src.window_transform(window)
                 out_name = f"slice_{stamp}_{uuid.uuid4().hex[:6]}_r{row}c{col}.tif"
@@ -301,6 +327,27 @@ def slice_imagery(project_id, payload):
         "skipped": skipped,
         "items": items,
     }
+
+
+# 单窗读入字节上限（2GB）：clip/slice 都不允许一次把超大窗口整读进内存
+MAX_WINDOW_BYTES = 2 * 1024 ** 3
+
+
+def _guard_window_bytes(src, window):
+    estimated = int(window.width) * int(window.height) * max(src.count, 1) * _dtype_size(src.dtypes[0] if src.dtypes else None)
+    if estimated > MAX_WINDOW_BYTES:
+        raise ImageryProcessingError(
+            f"单窗 {int(window.width)}×{int(window.height)}×{src.count} 波段超出内存上限（约 2GB），请缩小范围或切片尺寸"
+        )
+
+
+def _dtype_size(dtype_name):
+    import numpy as np
+
+    try:
+        return int(np.dtype(dtype_name).itemsize)
+    except (TypeError, ValueError):
+        return 8
 
 
 def _imagery_output_dir(project_id):

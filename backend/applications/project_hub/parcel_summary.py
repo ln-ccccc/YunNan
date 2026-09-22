@@ -51,10 +51,17 @@ def build_parcel_summary(project_id, page=1, limit=50, fid_filter=None):
         .order_by(ClassificationResult.id.desc())
         .all()
     )
+    ready_keys = {
+        (mine_fid, year)
+        for mine_fid, year, _rid, feature_count, create_time, vector_status in results
+        if vector_status != "vector_failed"
+    }
     stats = {}
     for mine_fid, year, _rid, feature_count, create_time, vector_status in results:
         key = (mine_fid, year)
         if key not in latest:
+            if vector_status == "vector_failed" and key in ready_keys:
+                continue
             latest[key] = True
             entry = stats.setdefault(mine_fid, {
                 "feature_total": 0, "latest_year": None, "latest_at": None, "result_count": 0,

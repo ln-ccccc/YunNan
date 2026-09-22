@@ -120,7 +120,8 @@ export const projectApi = {
   },
   clipImagery(projectId, body, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');
-    return requestJson('POST', `/api/projects/${safeProjectId}/imagery/clip`, { body, cookie });
+    // GB 级影像全窗读+LZW 写与 slice 同为长请求（收官审查 C4：15s 默认曾致误报）
+    return requestJson('POST', `/api/projects/${safeProjectId}/imagery/clip`, { body, cookie, timeoutMs: 600000 });
   },
   sliceImagery(projectId, body, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');

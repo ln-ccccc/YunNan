@@ -7,7 +7,7 @@ const mapDashboardSource = fs.readFileSync(new URL('../src/components/MapDashboa
 test('MapDashboard removes its window resize listener on unmount', () => {
   assert.match(
     mapDashboardSource,
-    /onMounted\(\(\) => \{[\s\S]*?resizeListener\.attach\(\);[\s\S]*?\}\);/,
+    /onMounted\(async \(\) => \{[\s\S]*?resizeListener\.attach\(\);[\s\S]*?\}\);/,
     'MapDashboard must attach the shared resize listener in onMounted',
   );
   assert.match(

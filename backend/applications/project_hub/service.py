@@ -1554,13 +1554,37 @@ def import_backup_manifest(project_id, manifest, actor="system"):
                     sort_order=item.get("sort_order") or 0,
                 )
             )
+        # 导入数据集的 file_path 只允许落在本项目根内（2026-09-22 收官审查 S1：
+        # manifest 直传任意路径曾被原样入库，间接读取服务器任意栅格）
+        project_root = resolve_storage_path(
+            get_storage_root(), Path("projects") / str(project.id)
+        )
+
+        def _safe_dataset_path(raw):
+            text = str(raw or "").strip()
+            if not text:
+                raise ProjectStorageValidationError("导入的数据集缺少路径")
+            candidate = Path(text).expanduser()
+            # 相对路径按 storage 根解析（导出快照里就是 projects/<id>/... 形态）；
+            # 绝对路径直接 resolve——两者最终都必须落在本项目根内
+            if not candidate.is_absolute():
+                candidate = get_storage_root() / candidate
+            candidate = candidate.resolve()
+            try:
+                candidate.relative_to(project_root)
+            except ValueError:
+                raise ProjectStorageValidationError(
+                    "导入的数据集路径不在本项目存储内，已拒绝"
+                ) from None
+            return str(candidate)
+
         for item in manifest["datasets"]:
             db.session.add(
                 ProjectDataset(
                     project_id=project.id,
                     dataset_kind=item["dataset_kind"],
                     display_name=item["display_name"],
-                    file_path=item["file_path"],
+                    file_path=_safe_dataset_path(item["file_path"]),
                     source_format=item.get("source_format"),
                     mine_fid=item.get("mine_fid"),
                     year_start=item.get("year_start"),

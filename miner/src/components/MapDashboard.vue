@@ -223,6 +223,23 @@ const loadInferenceImagery = async () => {
   }
 };
 
+// 定位排队：geojson 未载时先存 fid，数据到位后由 focusByFid 重放
+// （收官审查 P1：工作台清单定位曾在数据未到时弹"未找到矿山"）
+const focusByFid = (fid) => {
+  if (!allMinesData.value || !allMinesData.value.length) {
+    pendingLocateFid = fid;
+    return;
+  }
+  performSearchFor(fid);
+};
+
+const performSearchFor = (fid) => {
+  searchMineId.value = String(fid);
+  performSearch();
+};
+
+let pendingLocateFid = null;
+
 const performSearch = () => {
   if (!searchMineId.value) return;
 
@@ -267,10 +284,7 @@ const handleSelectMine = async ({ feature, center }) => {
   await fetchIndices(properties.FID_1);
 };
 
-const focusByFid = (fid) => {
-  searchMineId.value = String(fid);
-  performSearch();
-};
+// 旧名保留：排队版 focusByFid 已在上方定义（数据未载时暂存），此处删除重复定义
 
 const handleInferenceSubmit = async (formData) => {
   if (!Number.isSafeInteger(formData?.datasetId) || formData.datasetId <= 0) return;
@@ -316,8 +330,14 @@ const handleExportTrendReport = async (filters = {}) => {
   }
 };
 
-onMounted(() => {
-  loadData();
+onMounted(async () => {
+  await loadData();
+  // geojson 到位后消费排队的定位（focusByFid 在数据未载时曾只存不搜）
+  if (pendingLocateFid !== null) {
+    const fid = pendingLocateFid;
+    pendingLocateFid = null;
+    performSearchFor(fid);
+  }
   resizeListener.attach();
 });
 

@@ -182,6 +182,8 @@ const loadProjects = async () => {
 };
 
 const loadCandidates = async () => {
+  // 刷新后按稳定标识回填选中（收官审查 P1：切片成功后清空选中曾使工具卡与"去解译"自毁）
+  const previous = selectedCandidate.value;
   candidates.value = [];
   selectedCandidate.value = null;
   mineFids.value = [];
@@ -199,6 +201,13 @@ const loadCandidates = async () => {
       ...item,
       key: `${item.dataset_id ?? 'f'}-${item.display_name}-${index}`,
     }));
+    if (previous) {
+      const restored = candidates.value.find(
+        (item) => (previous.dataset_id != null && item.dataset_id === previous.dataset_id)
+          || (item.display_name === previous.display_name && item.width === previous.width && item.height === previous.height),
+      );
+      if (restored) selectedCandidate.value = restored;
+    }
     const features = geoRes?.data?.data?.features || [];
     const fids = new Set();
     for (const feature of features) {

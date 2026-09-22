@@ -65,6 +65,12 @@ def _publish_project_input(project_id, tif_path, year):
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
+    # ENVI 数据文件的 .hdr 伴生必须同拷（同词干），否则项目输入侧 rasterio 找不到头
+    # （2026-09-22 收官审查 P1：单发通道共享词干落盘正确，发布拷贝段曾把头留在 static/upload）
+    if tif_path.suffix.lstrip(".").lower() in ("dat", "bin"):
+        header = tif_path.with_suffix(".hdr")
+        if header.is_file():
+            shutil.copy2(header, target_dir / header.name)
     return target
 
 

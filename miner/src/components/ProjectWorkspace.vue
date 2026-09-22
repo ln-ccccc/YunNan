@@ -531,6 +531,9 @@ async function batchArchiveProjects(projectIds) {
     await loadProjects(currentProjectId.value);
   } catch (error) {
     window.alert(messageFrom(error, '批量归档失败，请稍后重试'));
+    // 上游可能 502 而后端已部分成功——强制刷列表避免滞留旧状态
+    checkedProjectIds.value = [];
+    await loadProjects(currentProjectId.value);
   }
 }
 
@@ -552,6 +555,8 @@ async function batchDeleteProjectsWithConfirm(projectIds) {
     await loadProjects(null);
   } catch (error) {
     window.alert(messageFrom(error, '批量删除失败，请稍后重试'));
+    checkedProjectIds.value = [];
+    await loadProjects(null);
   }
 }
 

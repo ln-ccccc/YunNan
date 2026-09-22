@@ -70,7 +70,11 @@ const loadProjects = async () => {
 
 const EDITABLE_STATUS = new Set(['ready', 'ready_empty']);
 
+let resultsSeq = 0;
+
 const loadResults = async () => {
+  // 竞态门控：快速切换项目时旧响应不得落地（收官审查 P2）
+  const seq = (resultsSeq += 1);
   results.value = [];
   if (!selectedProjectId.value) return;
   loading.value = true;
@@ -79,6 +83,7 @@ const loadResults = async () => {
     const res = await axios.get(
       `${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/classification-results`,
     );
+    if (seq !== resultsSeq) return;
     const items = res.data?.data?.items || res.data?.data || [];
     results.value = (Array.isArray(items) ? items : []).map((item, index) => ({
       key: `${item.result_id ?? index}`,
@@ -91,9 +96,10 @@ const loadResults = async () => {
       editable: EDITABLE_STATUS.has(item.vector_status),
     }));
   } catch (e) {
+    if (seq !== resultsSeq) return;
     error.value = e?.response?.data?.msg || '分类成果清单读取失败';
   } finally {
-    loading.value = false;
+    if (seq === resultsSeq) loading.value = false;
   }
 };
 

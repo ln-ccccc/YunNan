@@ -106,7 +106,17 @@ function upload(type, funUrl) {
 
   if (isSegmentation) formData.append("keepRawTiff", 'true');
 
-  const useResumable = rawFiles.some((file) => shouldUseChunkedUpload(file.size));
+  // ENVI（dat/bin/hdr）走分片通道必断链（complete 逐会话独立词干）——强制单发
+  // 并在超限时提前给出明确报错（收官审查 P1：此前静默路由进分片，失败推迟到推理）
+  const hasEnviMember = rawFiles.some((file) => ['dat', 'bin', 'hdr'].includes(
+    (file.name || '').split('.').pop().toLowerCase(),
+  ));
+  const oversizedEnvi = hasEnviMember && rawFiles.some((file) => shouldUseChunkedUpload(file.size));
+  if (oversizedEnvi) {
+    this.$message.error('ENVI 影像暂不支持分片续传（单文件需 8GB 内），请压缩或分批上传');
+    return;
+  }
+  const useResumable = !hasEnviMember && rawFiles.some((file) => shouldUseChunkedUpload(file.size));
 
   // 上传进度 + 可暂停（S2 升级：百分比·已传/总量·预计剩余时长；暂停后可续传）
   const controller = new AbortController();

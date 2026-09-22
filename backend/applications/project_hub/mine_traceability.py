@@ -45,8 +45,16 @@ def _years_payload(project, fid_value):
     )
     latest_by_year = {}
     for result in rows:
-        if result.year not in latest_by_year:
-            latest_by_year[result.year] = result
+        # 同年多任务取最新"成功"成果：矢量化失败的新行不应抹掉既有好成果
+        # （收官审查 P2：一次失败曾让溯源/看板/清单四端同年度归零）
+        if result.year in latest_by_year:
+            continue
+        if result.vector_status == "vector_failed" and any(
+            other.year == result.year and other.vector_status != "vector_failed"
+            for other in rows
+        ):
+            continue
+        latest_by_year[result.year] = result
 
     inference_root = _project_output_root(project.id) / "inference" / str(fid_value)
     ratio_doc = _read_json_file(inference_root / "class_ratio_percent.json") or {}
