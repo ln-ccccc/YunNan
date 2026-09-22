@@ -3,58 +3,17 @@ import global from '@/global'
 import { h, ref } from 'vue'
 import { ElNotification } from 'element-plus'
 import { showFullScreenLoading } from "@/utils/loading";
-import { getKmlRoiJob, kmlRoiInfer } from "@/api/upload";
+import { kmlRoiInfer } from "@/api/upload";
+import {
+  cancelInferenceJob,
+  waitForInferenceJob,
+} from "@/api/inference.js";
 import {
   buildProjectInferenceCards,
   buildInterpretationHistoryCards,
   groupUploadSourcesByTiff
 } from "@/utils/interpretationContext.mjs";
 import { checkUploadLimits, isDisconnectError } from "@/utils/uploadGuards.mjs";
-
-const inferenceTerminalStatuses = new Set([
-  'succeeded',
-  'succeeded_with_fallback',
-  'partial_failed',
-  'failed',
-  'cancelled'
-]);
-
-const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-// 轮询上限：与后端 INFERENCE_JOB_TIMEOUT_SECONDS（默认 3600s）对齐并留裕量；
-// 任务卡死在非终态时避免无限轮询
-const MAX_POLL_ATTEMPTS = 3700;
-
-// 断线自愈（江西 7f4e4d0 同款）：瞬时网络抖动不终止轮询，连续失败约 2 分钟
-// 才按断链处理——后端任务仍在执行，一次断网不打死流程
-const MAX_POLL_CONSECUTIVE_FAILURES = 120;
-
-async function waitForKmlRoiJob(jobId) {
-  let consecutiveFailures = 0;
-  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
-    let response;
-    try {
-      response = await getKmlRoiJob(jobId);
-      consecutiveFailures = 0;
-    } catch (error) {
-      const status = error?.response?.status;
-      if (typeof status === 'number' && status >= 400 && status < 500) throw error;
-      consecutiveFailures += 1;
-      if (consecutiveFailures >= MAX_POLL_CONSECUTIVE_FAILURES) {
-        const wrapped = new Error('推理任务查询持续失败，连接可能已中断');
-        wrapped.disconnect = true;
-        throw wrapped;
-      }
-      await wait(1000);
-      continue;
-    }
-    const job = response?.data?.data;
-    if (!job?.status) throw new Error("推理任务查询未返回有效状态");
-    if (inferenceTerminalStatuses.has(job.status)) return job;
-    await wait(1000);
-  }
-  throw new Error(`推理任务 ${jobId} 长时间未结束，已停止等待，请稍后在历史记录中查看`);
-}
 
 function getUploadImg(type) {
   if (type === '地物分类') {
@@ -193,22 +152,68 @@ function upload(type, funUrl) {
       (async () => {
         const jobs = [];
         const standaloneSources = [];
-        for (const tifPath of rawTiffPaths) {
-          const response = await kmlRoiInfer({
-            old_tif_path: tifPath,
-            new_tif_path: tifPath,
-            year: roiYear,
-            device: 'auto',
-            ...(this.projectId ? { project_id: this.projectId } : {})
-          });
-          const routed = response?.data?.data || {};
-          if (routed.mode === 'standalone') {
-            standaloneSources.push(...(sourcesByTiff.get(tifPath) || []));
-            continue;
+        const total = rawTiffPaths.length;
+        // 推理进度通知：常驻展示第几张/任务号；取消走后端 cancel 端点
+        // （置 cancel_requested 标记，worker 在切片间检查并终止落 cancelled 终态），
+        // 轮询观察到 cancelled 即收尾，不再提交后续影像
+        const inferProgress = ref(`第 1/${total} 张推理中`);
+        let activeJobId = '';
+        let cancelRequested = false;
+        const inferBody = {
+          name: 'InferProgressBody',
+          setup() {
+            return () => h('div', { style: 'display:flex;align-items:center;gap:12px;' }, [
+              h('span', inferProgress.value),
+              h('button', {
+                type: 'button',
+                style: 'border:none;border-radius:4px;padding:4px 10px;cursor:pointer;color:#fff;background:#f56c6c;',
+                onClick: () => {
+                  if (!activeJobId || cancelRequested) return;
+                  cancelRequested = true;
+                  inferProgress.value = '已请求取消，等待任务停止…';
+                  cancelInferenceJob(activeJobId).catch(() => {
+                    // 取消请求失败（网络/任务已结束）：恢复按钮可重试
+                    cancelRequested = false;
+                    inferProgress.value = '取消请求未送达，可重试取消';
+                  });
+                },
+              }, '取消推理'),
+            ]);
+          },
+        };
+        const inferNotification = ElNotification({
+          title: 'KML ROI 推理中',
+          message: h(inferBody),
+          duration: 0,
+          showClose: false,
+        });
+        try {
+          for (let index = 0; index < rawTiffPaths.length; index++) {
+            const tifPath = rawTiffPaths[index];
+            inferProgress.value = `第 ${index + 1}/${total} 张推理中`;
+            const response = await kmlRoiInfer({
+              old_tif_path: tifPath,
+              new_tif_path: tifPath,
+              year: roiYear,
+              device: 'auto',
+              ...(this.projectId ? { project_id: this.projectId } : {})
+            });
+            const routed = response?.data?.data || {};
+            if (routed.mode === 'standalone') {
+              standaloneSources.push(...(sourcesByTiff.get(tifPath) || []));
+              continue;
+            }
+            const createdJob = routed.job || routed;
+            if (!createdJob?.id) throw new Error("推理任务创建后未返回任务编号");
+            activeJobId = createdJob.id;
+            inferProgress.value = `第 ${index + 1}/${total} 张推理中（任务 ${createdJob.id}）`;
+            const job = await waitForInferenceJob(createdJob.id);
+            jobs.push(job);
+            // 用户取消或后端判死后不再提交后续影像，已完成部分照常展示
+            if (job.status === 'cancelled') break;
           }
-          const createdJob = routed.job || routed;
-          if (!createdJob?.id) throw new Error("推理任务创建后未返回任务编号");
-          jobs.push(await waitForKmlRoiJob(createdJob.id));
+        } finally {
+          inferNotification.close();
         }
 
         let standaloneHandled = false;
@@ -250,10 +255,11 @@ function upload(type, funUrl) {
             flashCards.push({ ...card, id: seq++ });
           });
         });
-        const total = flashCards.length;
+        const cardsTotal = flashCards.length;
         flashCards.forEach((item, idx) => {
-          item.id = total - idx;
+          item.id = cardsTotal - idx;
         });
+        const wasCancelled = jobs.some((job) => job.status === 'cancelled');
         if (flashCards.length > 0) {
           this.imgArr = flashCards;
           if (failedCount > 0) {
@@ -263,6 +269,11 @@ function upload(type, funUrl) {
           } else {
             this.$message.success(`已同步到当前项目 ${syncedFids.size} 个矿山`);
           }
+          if (wasCancelled) {
+            this.$message.info('已取消推理，已完成部分保留在历史记录');
+          }
+        } else if (wasCancelled) {
+          this.$message.info('已取消推理，未生成结果');
         } else if (standaloneHandled) {
           this.$message.success("未匹配当前项目矿山，结果仅在解译平台展示");
         } else {

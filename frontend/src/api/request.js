@@ -43,12 +43,16 @@ export function request(config) {
     (response) => {
       hideFullScreenLoading();
 
+      // silent 轮询/后台请求：失败也不弹 toast——轮询断线自愈期间每秒一条提示会刷屏，
+      // 终态/断链由调用方（waitForInferenceJob 等）统一给出结论
+      const silent = Boolean(response.config?.silent);
+
       if (response.data.code === 401) {
         redirectToLegacyLogin("expired");
         return Promise.reject(createRequestError("auth", response.data.msg || "登录已失效"));
       }
       if (response.data.code !== 0) {
-        ElMessage.error(response.data.msg);
+        if (!silent) ElMessage.error(response.data.msg);
         return Promise.reject(createRequestError("backend", response.data.msg || "请求失败"));
       }
 
@@ -61,6 +65,7 @@ export function request(config) {
       if (isCancelledRequest(error)) {
         return Promise.reject(createRequestError("aborted", "请求已取消", error));
       }
+      const silent = Boolean(error?.config?.silent);
       if (error?.response?.status === 401) {
         redirectToLegacyLogin("expired");
         return Promise.reject(createRequestError("auth", error?.response?.data?.msg || "登录已失效"));
@@ -68,12 +73,12 @@ export function request(config) {
       if (!error?.response) {
         // 网络层断链：任务可能仍在后端执行，调用方按 disconnect 语义区分提示
         const message = "网络异常，请检查后端服务是否启动";
-        ElMessage.error(message);
+        if (!silent) ElMessage.error(message);
         return Promise.reject(createRequestError("network", message, error));
       }
       // HTTP 层错误（4xx/5xx/超时）：给出提示，大量调用点自行 .catch 处理时也不会重复弹窗
       const message = error?.response?.data?.msg || "网络异常，请检查后端服务是否启动";
-      ElMessage.error(message);
+      if (!silent) ElMessage.error(message);
       return Promise.reject(createRequestError("http", message, error));
     },
   );
