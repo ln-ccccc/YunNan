@@ -69,3 +69,14 @@
 ## 4. 执行纪律
 
 沿用本会话已验证流程：每期契约/fixture 先行→提供方→消费方→集成验证；三套回归门（容器 pytest / node --test / 构建）+ 真实栈 live + GUI 实测 + ocr 规则审查新增文件；P0/P1 当期修。
+
+## 5. 执行结果（S1-S4 全部交付，2026-09-22 当日）
+
+| 期 | 提交 | 核心交付 | 验证 |
+| --- | --- | --- | --- |
+| S1 格式扩展 | cad9b5a | raster_formats 模块（IMG/ENVI/JP2 直读、ENVI 成对校验、共享词干落盘）、全链泛化 | backend 726/0（新 9 例）+ GUI IMG 全链实测 |
+| S2 导入体验 | c2d25de | uploadProgress 纯函数（滑动窗口 ETA）、进度文案"42% · 2.4GB/5.6GB · 预计剩余"、暂停（可续传）按钮 | frontend 47/47 + build |
+| S3 裁剪切片 | c28e4cb | imagery_processing 三端点（candidates/clip/slice）、SVG 手绘多边形、切片参数预设 | backend 885/0（新 11 例）+ live（572MB 切 6 片/矿山裁剪）+ GUI |
+| S4 版面文档 | 本提交 | 上传卡格式适配说明折叠区、计划文档回填 | build + 测试全绿 |
+
+最终基线：backend **885/0**、frontend **47/47**、miner **64/64**。

@@ -91,6 +91,19 @@
         支持拖拽或点击选择，自动过滤非影像文件；ENVI 影像请将 .dat/.bin 与同名 .hdr 一起选择
       </div>
     </el-row>
+    <el-row justify="center">
+      <el-collapse class="format-help">
+        <el-collapse-item title="格式适配说明与大小上限" name="fmt">
+          <div class="format-help-body">
+            <p>· 地理栅格：tif / tiff / img（ERDAS）/ jp2 / ENVI（.dat 或 .bin + 同名 .hdr 成对上传）——直读不转换，需带坐标系（CRS）</p>
+            <p>· DOM / DSM 影像通常为 GeoTIFF 或 IMG，直接上传即可</p>
+            <p>· 多光谱 / 高光谱：多波段直读，光谱指数页可指定 NIR/RED/GREEN/SWIR 波段号</p>
+            <p>· 单文件上限 8GB（超过自动走分片续传，上限 100GB）；ENVI 头文件不计入大小</p>
+            <p>· 分片上传支持暂停续传——暂停后重新点击开始处理将从断点继续</p>
+          </div>
+        </el-collapse-item>
+      </el-collapse>
+    </el-row>
     <slot />
   </el-card>
 </template>
@@ -246,6 +259,16 @@ export default {
 .upload-dropzone ~ .el-row {
   margin-top: 8px;
 }
+
+.format-help { margin-top: 6px; width: 100%; border: none; }
+.format-help :deep(.el-collapse-item__header) {
+  font-size: 12px; color: #909399; height: 32px; line-height: 32px;
+  border-bottom: none; justify-content: center;
+}
+.format-help :deep(.el-collapse-item__wrap) { border-bottom: none; }
+.format-help :deep(.el-collapse-item__content) { padding-bottom: 4px; }
+.format-help-body { font-size: 12px; color: #909399; line-height: 1.8; text-align: left; }
+.format-help-body p { margin: 0; }
 
 .selected-files {
   margin-top: 10px;
