@@ -15,6 +15,14 @@ from rasterio.windows import Window, from_bounds
 WGS84 = "EPSG:4326"
 UI_SEGMENT_SIZE = (512, 512)
 
+# 超大 ROI 裁剪上限：bbox 任一边超过该值即降采样读（模型输入本就是 512×512，
+# 超过该上限的细节对产物无增益，却能避免数 GB 裁剪 tif 落盘与全量读入的内存峰值）
+MAX_CROP_EDGE = 2048
+
+# 黑边判定阈值：RGB 前 3 波段最大值 ≤ 该值视为无有效信息（江西 B2 同款；
+# 对深色真实水体的边界风险已知——深水像元通常仍 > 2，且展示/掩膜解耦后误伤只影响掩膜边缘）
+NEAR_BLACK_MAX = 2
+
 
 def has_valid_geotransform(transform: Affine) -> bool:
     """Return whether a raster transform is finite, invertible, and non-identity."""
@@ -185,7 +193,11 @@ def _geom_bounds(geom: Dict) -> Optional[Tuple[float, float, float, float]]:
 
 
 def crop_bbox_from_raster(raster_path: Path, geom_4326: Dict, out_path: Path) -> bool:
-    """Crop by polygon bounding box and keep original pixels (no polygon masking)."""
+    """Crop by polygon bounding box and keep original pixels (no polygon masking).
+
+    bbox 任一边超过 MAX_CROP_EDGE 时按长边比例降采样读窗口（走 overviews/抽稀），
+    transform 相应缩放——超大影像的 ROI 不再产生数 GB 的全分辨率裁剪 tif。
+    """
     with rasterio.open(raster_path) as src:
         if src.crs is None:
             raise RuntimeError(f"Missing CRS for raster: {raster_path}")
@@ -208,7 +220,15 @@ def crop_bbox_from_raster(raster_path: Path, geom_4326: Dict, out_path: Path) ->
         if window.width <= 0 or window.height <= 0:
             return False
 
-        out_image = src.read(window=window, boundless=False)
+        out_transform = src.window_transform(window)
+        if max(window.width, window.height) > MAX_CROP_EDGE:
+            scale = MAX_CROP_EDGE / max(window.width, window.height)
+            out_w = max(1, round(window.width * scale))
+            out_h = max(1, round(window.height * scale))
+            out_image = src.read(window=window, out_shape=(src.count, out_h, out_w))
+            out_transform = out_transform * Affine.scale(window.width / out_w, window.height / out_h)
+        else:
+            out_image = src.read(window=window, boundless=False)
         if out_image.size == 0 or out_image.shape[1] == 0 or out_image.shape[2] == 0:
             return False
 
@@ -217,7 +237,7 @@ def crop_bbox_from_raster(raster_path: Path, geom_4326: Dict, out_path: Path) ->
             {
                 "height": out_image.shape[1],
                 "width": out_image.shape[2],
-                "transform": src.window_transform(window),
+                "transform": out_transform,
                 "count": out_image.shape[0],
                 "compress": "lzw",
             }
@@ -227,6 +247,35 @@ def crop_bbox_from_raster(raster_path: Path, geom_4326: Dict, out_path: Path) ->
         with rasterio.open(out_path, "w", **profile) as dst:
             dst.write(out_image)
     return True
+
+
+def compute_tile_valid_mask(crop_tif_path: Path, target_size: Tuple[int, int]) -> Optional[np.ndarray]:
+    """计算 ROI 裁剪栅格的有效像元掩膜（True=有效），与推理瓦片同尺寸。
+
+    无效 = 掩膜带 0 ∪ nodata 全波段命中 ∪ RGB 前 3 波段 max ≤ NEAR_BLACK_MAX（黑边/补零区）。
+    模型输入侧 read_tiff_as_rgb 会把无效像元置白展示，但模型仍会对白区给出预测——
+    本掩膜供产物侧把这些像元的类别置 255（nodata 约定）并置黑展示。读取失败返回 None
+    （调用方按全有效处理，等价于掩膜特性引入前的行为）。
+    """
+    try:
+        with rasterio.open(str(crop_tif_path)) as src:
+            target_w, target_h = int(target_size[0]), int(target_size[1])
+            if target_w <= 0 or target_h <= 0:
+                return None
+            data = src.read(out_shape=(src.count, target_h, target_w))
+            band_mask = src.read_masks(1, out_shape=(target_h, target_w))
+            nodata = src.nodata
+    except Exception:
+        return None
+
+    data = np.transpose(data, (1, 2, 0))
+    invalid = band_mask == 0
+    if nodata is not None:
+        invalid |= np.all(data == nodata, axis=2)
+    rgb = data[:, :, : min(3, data.shape[2])].astype(np.int32)
+    if rgb.shape[2] > 0:
+        invalid |= np.max(rgb, axis=2) <= NEAR_BLACK_MAX
+    return ~invalid
 
 
 def tif_to_png(tif_path: Path, png_path: Path, resize_to: Optional[Tuple[int, int]] = UI_SEGMENT_SIZE) -> bool:
@@ -359,6 +408,21 @@ def crop_prediction_by_polygon(
     return ok_img and ok_mask
 
 
+def load_valid_mask_png(valid_mask_path: Optional[Path], target_hw: Tuple[int, int]) -> Optional[np.ndarray]:
+    """读取 prepare_tiles 落盘的有效掩膜 PNG（255=有效/0=无效），缩放到目标尺寸。"""
+    if valid_mask_path is None or not Path(valid_mask_path).exists():
+        return None
+    mask = cv2.imread(str(valid_mask_path), cv2.IMREAD_UNCHANGED)
+    if mask is None:
+        return None
+    if mask.ndim == 3:
+        mask = mask[:, :, 0]
+    target_h, target_w = int(target_hw[0]), int(target_hw[1])
+    if mask.shape[:2] != (target_h, target_w):
+        mask = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    return mask > 127
+
+
 def draw_polygon_boundary_on_prediction(
     *,
     pred_image_path: Path,
@@ -368,6 +432,7 @@ def draw_polygon_boundary_on_prediction(
     geom_4326: Optional[Dict] = None,
     out_image_path: Path,
     out_mask_path: Path,
+    valid_mask_path: Optional[Path] = None,
     boundary_color: Tuple[int, int, int] = (0, 255, 255),
     boundary_width: int = 3,
 ) -> bool:
@@ -381,6 +446,10 @@ def draw_polygon_boundary_on_prediction(
     if tile_img.shape[:2] != pred_img.shape[:2]:
         tile_img = cv2.resize(tile_img, (pred_img.shape[1], pred_img.shape[0]), interpolation=cv2.INTER_NEAREST)
 
+    # 黑边掩膜：无有效信息的像元（黑边/补零/nodata）不保留模型预测——
+    # 类别置 255（与 label.tif nodata 约定一致，变化矩阵/占比/矢量化自动剔除）、展示置黑
+    valid_mask = load_valid_mask_png(valid_mask_path, pred_mask.shape[:2])
+
     contours = []
     if raster_path is not None and geom_4326 is not None:
         poly_mask = build_polygon_mask_for_prediction(raster_path, geom_4326, (pred_img.shape[1], pred_img.shape[0]))
@@ -390,11 +459,14 @@ def draw_polygon_boundary_on_prediction(
         valid = (~border_connected_bg_mask(tile_img)).astype(np.uint8)
         contours, _ = cv2.findContours(valid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     outlined = pred_img.copy()
+    if valid_mask is not None:
+        outlined[~valid_mask] = 0
     if contours:
         cv2.drawContours(outlined, contours, -1, boundary_color, boundary_width)
 
-    # Keep full-scene prediction mask. Only overlay the KML boundary line on the image.
     out_mask = pred_mask.copy()
+    if valid_mask is not None:
+        out_mask[~valid_mask] = 255
 
     out_image_path.parent.mkdir(parents=True, exist_ok=True)
     ok_img = bool(cv2.imwrite(str(out_image_path), outlined))

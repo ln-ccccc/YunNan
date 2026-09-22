@@ -9,15 +9,21 @@ import cv2
 import numpy as np
 from applications.kml_roi.change_matrix import write_change_matrix_csv, write_class_ratio_json
 from applications.kml_roi.raster_ops import (
+    UI_SEGMENT_SIZE,
     border_connected_bg_mask,
+    compute_tile_valid_mask,
     crop_bbox_from_raster,
     crop_prediction_by_polygon,
     draw_polygon_boundary_on_prediction,
+    load_valid_mask_png,
     tif_to_png,
     write_label_geotiff,
 )
 
 LOGGER = logging.getLogger(__name__)
+
+# 有效像元占比低于该值的 ROI（整块黑边/补零区）直接跳过，不进推理队列
+MIN_VALID_PIXEL_RATIO = 0.005
 
 
 def parse_year(v: Optional[str]) -> Optional[int]:
@@ -102,6 +108,21 @@ def prepare_tiles(
             ok_png = tif_to_png(cropped_tif, cropped_png)
             if not ok_png:
                 continue
+
+            # 黑边掩膜（2026-09-22）：按推理瓦片尺寸计算有效像元，供产物侧把无有效
+            # 信息像元的类别置 255；整块黑边的 ROI 直接跳过（超大影像零成本略过）
+            valid_mask = compute_tile_valid_mask(cropped_tif, UI_SEGMENT_SIZE)
+            if valid_mask is not None:
+                valid_ratio = float(valid_mask.mean())
+                if valid_ratio < MIN_VALID_PIXEL_RATIO:
+                    LOGGER.info(
+                        "ROI 几乎全为黑边/无效像元，跳过推理: fid=%s tag=%s valid=%.4f",
+                        fid, tag, valid_ratio,
+                    )
+                    cropped_tif.unlink(missing_ok=True)
+                    cropped_png.unlink(missing_ok=True)
+                    continue
+                cv2.imwrite(str(tile_dir / f"{src_base}_valid.png"), (valid_mask.astype(np.uint8)) * 255)
 
             file_names.append(f"{src_base}.png")
             variant_specs.append(
@@ -259,6 +280,7 @@ def distribute_outputs(
 
             if not src_img.exists() or not src_mask.exists():
                 continue
+            valid_mask_path = tile_dir / f"{src_base}_valid.png" if tile_dir is not None else None
             if spec.get("already_cropped"):
                 tile_img = tile_dir / f"{src_base}.png" if tile_dir is not None else None
                 if tile_img is not None and tile_img.exists():
@@ -270,6 +292,7 @@ def distribute_outputs(
                         geom_4326=spec.get("geom"),
                         out_image_path=dst_img,
                         out_mask_path=dst_mask,
+                        valid_mask_path=valid_mask_path,
                     )
                     if ok_crop:
                         shutil.copy2(tile_img, dst_src)
@@ -298,6 +321,11 @@ def distribute_outputs(
                         raise RuntimeError(f"无法读取模型分类掩膜: {src_mask}")
                     if raw_labels.ndim == 3:
                         raw_labels = raw_labels[:, :, 0]
+                    # 黑边掩膜同步到标签 GeoTIFF：无有效信息像元置 255（nodata 约定），
+                    # 矢量生成按类别码迭代天然跳过，变化矩阵/占比按 <n 过滤天然剔除
+                    valid_mask = load_valid_mask_png(valid_mask_path, raw_labels.shape[:2])
+                    if valid_mask is not None:
+                        raw_labels[~valid_mask] = 255
                     write_label_geotiff(
                         raw_labels,
                         tile_dir / f"{src_base}.tif",
