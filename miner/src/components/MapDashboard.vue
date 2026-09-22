@@ -61,6 +61,7 @@
       :indicesData="mineIndices"
       :changeMatrixData="mineChangeMatrix"
       :originalImageryData="mineOriginalImagery"
+      :traceabilityData="mineTraceability"
       :selectedTab="selectedTab"
       :formatMaybeNumber="formatMaybeNumber"
       :formatTrend="formatTrend"
@@ -171,6 +172,7 @@ const {
   mineIndices,
   mineChangeMatrix,
   mineOriginalImagery,
+  mineTraceability,
   downloadOriginalImagery,
   loadData,
   applyFilters,

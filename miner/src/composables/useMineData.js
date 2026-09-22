@@ -59,6 +59,7 @@ export function useMineData(projectId) {
 
   const mineChangeMatrix = ref(null);
   const mineOriginalImagery = ref(null);
+    const mineTraceability = ref(null);
   // fetchIndices/fetchChangeMatrix 的竞态序号：过期响应直接丢弃
   let fetchIndicesSeq = 0;
   const inferenceRunning = ref(false);
@@ -173,6 +174,7 @@ export function useMineData(projectId) {
       mineChangeMatrix.value = null;
       // 失败路径此前不清原始影像：矿山 B 的弹窗会残留矿山 A 的溯源列表
       mineOriginalImagery.value = null;
+      mineTraceability.value = null;
       await fetchOriginalImagery(fid, seq);
     }
   };
@@ -195,6 +197,19 @@ export function useMineData(projectId) {
       };
     }
     await fetchOriginalImagery(fid, seq);
+    await fetchTraceability(fid, seq);
+  };
+
+  // 图斑溯源聚合（M3）：历年成果/占比/修订一次拉取，驱动详情弹窗"地物分类"溯源视图
+  const fetchTraceability = async (fid, seq = fetchIndicesSeq) => {
+    try {
+      const res = await axios.get(apiUrl(projectApiPath(`/mines/${encodeURIComponent(fid)}/traceability`)));
+      if (seq !== fetchIndicesSeq) return;
+      mineTraceability.value = unwrap(res) || { fid: Number(fid), years: [] };
+    } catch (e) {
+      if (seq !== fetchIndicesSeq) return;
+      mineTraceability.value = { fid: Number(fid), years: [] };
+    }
   };
 
   // 地物分类原始影像（溯源）：与变化矩阵同竞态门控，列表轻量随详情一并拉取
@@ -388,6 +403,7 @@ export function useMineData(projectId) {
     mineIndices,
     mineChangeMatrix,
     mineOriginalImagery,
+    mineTraceability,
     downloadOriginalImagery,
     dataLoadError,
     inferenceRunning,

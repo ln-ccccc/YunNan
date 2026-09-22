@@ -64,7 +64,54 @@
           </template>
 
           <template v-else-if="selectedTab === 'Classification'">
-            <div v-if="classificationItems.length" class="classification-container">
+            <template v-if="traceabilityYears.length">
+              <div class="trace-container">
+                <div v-for="row in traceabilityYears" :key="row.key" class="trace-year-card">
+                  <div class="trace-year-head">
+                    <strong>{{ row.year ?? '未知年份' }}</strong>
+                    <span class="trace-meta">图斑 {{ row.featureCount }} 个 · {{ row.vectorStatus === 'ready' ? '矢量就绪' : (row.vectorStatus || '状态未知') }} · 修订 {{ row.revisionCount }} 次</span>
+                  </div>
+                  <div class="trace-images">
+                    <div class="trace-img-box">
+                      <img v-if="row.resultImage" :src="row.resultImage" class="trace-img" :alt="`${row.year} 成果`" />
+                      <span class="trace-img-label">解译成果</span>
+                    </div>
+                    <div class="trace-img-box">
+                      <img v-if="row.sourceImage" :src="row.sourceImage" class="trace-img" :alt="`${row.year} 原图`" />
+                      <span class="trace-img-label">原始影像</span>
+                    </div>
+                  </div>
+                  <div v-if="row.classRatio" class="trace-ratio">
+                    <span v-for="(val, name) in row.classRatio" :key="name" class="trace-ratio-chip" :class="{ zero: val < 0.5 }">
+                      {{ formatRatioClass(name) }} {{ val.toFixed(1) }}%
+                    </span>
+                  </div>
+                  <div v-if="row.revisions.length" class="trace-revisions">
+                    <span v-for="rev in row.revisions.slice(0, 4)" :key="rev.key" class="trace-rev-chip">
+                      {{ rev.label }} · {{ rev.actor }} · {{ rev.action }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div v-if="ratioSeriesRows.length" class="ratio-series">
+                <div class="ratio-series-title">历年地类占比（%）</div>
+                <table class="ratio-table">
+                  <thead>
+                    <tr>
+                      <th>地类</th>
+                      <th v-for="year in traceabilityYears.map((y) => y.year).slice().reverse()" :key="year">{{ year }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in ratioSeriesRows" :key="row.name">
+                      <td class="row-label">{{ row.label }}</td>
+                      <td v-for="(val, i) in row.values" :key="i">{{ val.toFixed(1) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <div v-else-if="classificationItems.length" class="classification-container">
               <div v-for="item in classificationItems" :key="item.key" class="class-image-box">
                 <div class="class-title">{{ item.title }}（{{ item.year ?? '未知年份' }}）</div>
                 <div class="class-image-wrapper">
@@ -138,7 +185,14 @@
 <script setup>
 import { computed, defineProps, defineEmits, ref, watch, nextTick, onUnmounted } from 'vue';
 import * as echarts from 'echarts';
-import { buildClassificationItems, buildMatrixYearLabels, buildOriginalImageryItems } from './mineDetailPresentation.js';
+import {
+  buildClassificationItems,
+  buildMatrixYearLabels,
+  buildOriginalImageryItems,
+  buildRatioSeriesRows,
+  buildTraceabilityYears,
+  formatRatioClass,
+} from './mineDetailPresentation.js';
 
 // 切换项目重建组件时释放 echarts 实例（与 RightSidebar 的清理模式对齐）
 onUnmounted(() => {
@@ -152,6 +206,7 @@ const props = defineProps({
   indicesData: Object,
   changeMatrixData: Object,
   originalImageryData: Object,
+  traceabilityData: Object,
   selectedTab: String,
   formatMaybeNumber: Function,
   formatTrend: Function,
@@ -166,6 +221,8 @@ const currentIndexData = computed(() => props.indicesData?.[props.selectedTab?.t
 const classificationItems = computed(() => buildClassificationItems(props.changeMatrixData));
 const matrixYearLabels = computed(() => buildMatrixYearLabels(props.changeMatrixData));
 const originalImageryItems = computed(() => buildOriginalImageryItems(props.originalImageryData));
+const traceabilityYears = computed(() => buildTraceabilityYears(props.traceabilityData));
+const ratioSeriesRows = computed(() => buildRatioSeriesRows(props.traceabilityData));
 
 const formatLabel = (label) => {
   if (!label) return '';
@@ -446,6 +503,50 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
   background: rgba(255, 255, 255, 0.8);
   border-radius: 4px;
 }
+
+.trace-container {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.trace-year-card {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.trace-year-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.trace-meta { font-size: 12px; color: #8da3b6; }
+
+.trace-images { display: flex; gap: 10px; }
+.trace-img-box { flex: 1; min-width: 0; position: relative; }
+.trace-img { width: 100%; border-radius: 6px; display: block; }
+.trace-img-label {
+  position: absolute; left: 8px; bottom: 6px;
+  font-size: 11px; color: #000;
+  background: rgba(255, 255, 255, 0.8); border-radius: 4px; padding: 1px 6px;
+}
+
+.trace-ratio { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.trace-ratio-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: rgba(78, 205, 196, 0.15); color: #4ecdc4;
+}
+.trace-ratio-chip.zero { color: #5a7d75; background: rgba(255, 255, 255, 0.05); }
+
+.trace-revisions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.trace-rev-chip { font-size: 11px; color: #8da3b6; background: rgba(255, 255, 255, 0.05); border-radius: 4px; padding: 2px 6px; }
+
+.ratio-series { margin-top: 14px; }
+.ratio-series-title { font-size: 13px; color: #4ecdc4; margin-bottom: 6px; }
+.ratio-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ratio-table th, .ratio-table td { border: 1px solid rgba(255, 255, 255, 0.06); padding: 4px 8px; text-align: center; color: #cfe3de; }
+.ratio-table .row-label { color: #8da3b6; text-align: left; }
 
 .original-imagery-container {
   margin-top: 10px;

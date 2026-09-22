@@ -48,9 +48,10 @@ test('NAV_ITEMS covers the seven modules with unique keys and hashes', () => {
     assert.equal(typeof item.label, 'string');
     assert.equal(typeof item.implemented, 'boolean');
   }
-  // M1 诚实施标：只有项目管理落地，其余模块占位（M3/M4 填充后翻转）
+  // 诚实施标：M1 项目管理 + M3 图斑编辑落地，其余五模块占位（M4 填充后翻转）
   assert.equal(NAV_ITEMS.find((item) => item.key === 'projects').implemented, true);
-  assert.equal(NAV_ITEMS.filter((item) => !item.implemented).length, 6);
+  assert.equal(NAV_ITEMS.find((item) => item.key === 'editing').implemented, true);
+  assert.equal(NAV_ITEMS.filter((item) => !item.implemented).length, 5);
 });
 
 test('map hash keeps the project context', () => {

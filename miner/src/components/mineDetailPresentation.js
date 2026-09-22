@@ -75,3 +75,58 @@ export function buildOriginalImageryItems(originalImageryData) {
     year: item.year ?? null,
   }));
 }
+
+/**
+ * 溯源面板构建（M3）：traceability 聚合 → 渲染行。
+ * 历年成果行（图 URL + 占比 + 图斑数）按年倒序；占比序列与修订行随年份挂接。
+ */
+export function buildTraceabilityYears(traceability) {
+  const years = traceability?.years;
+  if (!Array.isArray(years)) return [];
+  return [...years]
+    .sort((a, b) => (b.year ?? 0) - (a.year ?? 0))
+    .map((entry) => ({
+      key: `${entry.year}-${entry.result_id}`,
+      year: entry.year ?? null,
+      resultId: entry.result_id ?? null,
+      vectorStatus: entry.vector_status ?? null,
+      featureCount: entry.feature_count ?? 0,
+      resultImage: entry.result_image_url || null,
+      sourceImage: entry.source_image_url || null,
+      classRatio: entry.class_ratio_percent || null,
+      topClass: entry.class_ratio_percent
+        ? Object.entries(entry.class_ratio_percent).sort((a, b) => b[1] - a[1])[0]?.[0] || null
+        : null,
+      revisionCount: Array.isArray(entry.revisions) ? entry.revisions.length : 0,
+      revisions: (entry.revisions || []).map((r) => ({
+        key: `${entry.year}-${r.revision_no}-${r.created_at || ''}`,
+        label: `v${r.revision_no}`,
+        action: r.action || '',
+        actor: r.actor || '',
+        time: r.created_at || '',
+      })),
+    }));
+}
+
+const RATIO_CLASS_LABELS = {
+  grassland: '草地', forest: '林地', building: '建筑', road: '道路', bareground: '裸地', water: '水体',
+};
+
+export function formatRatioClass(name) {
+  return RATIO_CLASS_LABELS[name] || name || '';
+}
+
+/** 占比序列 → 堆叠时序数据行（每类一行，按年取值），供简单条形/表格渲染 */
+export function buildRatioSeriesRows(traceability) {
+  const series = traceability?.ratio_series;
+  const years = series?.years;
+  const percent = series?.series_percent;
+  if (!Array.isArray(years) || !years.length || !percent || typeof percent !== 'object') return [];
+  return Object.entries(percent)
+    .filter(([, values]) => Array.isArray(values))
+    .map(([name, values]) => ({
+      name,
+      label: RATIO_CLASS_LABELS[name] || name,
+      values: years.map((_, index) => Number(values[index] ?? 0)),
+    }));
+}

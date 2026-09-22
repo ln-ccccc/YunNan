@@ -110,6 +110,19 @@ export const projectApi = {
     const safeProjectId = positiveRouteId(projectId, '项目');
     return requestJson('POST', `/api/projects/${safeProjectId}/backups/import`, { body, cookie });
   },
+  listClassificationResults(projectId, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    return requestJson('GET', `/api/projects/${safeProjectId}/classification-results`, { cookie });
+  },
+  getMineTraceability(projectId, fid, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    const safeFid = positiveRouteId(fid, '矿山');
+    return requestJson(
+      'GET',
+      `/api/projects/${safeProjectId}/mines/${safeFid}/traceability`,
+      { cookie },
+    );
+  },
   getProjectOriginalImageryDownload(projectId, jobId, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');
     const safeJobId = String(jobId ?? '');

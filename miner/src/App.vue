@@ -42,8 +42,9 @@
           @back-to-projects="returnToProjectsView"
         />
       </div>
+      <EditingView v-if="currentView === 'editing'" @go-projects="navigateToView(navItems[0])" />
       <ModulePlaceholder
-        v-if="placeholderItem"
+        v-else-if="placeholderItem"
         :label="placeholderItem.label"
         :milestone="placeholderItem.milestone"
         @go-projects="navigateToView(navItems[0])"
@@ -60,6 +61,7 @@ import { resolveInitialView } from './auth/authGuards.js';
 import { fetchSession, login as loginRequest, logout as logoutRequest } from './auth/sessionClient.js';
 import LoginPage from './components/LoginPage.vue';
 import MapDashboard from './components/MapDashboard.vue';
+import EditingView from './components/EditingView.vue';
 import ModulePlaceholder from './components/ModulePlaceholder.vue';
 import ProjectWorkspace from './components/ProjectWorkspace.vue';
 import { NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
@@ -68,7 +70,6 @@ import { NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveView
 const PLACEHOLDER_MILESTONES = {
   imagery: 'M4',
   interpretation: 'M4',
-  editing: 'M3',
   data: 'M4',
   search: 'M4',
   settings: 'M4',

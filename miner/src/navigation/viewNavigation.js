@@ -15,7 +15,7 @@ export const NAV_ITEMS = [
   { key: 'projects', label: '项目管理', hash: VIEW_HASH.projects, implemented: true },
   { key: 'imagery', label: '影像管理', hash: VIEW_HASH.imagery, implemented: false },
   { key: 'interpretation', label: '智能解译', hash: VIEW_HASH.interpretation, implemented: false },
-  { key: 'editing', label: '图斑编辑', hash: VIEW_HASH.editing, implemented: false },
+  { key: 'editing', label: '图斑编辑', hash: VIEW_HASH.editing, implemented: true },
   { key: 'data', label: '数据管理', hash: VIEW_HASH.data, implemented: false },
   { key: 'search', label: '查询搜索', hash: VIEW_HASH.search, implemented: false },
   { key: 'settings', label: '系统设置', hash: VIEW_HASH.settings, implemented: false },

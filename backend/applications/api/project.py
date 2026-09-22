@@ -377,6 +377,22 @@ def project_map_manifest_api(project_id):
         )
 
 
+@project_api.get("/<int:project_id>/classification-results")
+@login_required
+def project_classification_results_list_api(project_id):
+    """分类成果清单（M3 编辑导航入口数据）。"""
+    try:
+        from applications.project_hub.mine_traceability import (
+            list_project_classification_results,
+        )
+
+        return success_api(data=list_project_classification_results(project_id))
+    except Exception as exc:
+        return business_or_server_failure(
+            exc, "分类成果清单读取失败", logger=LOGGER, business_status=404
+        )
+
+
 @project_api.get("/<int:project_id>/classification-results/<int:result_id>")
 @login_required
 def classification_result_api(project_id, result_id):
@@ -494,6 +510,20 @@ def project_mines_original_imagery_api(project_id):
     except Exception as exc:
         return business_or_server_failure(
             exc, "项目数据读取失败", logger=LOGGER, business_status=404
+        )
+
+
+@project_api.get("/<int:project_id>/mines/<int:fid>/traceability")
+@login_required
+def project_mine_traceability_api(project_id, fid):
+    """图斑溯源（M3）：按矿山一键调取历年成果/占比/修订/变化/指数。"""
+    try:
+        from applications.project_hub.mine_traceability import build_mine_traceability
+
+        return success_api(data=build_mine_traceability(project_id, fid))
+    except Exception as exc:
+        return business_or_server_failure(
+            exc, "图斑溯源数据读取失败", logger=LOGGER, business_status=404
         )
 
 
