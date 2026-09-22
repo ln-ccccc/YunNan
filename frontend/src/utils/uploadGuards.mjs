@@ -38,6 +38,10 @@ export function checkUploadLimits(files) {
  */
 export function isDisconnectError(error) {
   if (!error) return false;
+  // request.js 统一拦截器打的 kind 标记：精确分支优先
+  if (error.kind) {
+    return error.kind === 'network';
+  }
   if (error.disconnect) return true;
   if (error.response) return false;
   const code = String(error.code || '');

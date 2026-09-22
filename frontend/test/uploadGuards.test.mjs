@@ -56,3 +56,13 @@ test('isDisconnectError classifies network breaks but not HTTP failures', () => 
   assert.equal(isDisconnectError(new Error('普通业务失败')), false);
   assert.equal(isDisconnectError(null), false);
 });
+
+test('isDisconnectError prefers the unified request kind marker over message guessing', () => {
+  assert.equal(isDisconnectError(Object.assign(new Error('x'), { kind: 'network' })), true);
+  // http/backend/auth/aborted 都是"已到达服务器或主动取消"，不是断链
+  assert.equal(isDisconnectError(Object.assign(new Error('x'), { kind: 'http' })), false);
+  assert.equal(isDisconnectError(Object.assign(new Error('x'), { kind: 'backend' })), false);
+  assert.equal(isDisconnectError(Object.assign(new Error('x'), { kind: 'auth' })), false);
+  // 用户取消上传不能被误判为断链（否则提示语会谎称"任务可能仍在执行"）
+  assert.equal(isDisconnectError(Object.assign(new Error('请求已取消'), { kind: 'aborted' })), false);
+});

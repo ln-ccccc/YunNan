@@ -1,10 +1,11 @@
-import { requestfile } from "@/api/requestfile.js"
 import {request} from "@/api/request.js"
 export function createSrc(formdata, options = {}) {
-    return requestfile({
+    return request({
         method: 'POST',
         url: '/api/file/upload',
         data:formdata,
+        // 上传自带进度通知（getUploadImg）：silent 避免全屏锁死且保证取消按钮可点
+        silent: true,
         // 透传上传进度回调与取消信号（8GB 大文件 UX：进度可取消，江西 F2 同款）
         signal: options.signal,
         onUploadProgress: options.onUploadProgress,
@@ -13,7 +14,8 @@ export function createSrc(formdata, options = {}) {
             return data
         }],
         headers:{
-            'Content-Type':'multipart/form-data'
+            'Accept': 'multipart/form-data',
+            'Content-Type': 'multipart/form-data'
         }
     })
 }

@@ -61,10 +61,18 @@ export default {
     };
   },
   mounted() {
-    window.onresize = () => {
+    // 响应式折叠：addEventListener 便于卸载时移除（原先覆盖 window.onresize 且卸载后仍持有已销毁实例）
+    this.handleResize = () => {
       this.isCollapse = document.documentElement.clientWidth <= 1100;
     };
+    this.handleResize();
+    window.addEventListener("resize", this.handleResize);
     document.body.style.overflow = "hidden";
+  },
+  beforeUnmount() {
+    window.removeEventListener("resize", this.handleResize);
+    // 离开应用壳（登录/404 页）时恢复滚动，原先一直锁死 body
+    document.body.style.overflow = "";
   },
   updated(){
     this.activeIndex=this.$route.path

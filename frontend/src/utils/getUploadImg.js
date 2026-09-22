@@ -301,8 +301,8 @@ function upload(type, funUrl) {
   }).catch((err) => {
     notification.close();
     uploadInFlight = false;
-    // 业务失败（code!==0）已被 requestfile 拦截器提示，这里只处理 HTTP/网络层
-    const cancelled = err?.code === 'ERR_ABORTED' || err?.code === 'canceled'
+    // 业务失败（code!==0）已被统一拦截器提示，这里只处理取消/HTTP/网络层
+    const cancelled = err?.kind === 'aborted' || err?.code === 'ERR_ABORTED' || err?.code === 'canceled'
       || /cancel|abort/i.test(String(err?.message || ''));
     if (cancelled) {
       this.$message.info('已取消上传');
