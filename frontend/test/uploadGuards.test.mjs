@@ -23,7 +23,7 @@ test('checkUploadLimits rejects a single file over 8GB without scanning the rest
   ]);
   assert.equal(result.ok, false);
   assert.match(result.message, /huge\.tif/);
-  assert.match(result.message, /8GB/);
+  assert.match(result.message, /100GB/);
 });
 
 test('checkUploadLimits rejects batches whose total exceeds the 8.5GB budget', () => {
@@ -34,7 +34,7 @@ test('checkUploadLimits rejects batches whose total exceeds the 8.5GB budget', (
     { name: 'c.tif', size: half },
   ]);
   assert.equal(result.ok, false);
-  assert.match(result.message, /8\.5GB/);
+  assert.match(result.message, /100GB/);
 });
 
 test('checkUploadLimits tolerates empty and malformed input', () => {

@@ -34,6 +34,10 @@ MAX_TIFF_SIZE_BYTES = MAX_TIFF_SIZE_MB * 1024 * 1024
 # 图斑 bbox 窗口裁剪，内存与影像大小解耦；MAX_TIFF_SIZE_MB 仅约束
 # process_uploaded_tiff（切片+预览渲染整图读内存）等预处理环节
 MAX_UPLOAD_TIFF_SIZE_MB = 8192
+# 分片续传通道的总量上限（100GB，2026-09-22）：单发 multipart 通道仍受
+# MAX_UPLOAD_TIFF_SIZE_MB 约束（gunicorn 单请求超时不适合小时级长传），
+# 超过前端阈值（512MB）的文件走 init/chunk/complete 三端点分片续传
+UPLOAD_SESSION_MAX_TOTAL_MB = 102400
 LARGE_IMAGE_THRESHOLD = (1024, 1024) # 大图阈值 (width, height)
 SLICE_SIZE = 1024 # 切片大小
 

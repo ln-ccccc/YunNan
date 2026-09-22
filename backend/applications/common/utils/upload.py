@@ -23,13 +23,43 @@ def get_photo(page, limit):
 
 
 def upload_one(photo, mime, type_=0, enable_slicing=False, keep_tiff_raw=False):
-    from applications.common.utils.tiff_processor import is_tiff_file, process_uploaded_tiff
-
     filename = photos.save(photo, name=str(uuid.uuid4()) + ".")
     upload_url = current_app.config.get("UPLOADED_PHOTOS_DEST")
     full_path = os.path.join(upload_url, filename)
 
     original_filename = getattr(photo, 'filename', filename)
+    return _process_saved_upload(
+        full_path=full_path,
+        filename=filename,
+        original_filename=original_filename,
+        mime=mime,
+        type_=type_,
+        enable_slicing=enable_slicing,
+        keep_tiff_raw=keep_tiff_raw,
+    )
+
+
+def upload_one_from_path(full_path, original_filename, mime, type_=0, enable_slicing=False, keep_tiff_raw=False):
+    """分片合并产物入口：文件已按上传目标命名规则落位，跳过 photos.save 的二次拷贝。
+
+    其余处理（tiff 校验/切片/优雅降级/photo 记录/返回形状）与单发通道完全同源，
+    保证分片上传的响应契约与 /api/file/upload 零漂移。
+    """
+    return _process_saved_upload(
+        full_path=full_path,
+        filename=os.path.basename(full_path),
+        original_filename=original_filename,
+        mime=mime,
+        type_=type_,
+        enable_slicing=enable_slicing,
+        keep_tiff_raw=keep_tiff_raw,
+    )
+
+
+def _process_saved_upload(*, full_path, filename, original_filename, mime, type_, enable_slicing, keep_tiff_raw):
+    from applications.common.utils.tiff_processor import is_tiff_file, process_uploaded_tiff
+
+    upload_url = current_app.config.get("UPLOADED_PHOTOS_DEST")
     processed_files = []
     raw_tiff_path = full_path if is_tiff_file(filename) else None
 

@@ -4,7 +4,8 @@ import { h, ref } from 'vue'
 import { ElNotification } from 'element-plus'
 import { showFullScreenLoading } from "@/utils/loading";
 import { persistentNotification } from "@/utils/persistentNotification.js";
-import { kmlRoiInfer } from "@/api/upload";
+import { kmlRoiInfer, uploadFilesResumable } from "@/api/upload";
+import { shouldUseChunkedUpload } from "@/utils/uploadChunking.mjs";
 import {
   cancelInferenceJob,
   waitForInferenceJob,
@@ -104,6 +105,8 @@ function upload(type, funUrl) {
 
   if (isSegmentation) formData.append("keepRawTiff", 'true');
 
+  const useResumable = rawFiles.some((file) => shouldUseChunkedUpload(file.size));
+
   // 上传进度 + 可取消（江西 F2 同款）：duration=0 常驻通知，结束/取消必须显式关闭
   const controller = new AbortController();
   const percent = ref(0);
@@ -121,21 +124,42 @@ function upload(type, funUrl) {
     },
   };
   const notification = persistentNotification({
-    title: '影像上传中',
+    title: useResumable ? '影像上传中（分片续传）' : '影像上传中',
     message: h(progressBody),
     duration: 0,
     showClose: false,
   });
   uploadInFlight = true;
 
-  this.createSrc(formData, {
-    signal: controller.signal,
-    onUploadProgress: (event) => {
-      if (event?.total) {
-        percent.value = Math.min(99, Math.round((event.loaded / event.total) * 100));
-      }
-    },
-  }).then((res) => {
+  // 通道分流：任一文件超过阈值（512MB）整批走分片续传（100GB 上限、失败重传单块、
+  // 页面重开自动续传）；小文件批次保持原单发 multipart，行为零回归
+  const uploadPromise = useResumable
+    ? uploadFilesResumable(
+        rawFiles.map((file) => ({ file, name: file.name, size: file.size, mime: file.type || 'image/tiff' })),
+        {
+          type,
+          isSlice: isSegmentation ? true : Boolean(this.isSlice),
+          keepRawTiff: isSegmentation,
+        },
+        {
+          signal: controller.signal,
+          onProgress: (doneBytes, totalBytes) => {
+            if (totalBytes > 0) {
+              percent.value = Math.min(99, Math.round((doneBytes / totalBytes) * 100));
+            }
+          },
+        },
+      )
+    : this.createSrc(formData, {
+        signal: controller.signal,
+        onUploadProgress: (event) => {
+          if (event?.total) {
+            percent.value = Math.min(99, Math.round((event.loaded / event.total) * 100));
+          }
+        },
+      });
+
+  uploadPromise.then((res) => {
     notification.close();
     uploadInFlight = false;
     percent.value = 100;

@@ -1,7 +1,9 @@
 // 上传/断链守卫纯函数（对照江西 F2/F4/083985f 改进落地云南 GeoView）。
-// 与后端闸门同源：单文件 8GB（MAX_UPLOAD_TIFF_SIZE_MB=8192），总量留 4% 余量。
-export const MAX_UPLOAD_FILE_BYTES = 8192 * 1024 * 1024;
-export const MAX_UPLOAD_TOTAL_BYTES = Math.floor(8192 * 1024 * 1024 * 1.04);
+// 上限对齐后端分片通道 UPLOAD_SESSION_MAX_TOTAL_MB=102400（100GB）：
+// 单发 multipart 通道仍受后端 MAX_CONTENT_LENGTH(8GB) 约束，但前端阈值
+// （512MB，见 uploadChunking.mjs）以上自动分流分片，单发请求永远不会超限。
+export const MAX_UPLOAD_FILE_BYTES = 100 * 1024 * 1024 * 1024;
+export const MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024 * 1024;
 
 function formatSize(bytes) {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
@@ -19,14 +21,14 @@ export function checkUploadLimits(files) {
   if (oversized) {
     return {
       ok: false,
-      message: `文件 ${oversized.name || '(未命名)'} 大小 ${formatSize(Number(oversized.size) || 0)} 超过单文件上限 8GB，请裁剪后再上传`,
+      message: `文件 ${oversized.name || '(未命名)'} 大小 ${formatSize(Number(oversized.size) || 0)} 超过单文件上限 100GB，请裁剪后再上传`,
     };
   }
   const total = list.reduce((sum, f) => sum + (Number(f?.size) || 0), 0);
   if (total > MAX_UPLOAD_TOTAL_BYTES) {
     return {
       ok: false,
-      message: `本次上传总量 ${formatSize(total)} 超过 8.5GB 上限，请分批上传`,
+      message: `本次上传总量 ${formatSize(total)} 超过 100GB 上限，请分批上传`,
     };
   }
   return { ok: true };

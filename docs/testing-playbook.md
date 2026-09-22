@@ -240,6 +240,17 @@ MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sh \
 
 **为什么好**：把"改了但没生效"和"环境假死"两类排障各收敛成一个 30 秒可判定的检查，避免对着旧行为调试新代码。
 
+### 20. Windows 测试工具链三坑：GBK 控制台 JSON / dd skip 单位 / 双 /tmp（2026-09-22）✅
+
+**解决什么问题**：分片上传 E2E 首两次"后端行为诡异"（keepRawTiff 传了 true 却不生效、上传产物被删）——排查半小时发现全是**测试工具自身**的问题，被测代码从头到尾是对的。
+
+**坑与判定法**：
+1. **git-bash GBK 控制台的 `curl -d '中文JSON'` 按 GBK 字节发**：Flask `get_json(silent=True)` 静默失败回退空字典，所有开关落默认值——表象是"参数不生效"而非报错。判定：响应里该字段驱动的行为全按默认走；控制台回显乱码（鍒嗗潡...）即中招。规避：JSON 体用 python 以 UTF-8 写文件再 `curl --data-binary @file`。
+2. **`dd bs=N skip=M` 的 skip 以 bs 为单位**：`dd bs=670726 skip=1` 取的是 [670726,1341452) 而不是第二块——服务端尺寸校验恰好通过（字节数对）但内容错位，组装出损坏文件走错分支。规避：切分块统一用 python `buf[off:off+n]` 或 `tail -c +N | head -c M`。
+3. **Windows Python 与 git-bash 的 `/tmp` 不是同一个地方**：python 写 `/tmp/x` 落到 cwd 盘的 `	mp\`，curl/dd 读 `/tmp/x` 走 git-bash 挂载——`--data-binary @/tmp/x` 报 exit 26。规避：跨工具传文件用仓库内相对路径。
+
+**为什么好**：三个坑都会制造"代码像是错了"的假象（尤其 1 的静默回退），各自 10 秒可判定；先排除工具链再查代码，避免对着正确代码调"bug"。
+
 
 ---
 

@@ -94,7 +94,7 @@ Miner Web (Vue) -> Miner BFF (Node/Express) -> Flask HTTP API
 ## 9. 本期明确不做
 
 - 在线训练、权重上传训练、精度承诺或模型重训。
-- React 重写、浏览器 GB 级上传/切片、通用项目管理平台。
+- React 重写、通用项目管理平台。（浏览器 GB 级上传已于 2026-09-22 落地分片续传，见 docs/refactor/2026-09-22-chunked-upload-plan.md）
 - 完整 RBAC、多人实时 GIS 编辑、审批流、工时或通用任务看板。
 
 ## 10. 性能底线
