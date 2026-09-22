@@ -5,7 +5,9 @@
   "scripts": {
     "serve": "vue-cli-service serve",
     "build": "vue-cli-service build",
-    "test": "node --test"
+    "test": "node --test",
+    "test:api": "node --test test/backendUrl.test.mjs test/uploadGuards.test.mjs test/inferencePolling.test.mjs",
+    "test:workflow": "node --test test/tiffSelection.test.mjs test/classificationColors.test.mjs test/interpretationContext.test.mjs test/classificationResultContext.test.mjs test/classificationEditor.test.mjs test/classificationEditorLifecycle.test.mjs"
   },
   "dependencies": {
     "@mapbox/mapbox-gl-draw": "1.5.1",

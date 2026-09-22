@@ -85,3 +85,24 @@
 - 后端零 API 契约变更；safe_paths 迁移逐调用点等价验证。
 - 不碰 git 未跟踪的 `miner/*`、`docs/images/refresh/*`（非本轮产物）。
 - 若 GUI 实测环境不可用，明确记录"未测项"，不声称已验证。
+
+## 7. 执行结果（2026-09-22 落地记录）
+
+| 阶段 | 提交 | 结果 |
+| --- | --- | --- |
+| P1 死代码+HTTP 基础设施 | c495ac3 | 完成：NotFound 1612→90 行；删 History.vue/DraggableItem.vue；requestfile 并入 request（kind=auth/backend/http/network/aborted）；onresize/overflow 泄漏修复。测试 21/21 |
+| P2 上传栈去重 | abb8840 | 完成：tiffSelection.mjs + 5 组单测；两视图 -149 行；isValidTiff 漂移统一。测试 26/26 |
+| P3 视图组件化 | 3e14946 | 完成：TiffUploadCard 共享组件（v-model+select 事件）；Segmentation 724→483、SpectralIndices 365→200；编辑器色表外提 classificationColors.mjs（地图生命周期零动，守护测试绿）。测试 29/29 |
+| P4 推理取消闭环 | 6cea1ee | 完成：api/inference.js + inferencePolling.mjs（fetchJob 注入，7 组单测）；推理常驻通知+取消按钮接通后端 cancel；silent 补全（不再每秒弹错误 toast）。测试 36/36 |
+| P5 后端 | 无代码改动 | **核实后取消预设改动**：①analysis.py 已是"辅助前置+链路排序"组织，纯重排=化妆性 churn；②路径防御三原语（inference/paths.resolve_output_file、spatial_storage.resolve_storage_path、analysis._resolve_spectral_kml_path）各归其域、契约不同、零重复，合并成 safe_paths.py 无去重收益；③SUCCESS=0 已核实，`success=True` 与 `code` 并存完全兼容前端 `code!==0` 拦截器，无契约问题。GeoView 后端消费面的实质修复已在 2026-09-20 审计轮完成 |
+| P6 测试分套 | 本提交 | 完成：package.json 增 test:api（backendUrl/uploadGuards/inferencePolling）与 test:workflow（tiffSelection/classificationColors/三个 context/editor） |
+
+### 规模与质量变化
+
+- 前端 src：死代码 -2300 行（NotFound 1522 + History 570 + DraggableItem 109 + requestfile 50 + 视图去重），新增可测纯模块 4 个（tiffSelection/classificationColors/inferencePolling + api/inference）。
+- 单测 6 个文件 21 例 → 10 个文件 36 例。
+- GeoView 两大主视图从 798/440 行单体 → 483/200 行 + 269 行共享上传卡。
+
+### 未测项与后续
+
+- P7 验收（backend 容器回归、真实浏览器 GUI 巡检、OCR+五轴+high-intensity-testing 三套技能）结果见验收记录一节（验收完成后补写）。
