@@ -44,6 +44,16 @@
       />
       <div v-else class="map-unavailable">{{ dataLoadError || '项目离线地图加载中…' }}</div>
 
+      <div class="map-tools">
+        <button
+          class="map-tool-btn"
+          :class="{ active: graticuleOn }"
+          type="button"
+          title="经纬网辅助线（开关）"
+          @click="toggleGraticule"
+        >#</button>
+      </div>
+
       <RightSidebar
         :treatedCount="treatedCount"
         :untreatedCount="untreatedCount"
@@ -137,6 +147,12 @@ const showMineDetail = ref(false);
 const showInferenceModal = ref(false);
 const showTrendReportModal = ref(false);
 const rightSidebarCollapsed = ref(false);
+const graticuleOn = ref(false);
+
+const toggleGraticule = () => {
+  mapContainerRef.value?.toggleGraticule?.();
+  graticuleOn.value = !graticuleOn.value;
+};
 const selectedMine = ref({});
 const selectedTab = ref('NDVI');
 const mapContainerRef = ref(null);
@@ -347,4 +363,23 @@ defineExpose({
   min-width: 0;
   gap: 0;
 }
+.map-tools {
+  position: absolute;
+  right: 16px;
+  bottom: 70px;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.map-tool-btn {
+  width: 30px; height: 30px;
+  background: rgba(10, 25, 41, 0.8);
+  border: 1px solid rgba(78, 205, 196, 0.4);
+  border-radius: 6px;
+  color: #4ecdc4;
+  cursor: pointer;
+  font-size: 14px;
+}
+.map-tool-btn.active { background: #4ecdc4; color: #000; }
 </style>

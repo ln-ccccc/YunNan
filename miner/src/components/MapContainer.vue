@@ -210,7 +210,61 @@ const initMap = () => {
 
   const firstLayer = baseMaps[currentLayer.value] || baseMaps.base;
   if (firstLayer) firstLayer.addTo(map.value);
+
+  // M4 地图工具：图层显隐 / 比例尺 / 经纬网辅助（默认关，可开关）
+  const overlayLayers = {};
+  if (mineLayer.value) overlayLayers['矿山图层'] = mineLayer.value;
+  const baseLabels = { base: '标准', satellite: '影像', terrain: '地形' };
+  const baseForControl = {};
+  Object.entries(baseMaps).forEach(([key, layer]) => {
+    if (layer) baseForControl[baseLabels[key] || key] = layer;
+  });
+  L.control.layers(baseForControl, overlayLayers, { position: 'topright', collapsed: true }).addTo(map.value);
+  L.control.scale({ position: 'bottomleft', imperial: false, metric: true }).addTo(map.value);
+  initGraticule();
 };
+
+// 轻量经纬网：按当前视口整数度画线，moveend 重绘（无第三方插件依赖）
+const graticuleLayer = ref(null);
+const graticuleEnabled = ref(false);
+
+const drawGraticule = () => {
+  if (!map.value || !graticuleEnabled.value) return;
+  if (graticuleLayer.value) map.value.removeLayer(graticuleLayer.value);
+  const bounds = map.value.getBounds();
+  const south = Math.floor(bounds.getSouth());
+  const north = Math.ceil(bounds.getNorth());
+  const west = Math.floor(bounds.getWest());
+  const east = Math.ceil(bounds.getEast());
+  const lines = [];
+  for (let lon = west; lon <= east; lon++) {
+    lines.push([[bounds.getSouth(), lon], [bounds.getNorth(), lon]]);
+  }
+  for (let lat = south; lat <= north; lat++) {
+    lines.push([[lat, bounds.getWest()], [lat, bounds.getEast()]]);
+  }
+  graticuleLayer.value = L.layerGroup(
+    lines.map((coords) => L.polyline(coords, {
+      color: '#4ecdc4', weight: 0.6, opacity: 0.5, dashArray: '4,6', interactive: false,
+    }))
+  ).addTo(map.value);
+};
+
+const initGraticule = () => {
+  map.value.on('moveend', drawGraticule);
+};
+
+const toggleGraticule = () => {
+  graticuleEnabled.value = !graticuleEnabled.value;
+  if (!graticuleEnabled.value) {
+    if (graticuleLayer.value) map.value.removeLayer(graticuleLayer.value);
+    graticuleLayer.value = null;
+  } else {
+    drawGraticule();
+  }
+};
+
+defineExpose({ flyToMine, fitMineLayerBounds, invalidateSize, toggleGraticule });
 
 const getMineColor = (feature) => {
   const status = feature.properties.status_normalized || 'unknown';
@@ -316,11 +370,6 @@ onUnmounted(() => {
   // 重建组件，不 remove() 会整实例泄漏（2026-09-20 审查 P2）
   map.value?.remove();
   map.value = null;
-});
-
-defineExpose({
-  flyToMine,
-  invalidateSize
 });
 </script>
 

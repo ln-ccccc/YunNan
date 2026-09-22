@@ -43,6 +43,9 @@
         />
       </div>
       <EditingView v-if="currentView === 'editing'" @go-projects="navigateToView(navItems[0])" />
+      <ImageryView v-else-if="currentView === 'imagery'" @go-map="openMapView" />
+      <SearchView v-else-if="currentView === 'search'" @open-map="openMapView" />
+      <SettingsView v-else-if="currentView === 'settings'" :username="sessionState.username" />
       <ModulePlaceholder
         v-else-if="placeholderItem"
         :label="placeholderItem.label"
@@ -62,17 +65,17 @@ import { fetchSession, login as loginRequest, logout as logoutRequest } from './
 import LoginPage from './components/LoginPage.vue';
 import MapDashboard from './components/MapDashboard.vue';
 import EditingView from './components/EditingView.vue';
+import ImageryView from './components/ImageryView.vue';
+import SearchView from './components/SearchView.vue';
+import SettingsView from './components/SettingsView.vue';
 import ModulePlaceholder from './components/ModulePlaceholder.vue';
 import ProjectWorkspace from './components/ProjectWorkspace.vue';
 import { NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
 
 // 占位模块 → 交付里程碑标注（M1 骨架诚实占位，M3/M4 填充）
 const PLACEHOLDER_MILESTONES = {
-  imagery: 'M4',
-  interpretation: 'M4',
-  data: 'M4',
-  search: 'M4',
-  settings: 'M4',
+  interpretation: '项目工作台内发起',
+  data: '项目工作台内操作',
 };
 
 const currentView = ref('login');
