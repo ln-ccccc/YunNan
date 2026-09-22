@@ -188,6 +188,7 @@ class InferenceWorker:
         self.cpu_model = None
         self.active_job = None
         self.job_deadline = None
+        self._effective_job_timeout_seconds = 0
 
     def initialize(self):
         if self.model is not None:
@@ -357,11 +358,14 @@ class InferenceWorker:
         process_resolution = self.resolution
         process_model = self.model
         restore_process_device = False
+        effective_job_timeout = self._job_timeout_for(payload) if self.job_timeout_seconds > 0 else 0
         self.job_deadline = (
-            time.monotonic() + self._job_timeout_for(payload)
+            time.monotonic() + effective_job_timeout
             if self.job_timeout_seconds > 0
             else None
         )
+        # 报文用有效死线（瓦片估算可抬高到基线之上），避免"配置 3600 实跑 7200"的误导
+        self._effective_job_timeout_seconds = effective_job_timeout
         try:
             is_project_job = payload.get("project_id") not in (None, "")
             if payload.get("requested_device") == "cpu" and self.resolution.effective != "cpu":
@@ -451,7 +455,7 @@ class InferenceWorker:
                     fallback_reason=self.resolution.fallback_reason,
                     warnings=self.resolution.warnings,
                     error_code="JOB_TIMEOUT",
-                    error_message=f"推理任务超过 {self.job_timeout_seconds} 秒时限",
+                    error_message=f"推理任务超过 {self._effective_job_timeout_seconds} 秒时限",
                 )
             return self.job_store.finish_job(
                 job,

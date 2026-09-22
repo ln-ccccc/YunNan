@@ -25,6 +25,9 @@ x-app-env: &app-env
   INFERENCE_GPU_DEVICE: "${INFERENCE_GPU_DEVICE:-0}"
   INFERENCE_MAX_CONCURRENCY: "${INFERENCE_MAX_CONCURRENCY:-1}"
   INFERENCE_JOB_TIMEOUT_SECONDS: "${INFERENCE_JOB_TIMEOUT_SECONDS:-3600}"
+  # gunicorn 单请求超时：standalone 同步推理（无项目上下文的语义分割）与
+  # 分片 complete 的同卷合并都是分钟级长请求，默认 120s 会杀连接（2026-09-22）
+  WEB_TIMEOUT_SECONDS: "${WEB_TIMEOUT_SECONDS:-1800}"
   INFERENCE_BATCH_SIZE: "${INFERENCE_BATCH_SIZE:-1}"
   INFERENCE_KEEP_FAILED_WORKDIR: "${INFERENCE_KEEP_FAILED_WORKDIR:-true}"
   INFERENCE_INPUT_ROOTS: "/app/backend/static,/app/backend/bianhua_2years,/app/miner"

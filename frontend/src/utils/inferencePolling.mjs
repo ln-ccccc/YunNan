@@ -8,9 +8,11 @@ export const INFERENCE_TERMINAL_STATUSES = new Set([
   'cancelled',
 ]);
 
-// 轮询上限：与后端 INFERENCE_JOB_TIMEOUT_SECONDS（默认 3600s）对齐并留裕量；
-// 任务卡死在非终态时避免无限轮询
-export const MAX_POLL_ATTEMPTS = 3700;
+// 轮询上限：与后端有效死线上限对齐——worker 的瓦片数估算死线可抬到 14400s
+// （4h，estimate_inference_timeout_seconds 夹逼上限），此前按默认 3600s 对齐的
+// 3700 次(≈62min)会让大影像长任务在前端先"停止等待"。留 5 分钟裕量。
+// worker 保证到点置 failed 终态，轮询不会无限等待卡死任务。
+export const MAX_POLL_ATTEMPTS = 14700;
 
 // 断线自愈（江西 7f4e4d0 同款）：瞬时网络抖动不终止轮询，连续失败约 2 分钟
 // 才按断链处理——后端任务仍在执行，一次断网不打死流程

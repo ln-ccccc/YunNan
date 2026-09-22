@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   INFERENCE_TERMINAL_STATUSES,
+  MAX_POLL_ATTEMPTS,
   waitForInferenceJob,
 } from '../src/utils/inferencePolling.mjs';
 
@@ -112,4 +113,10 @@ test('terminal status set keeps the worker-observable contract', () => {
   }
   assert.equal(INFERENCE_TERMINAL_STATUSES.has('running'), false);
   assert.equal(INFERENCE_TERMINAL_STATUSES.has('queued'), false);
+});
+
+test('poll ceiling stays aligned with the backend effective deadline cap', () => {
+  // worker 的瓦片估算死线夹逼上限 14400s(4h)：轮询上限必须 ≥ 该值+裕量，
+  // 否则大影像长任务会在前端先"停止等待"（2026-09-22 修复的回归守护）
+  assert.ok(MAX_POLL_ATTEMPTS >= 14400 + 240, '轮询上限须覆盖后端 4h 死线上限并留裕量');
 });
