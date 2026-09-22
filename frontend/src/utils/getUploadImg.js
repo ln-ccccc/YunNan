@@ -366,7 +366,11 @@ function upload(type, funUrl) {
     }
     if (err?.response) {
       this.$message.error(err?.response?.data?.msg || '上传失败，请重试');
+      return;
     }
+    // 兜底：非 HTTP 语义的意外异常（如历史版本 crypto.subtle 缺失的 TypeError）
+    // 此前会四分支全穿透零提示，用户点了没反应（2026-09-22 审查 P1）
+    this.$message.error(err?.message || '上传失败，请重试');
   }).finally(() => {
     // 兜底复位：then 分支已复位，防御提前 return 路径（如非 tif 提示）
     uploadInFlight = false;

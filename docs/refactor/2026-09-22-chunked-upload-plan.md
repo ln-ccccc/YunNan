@@ -46,3 +46,27 @@ E2E 首两次异常均为测试工具链问题：①git-bash GBK 控制台下 `c
 
 验证：前端 43/43 + build（新 dist 由前端容器静态服务即时生效）、后端容器 382/0、compose config 校验通过。
 - 上传端点不校验 tif 魔数的既有观察项不变（分片通道同样放行任意字节，坏文件由推理端拒绝）。
+
+## 追记 2：全面验收轮（2026-09-22 同日第三轮，三路独立审查 + GUI 全链路）
+
+回归门：backend 容器 395/0（+4 审查守护测试）、frontend 44/44 + build、miner 57/57 + build。
+GUI：Miner 全标签（NDVI 图表/变化矩阵无数据语义/地物分类图/原始影像 7 行+下载 200/零 JS 错误）；
+GeoView 完整成功路径（黑边影像上传→项目态推理 72 次轮询→完成 toast→历史渲染，掩膜产物
+mask 61.1%/置黑 96.6%/label 74.3% 与首轮一致）、404 精简页、光谱页。
+
+三路审查（契约/数据流/对抗五轴）交叉命中并修复：
+- **P1×3**：①crypto.subtle 仅安全上下文——http://内网IP 部署时分片通道必坏且零提示（三遍一致），
+  修=纯 JS SHA-256 回退（FIPS 180-4 向量测试）+ getUploadImg catch 末尾兜底提示；
+  ②批次中途失败重试会全量重传+重复入库，修=单块 2 次退避重试 + complete done 幂等
+  （成功后写完成态含结果而非删目录，init/complete 重入直接复用，运行时实测两次 complete
+  同一 photo_id）；③complete 未传 signal 合并阶段取消假死，修=补传。
+- **P2×4**：BFF 下载改流式转发（Readable.fromWeb pipe，内存与文件大小解耦，超时仅约束建连）；
+  chunk/session tmp 名加 uuid 后缀消并发互踩；indices 失败清原始影像残留；溯源列表与下载
+  统一 inputs 根门槛。
+- **P3 择要**：会话属主绑定（write_chunk/complete 校验）、SESSION_ID_RE fullmatch 挡尾部换行、
+  列表 stat TOCTOU 不再放大整列表 404、/static 与 /_uploads 对 .chunks 一律 404（登录态内
+  也不可读他人在途分块）、revokeObjectURL 延迟回收、下载 404 blob 错误文案透出、删除 BFF
+  死代码 getProjectOriginalImagery。
+- 记录不修：同 key 异内容静默续传（同 mtime 同大小异内容场景，建议未来 complete 加整文件
+  sha 终验）；list 400 任务逐条 json.loads（当前规模可接受）；运维若抬 INFERENCE_JOB_TIMEOUT_SECONDS
+  基线超 14400 需同步 MAX_POLL_ATTEMPTS。

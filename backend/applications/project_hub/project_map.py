@@ -240,9 +240,13 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
     if not any(binding.mine_fid == fid_value for binding in project.mines):
         raise ValueError("矿山不属于当前项目")
 
-    storage_root = get_storage_root()
     items = []
     seen = set()
+    # 列表与下载同门槛：只认本项目 inputs 根内的记录（legacy 迁移任务可能指向
+    # storage 其他位置——列表放行而下载 404 会造成可点不可达，2026-09-22 审查 P2）
+    input_root = resolve_storage_path(
+        get_storage_root(), Path("projects") / str(project.id) / "inputs"
+    )
     jobs = (
         InferenceJob.query.filter_by(project_id=project.id)
         .order_by(InferenceJob.create_time.desc())
@@ -258,7 +262,7 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
             continue
         try:
             input_path = Path(input_text).expanduser().resolve()
-            input_path.relative_to(storage_root)
+            input_path.relative_to(input_root)
         except (ValueError, OSError):
             continue
         year_text = str(payload.get("year") or "").strip()
@@ -266,13 +270,21 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
         if key in seen:
             continue
         seen.add(key)
-        file_exists = input_path.is_file()
+        size_bytes = None
+        file_exists = False
+        try:
+            # stat 与 is_file 之间的清理竞态不放大成整列表 404（审查 P3）
+            if input_path.is_file():
+                size_bytes = input_path.stat().st_size
+                file_exists = True
+        except OSError:
+            size_bytes, file_exists = None, False
         year_value = int(year_text) if year_text.isdigit() and len(year_text) == 4 else None
         items.append({
             "job_id": job.id,
             "year": year_value,
             "filename": input_path.name,
-            "size_bytes": input_path.stat().st_size if file_exists else None,
+            "size_bytes": size_bytes,
             "file_exists": file_exists,
             "job_status": job.status,
             "created_at": job.create_time.isoformat() if job.create_time else None,

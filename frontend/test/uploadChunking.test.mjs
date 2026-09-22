@@ -5,6 +5,7 @@ import {
   CHUNK_UPLOAD_THRESHOLD_BYTES,
   DEFAULT_CHUNK_SIZE_BYTES,
   planChunks,
+  sha256HexPlain,
   shouldUseChunkedUpload,
   sumReceivedBytes,
 } from '../src/utils/uploadChunking.mjs';
@@ -59,4 +60,15 @@ test('chunk constants stay aligned with the backend session contract', () => {
   assert.ok(DEFAULT_CHUNK_SIZE_BYTES >= 1024 * 1024, '分块不得小于后端下限 1MB');
   assert.ok(DEFAULT_CHUNK_SIZE_BYTES <= 512 * 1024 * 1024, '分块不得大于后端上限 512MB');
   assert.ok(MAX_UPLOAD_FILE_BYTES % DEFAULT_CHUNK_SIZE_BYTES === 0, '100GB 应能被默认块整除');
+});
+
+test('sha256HexPlain matches FIPS 180-4 known vectors (insecure-context fallback)', () => {
+  // crypto.subtle 缺失（http://内网IP）时的回退实现必须与标准一致，
+  // 否则会话标识与服务端/安全上下文版本对不上
+  assert.equal(sha256HexPlain(''), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  assert.equal(sha256HexPlain('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  const long = 'a'.repeat(1000);
+  assert.equal(sha256HexPlain(long).length, 64);
+  // 与 node 原生对账（多块路径：>64 字节输入触发扩展轮）
+  assert.equal(sha256HexPlain(new TextEncoder().encode(long)), sha256HexPlain(long));
 });

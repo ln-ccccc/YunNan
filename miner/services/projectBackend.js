@@ -49,6 +49,26 @@ async function requestBinary(method, path, { cookie, timeoutMs = 30000 } = {}) {
   };
 }
 
+/**
+ * GB 级大文件流式转发：不整读进内存（requestBinary 的 arrayBuffer 会让 5GB
+ * 影像在 BFF 驻留 5GB 堆，两路并发即 OOM）。返回 web 流由路由层 pipe 给响应；
+ * 超时只约束建立阶段（30s），body 读取无总时限——后端 gunicorn 自带 1800s 兜底。
+ */
+async function requestBinaryStream(method, path, { cookie, connectTimeoutMs = 30000 } = {}) {
+  const url = new URL(`${backendBaseUrl}${path}`);
+  const response = await fetch(url, {
+    method,
+    headers: cookie ? { cookie } : {},
+    signal: AbortSignal.timeout(connectTimeoutMs),
+  });
+  return {
+    status: response.status,
+    contentType: response.headers.get('content-type') || 'application/octet-stream',
+    contentLength: response.headers.get('content-length'),
+    stream: response.body,
+  };
+}
+
 export const projectApi = {
   request(method, path, options = {}) {
     return requestJson(method, path, options);
@@ -76,25 +96,17 @@ export const projectApi = {
   getProjectDetail(projectId, cookie) {
     return requestJson('GET', `/api/projects/${projectId}`, { cookie });
   },
-  getProjectOriginalImagery(projectId, fid, cookie) {
-    const safeProjectId = positiveRouteId(projectId, '项目');
-    const safeFid = positiveRouteId(fid, '矿山');
-    return requestJson(
-      'GET',
-      `/api/projects/${safeProjectId}/mines/original-imagery?fid=${encodeURIComponent(safeFid)}`,
-      { cookie },
-    );
-  },
   getProjectOriginalImageryDownload(projectId, jobId, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');
     const safeJobId = String(jobId ?? '');
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(safeJobId)) {
       throw new Error('推理任务标识不合法');
     }
-    return requestBinary(
+    // 原始影像可达 GB 级：流式转发，BFF 内存占用与文件大小解耦（2026-09-22 审查 P2）
+    return requestBinaryStream(
       'GET',
       `/api/projects/${safeProjectId}/mines/original-imagery/${safeJobId}/download`,
-      { cookie, timeoutMs: 600000 },
+      { cookie },
     );
   },
   getProjectOverview(projectId, cookie) {

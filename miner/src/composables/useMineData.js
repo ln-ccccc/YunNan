@@ -171,6 +171,9 @@ export function useMineData(projectId) {
         ndsi: buildEmptyIndexEntry(),
       };
       mineChangeMatrix.value = null;
+      // 失败路径此前不清原始影像：矿山 B 的弹窗会残留矿山 A 的溯源列表
+      mineOriginalImagery.value = null;
+      await fetchOriginalImagery(fid, seq);
     }
   };
 
@@ -231,10 +234,21 @@ export function useMineData(projectId) {
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
-      URL.revokeObjectURL(url);
+      // 同步 revoke 在部分浏览器会截断尚未开始的 blob 下载，延迟回收（审查 P3）
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (e) {
       console.warn('原始影像下载失败:', e);
-      window.alert('原始影像下载失败，请稍后重试');
+      // 上游 404/502 经 axios reject 走到这里：error body 是 JSON blob，
+      // 解析出后端具体文案（任务不存在/文件不存在）而非泛化提示（审查 F3）
+      try {
+        const errBlob = e?.response?.data;
+        if (errBlob instanceof Blob) {
+          const text = await errBlob.text();
+          const msg = JSON.parse(text).msg;
+          if (msg) { window.alert(msg); return; }
+        }
+      } catch (_) {}
+      window.alert(e?.response?.data?.msg || '原始影像下载失败，请稍后重试');
     }
   };
 

@@ -18,6 +18,7 @@ import json
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 from flask import current_app
@@ -29,7 +30,7 @@ SESSION_STAGING_DIRNAME = ".chunks"
 UPLOAD_SESSION_MAX_CHUNK_BYTES = 512 * 1024 * 1024
 UPLOAD_SESSION_MIN_CHUNK_BYTES = 1024 * 1024
 UPLOAD_SESSION_STALE_DAYS = 7
-SESSION_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
+SESSION_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")  # 匹配一律走 fullmatch：$ 放行尾部 \n
 _MAX_FILENAME_LENGTH = 200
 
 
@@ -51,7 +52,7 @@ def _session_dir(session_id: str) -> Path:
 
 def validate_session_id(session_id) -> str:
     text = str(session_id or "")
-    if not SESSION_ID_RE.match(text):
+    if not SESSION_ID_RE.fullmatch(text):
         raise UploadSessionError("非法的上传会话标识")
     return text
 
@@ -90,7 +91,9 @@ def _load_session(session_id: str) -> dict:
 def _save_session(session_dir: Path, state: dict) -> None:
     state = dict(state)
     state["updated_at"] = int(time.time())
-    tmp = session_dir / "session.json.tmp"
+    # tmp 名带唯一后缀：并发请求（双标签页重传）各写各的，rename 原子落位，
+    # 不再共享同名 tmp 交错写入（2026-09-22 对抗审查 P2）
+    tmp = session_dir / f".session.json.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     tmp.replace(session_dir / "session.json")
 
@@ -113,7 +116,7 @@ def sweep_stale_sessions(max_age_days: int = UPLOAD_SESSION_STALE_DAYS) -> int:
     return removed
 
 
-def init_session(*, upload_key, filename, total_size, mime, chunk_size) -> dict:
+def init_session(*, upload_key, filename, total_size, mime, chunk_size, owner=None) -> dict:
     session_id = validate_session_id(upload_key)
     filename = sanitize_filename(filename)
     try:
@@ -146,6 +149,7 @@ def init_session(*, upload_key, filename, total_size, mime, chunk_size) -> dict:
             or existing.get("filename") != filename
         ):
             raise UploadSessionError("同名上传会话已存在但文件信息不一致（文件已变化？），请刷新页面后重试")
+        _ensure_session_owner(existing, owner)
         return session_state(session_id)
 
     try:
@@ -155,6 +159,7 @@ def init_session(*, upload_key, filename, total_size, mime, chunk_size) -> dict:
     session_dir.mkdir(parents=True, exist_ok=True)
     _save_session(session_dir, {
         "upload_key": session_id,
+        "owner": str(owner) if owner else None,
         "filename": filename,
         "mime": str(mime or "application/octet-stream"),
         "total_size": total_size,
@@ -173,7 +178,7 @@ def session_state(session_id: str) -> dict:
         chunk_file = session_dir / f"chunk_{index}.bin"
         if chunk_file.is_file() and chunk_file.stat().st_size == _expected_chunk_size(state, index):
             received.append(index)
-    return {
+    payload = {
         "session_id": str(session_id),
         "filename": state["filename"],
         "total_size": state["total_size"],
@@ -181,14 +186,22 @@ def session_state(session_id: str) -> dict:
         "total_chunks": state["total_chunks"],
         "received": received,
     }
+    # done 幂等：complete 成功过的会话携带上次结果，init 重入直接复用，
+    # 不重传、不重复入库（2026-09-22 数据流审查 P1）
+    if state.get("done"):
+        payload["done"] = True
+        payload["result"] = state.get("result") or []
+    return payload
 
 
-def write_chunk(session_id: str, index: int, stream, declared_sha256=None) -> int:
+def write_chunk(session_id: str, index: int, stream, declared_sha256=None, owner=None) -> int:
     state = _load_session(session_id)
+    _ensure_session_owner(state, owner)
     index = int(index)
     expected = _expected_chunk_size(state, index)
     session_dir = _session_dir(session_id)
-    tmp_path = session_dir / f".chunk_{index}.bin.tmp"
+    # tmp 名带唯一后缀：abort 后重试与旧连接的残留写各不相扰，rename 原子落位
+    tmp_path = session_dir / f".chunk_{index}.{uuid.uuid4().hex}.bin.tmp"
     digest = hashlib.sha256()
     written = 0
     try:
@@ -219,6 +232,31 @@ def write_chunk(session_id: str, index: int, stream, declared_sha256=None) -> in
         raise UploadSessionError(f"分块写入失败: {error}") from error
     _save_session(session_dir, state)
     return written
+
+
+def _ensure_session_owner(state: dict, owner) -> None:
+    """会话属主校验：upload_key 客户端可算，登录态内他人拿到 id 也不得写块/抢先完成。"""
+    session_owner = state.get("owner")
+    if session_owner is None:
+        return
+    if str(owner or "") != str(session_owner):
+        raise UploadSessionError("无权操作他人的上传会话")
+
+
+def mark_session_done(session_id: str, result) -> None:
+    """complete 成功后写完成态（含结果）而非删目录：响应丢失/批次重试/双标签页
+    并发 complete 均幂等返回同一结果，不重复入库；目录交由 sweep 过期清理。"""
+    state = _load_session(session_id)
+    state["done"] = True
+    state["result"] = list(result or [])
+    _save_session(_session_dir(session_id), state)
+
+
+def session_is_done(session_id: str) -> "dict | None":
+    state = _load_session(session_id)
+    if state.get("done"):
+        return state.get("result") or []
+    return None
 
 
 def assemble_session(session_id: str, dest_path: Path) -> Path:

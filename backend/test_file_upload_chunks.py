@@ -117,10 +117,10 @@ class TestChunkedUploadLifecycle(ChunkedUploadBase):
         self.assertTrue(Path(item["raw_tiff_path"]).is_file())
         # 合并产物与源逐字节一致
         self.assertEqual(Path(item["raw_tiff_path"]).read_bytes(), self.payload)
-        # photo 记录入库；会话暂存已清理
+        # photo 记录入库；会话保留为完成态（done 幂等，过期由 sweep 清理）
         self.assertIsNotNone(Photo.query.filter_by(id=item["photo_id"]).first())
         staging = Path(self.upload_tmp) / ".chunks" / self.key
-        self.assertFalse(staging.exists())
+        self.assertTrue(staging.exists())
 
     def test_init_is_idempotent_and_reports_received_for_resume(self):
         self.login_as_admin()
@@ -221,6 +221,76 @@ class TestChunkedUploadLifecycle(ChunkedUploadBase):
         # 单发通道 8GB 不动；分片通道 100GB
         self.assertEqual(MAX_UPLOAD_TIFF_SIZE_MB, 8192)
         self.assertEqual(UPLOAD_SESSION_MAX_TOTAL_MB, 102400)
+
+    def _complete_payload(self):
+        return {"type": "地物分类", "isSlice": True, "keepRawTiff": True}
+
+    def _upload_all_chunks(self, init_data):
+        chunk_size = init_data["chunk_size"]
+        for index in range(init_data["total_chunks"]):
+            block = self.payload[index * chunk_size:(index + 1) * chunk_size]
+            resp = self._put_chunk(index, block, sha=_sha256(block))
+            self.assertEqual(resp.status_code, 200)
+
+    def test_complete_is_idempotent_after_success(self):
+        """done 幂等（2026-09-22 审查 P1）：响应丢失/批次重试/双标签并发 complete
+        均返回同一结果，不重新合并、不重复入库。"""
+        self.login_as_admin()
+        from applications.models import Photo
+
+        init = self._init().get_json()["data"]
+        self._upload_all_chunks(init)
+        first = self._complete().get_json()["data"]
+        photo_count_after_first = Photo.query.count()
+
+        # 再次 init：携带 done+result（前端据此跳过重传）
+        again = self._init().get_json()["data"]
+        self.assertTrue(again.get("done"))
+        self.assertEqual(again.get("result"), first)
+
+        # 再次 complete：原样返回，不重复入库
+        second = self._complete().get_json()["data"]
+        self.assertEqual(second, first)
+        self.assertEqual(Photo.query.count(), photo_count_after_first)
+
+    def test_session_owner_enforced_on_chunk_write(self):
+        """属主校验：upload_key 客户端可算，他人拿到 id 也不得写块（审查 F5）。"""
+        import io as _io
+
+        from applications.common.utils import upload_sessions
+        from applications.common.utils.tiff_processor import UPLOAD_SESSION_MAX_TOTAL_MB  # noqa: F401
+
+        state = upload_sessions.init_session(
+            upload_key="c" * 40,
+            filename="owner.tif",
+            total_size=len(self.payload),
+            mime="image/tiff",
+            chunk_size=CHUNK_MB * 1024 * 1024,
+            owner="admin",
+        )
+        with self.assertRaises(upload_sessions.UploadSessionError) as ctx:
+            upload_sessions.write_chunk(
+                state["session_id"], 0, _io.BytesIO(self.payload[:CHUNK_MB * 1024 * 1024]),
+                owner="someone-else",
+            )
+        self.assertIn("无权", str(ctx.exception))
+
+    def test_session_id_with_trailing_newline_rejected(self):
+        """fullmatch：原 `$` 放行尾部 \\n（URL %0A 可达），可建含换行的目录名。"""
+        self.login_as_admin()
+        resp = self._init(key="d" * 40 + "\n")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_chunks_staging_not_reachable_via_static_or_uploads_routes(self):
+        """分片暂存不属公开产物：/static 与 /_uploads 对 .chunks 一律 404（审查 P3）。"""
+        self.login_as_admin()
+        self._init()
+        for path in (
+            "/static/upload/.chunks/%s/session.json" % self.key,
+            "/_uploads/photos/.chunks/%s/chunk_0.bin" % self.key,
+        ):
+            resp = self.client.get(path)
+            self.assertEqual(resp.status_code, 404, path)
 
 
 if __name__ == "__main__":

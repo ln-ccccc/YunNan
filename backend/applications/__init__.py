@@ -55,6 +55,12 @@ def create_app(config_name=None):
         # 上传与生成目录位于 Flask static 目录下（UPLOADED_PHOTOS_DEST），
         # 与 /_uploads/photos 一样必须登录后访问，避免默认 /static/<path>
         # 路由成为免登录下载上传影像与结果图的旁路。
+        # 分片暂存（static/upload/.chunks/）不属任何公开产物：已登录用户也不得
+        # 经 /static 或 /_uploads 读他人在途分块/会话（2026-09-22 对抗审查）。
+        if '/.chunks/' in request.path or request.path.rstrip('/').endswith('/.chunks'):
+            from flask import abort
+
+            abort(404)
         if request.path.startswith('/static/'):
             unauthorized = ensure_logged_in()
             if unauthorized is not None:

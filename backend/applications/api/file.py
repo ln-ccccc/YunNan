@@ -2,7 +2,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, session
 
 from applications.api.error_responses import business_or_server_failure
 from applications.auth.guard import ensure_logged_in
@@ -86,6 +86,7 @@ def upload_session_init_api():
             total_size=payload.get('total_size'),
             mime=payload.get('mime') or 'application/octet-stream',
             chunk_size=payload.get('chunk_size'),
+            owner=session.get('username'),
         )
     except upload_sessions.UploadSessionError as error:
         return fail_api(str(error)), 400
@@ -101,6 +102,7 @@ def upload_session_chunk_api(session_id, index):
             index,
             request.stream,
             declared_sha256=request.headers.get('X-Chunk-Sha256'),
+            owner=session.get('username'),
         )
     except upload_sessions.UploadSessionError as error:
         return fail_api(str(error)), 400
@@ -131,6 +133,13 @@ def upload_session_complete_api(session_id):
     # 组装直落上传目标（同卷就地合并，避免三倍磁盘峰值），命名规则与 photos.save 一致
     suffix = Path(session['filename']).suffix
     dest_path = upload_root / f"{uuid.uuid4()}{suffix}"
+
+    # done 幂等：complete 成功过（响应丢失/批次重试/双标签并发）直接复用上次结果，
+    # 不重新合并、不重复入库（2026-09-22 数据流审查 P1）
+    existing_result = upload_sessions.session_is_done(session_id)
+    if existing_result is not None:
+        return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': existing_result})
+
     try:
         upload_sessions.assemble_session(session_id, dest_path)
         upload_results = upload_curd.upload_one_from_path(
@@ -150,7 +159,6 @@ def upload_session_complete_api(session_id):
     except Exception as error:
         dest_path.unlink(missing_ok=True)
         return business_or_server_failure(error, "文件上传失败", logger=LOGGER)
-    upload_sessions.remove_session(session_id)
 
     data = []
     for file_url, photo_id, display_name, raw_tiff_path in upload_results:
@@ -160,5 +168,7 @@ def upload_session_complete_api(session_id):
             'photo_id': photo_id,
             'raw_tiff_path': raw_tiff_path,
         })
+    # 成功后写完成态而非删目录（幂等；过期由 sweep 清理）
+    upload_sessions.mark_session_done(session_id, data)
     return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': data})
 

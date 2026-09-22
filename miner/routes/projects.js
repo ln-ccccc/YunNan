@@ -134,14 +134,21 @@ export function createProjectRoutes({
 
   router.get('/:projectId/mines/original-imagery/:jobId/download', async (req, res) => {
     try {
-      relayBinary(
-        res,
-        await projectApi.getProjectOriginalImageryDownload(
-          req.params.projectId,
-          req.params.jobId,
-          requestCookie(req),
-        ),
+      const upstream = await projectApi.getProjectOriginalImageryDownload(
+        req.params.projectId,
+        req.params.jobId,
+        requestCookie(req),
       );
+      // GB 级流式转发：不整读进内存，边收边发；出错体（非 200 JSON）走一次性透传
+      if (upstream.stream && upstream.status === 200) {
+        res.status(200);
+        res.set('content-type', upstream.contentType);
+        if (upstream.contentLength) res.set('content-length', upstream.contentLength);
+        const { Readable } = await import('node:stream');
+        Readable.fromWeb(upstream.stream).pipe(res);
+        return;
+      }
+      relayBinary(res, upstream);
     } catch (error) {
       console.error('projects route upstream error:', error);
       res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
