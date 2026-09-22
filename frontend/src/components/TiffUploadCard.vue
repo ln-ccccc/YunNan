@@ -27,7 +27,7 @@
         将文件夹拖到此处，或<em>点击上传整个文件夹</em>
       </div>
       <div class="el-upload__tip">
-        递归读取文件夹内容，仅上传 tif / tiff
+        递归读取文件夹内容，仅上传受支持影像（tif/img/jp2/ENVI 成对）
       </div>
       <div
         v-if="modelValue.length"
@@ -35,7 +35,7 @@
         @click.stop
       >
         <div class="selected-files__title">
-          已选择 {{ modelValue.length }} 个 tif/tiff 文件
+          已选择 {{ modelValue.length }} 个影像文件
         </div>
         <div
           v-for="item in modelValue.slice(0, 8)"
@@ -81,14 +81,14 @@
     <input
       ref="fileInput"
       type="file"
-      accept=".tif,.tiff,.TIF,.TIFF"
+      accept=".tif,.tiff,.TIF,.TIFF,.img,.IMG,.jp2,.JP2,.dat,.bin,.hdr"
       multiple
       style="display: none;"
       @change="handleFileSelect"
     >
     <el-row justify="center">
       <div style="color:#909399; font-size: 12px;">
-        支持拖拽文件夹、点击选择整个文件夹，自动递归过滤非 tif / tiff 文件
+        支持拖拽或点击选择，自动过滤非影像文件；ENVI 影像请将 .dat/.bin 与同名 .hdr 一起选择
       </div>
     </el-row>
     <slot />

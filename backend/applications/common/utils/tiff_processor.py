@@ -54,9 +54,13 @@ NORMALIZE_PERCENTILE = (2, 98)
 
 
 def is_tiff_file(filename: str) -> bool:
-    """判断是否为 TIFF 文件"""
-    ext = osp.splitext(filename.lower())[1]
-    return ext in ('.tif', '.tiff')
+    """判断是否为受支持的地理栅格（S1 泛化：tif/tiff/img/jp2 + ENVI 成员）。
+
+    旧名保留为别名——大量调用方与测试引用；行为详见 raster_formats.is_supported_raster。
+    """
+    from applications.common.utils.raster_formats import is_supported_raster
+
+    return is_supported_raster(filename)
 
 
 def validate_tiff_file(file_path: str) -> dict:
@@ -272,9 +276,9 @@ def _build_invalid_mask_from_raster(src, raw_data: np.ndarray, rgb_data: np.ndar
 
 def read_tiff_as_rgb(tiff_path: str) -> np.ndarray:
     """
-    读取 TIFF 文件并转换为 RGB 数组
-    
-    :param tiff_path: TIFF 文件路径
+    读取地理栅格并转换为 RGB 数组（S1 泛化：GeoTIFF/IMG/ENVI/JP2，rasterio 驱动自动识别）
+
+    :param tiff_path: 栅格文件路径
     :return: RGB 数组 [height, width, 3] uint8
     """
     raw_data = None
@@ -467,3 +471,6 @@ def get_tiff_info(tiff_path: str) -> dict:
     """获取 TIFF 文件信息"""
     validation = validate_tiff_file(tiff_path)
     return validation['info'] if validation['valid'] else {}
+
+# S1 泛化别名：语义更准的读取入口（行为与 read_tiff_as_rgb 一致）
+read_raster_as_rgb = read_tiff_as_rgb

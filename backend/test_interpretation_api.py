@@ -21,7 +21,18 @@ class TestInterpretationAPI(unittest.TestCase):
         self.upload_root = self.root / "uploads"
         self.upload_root.mkdir()
         self.tif_path = self.upload_root / "scene.tif"
-        self.tif_path.touch()
+        # S1 起解析器真校验可读性+CRS（空 touch 文件不再可用），造真实最小 GeoTIFF
+        import numpy as np
+        import rasterio as _rio
+
+        rng = np.random.default_rng(5)
+        profile = {
+            "driver": "GTiff", "height": 32, "width": 32, "count": 3, "dtype": "uint8",
+            "crs": "EPSG:4326",
+            "transform": _rio.transform.from_origin(100.0, 26.0, 0.001, 0.001),
+        }
+        with _rio.open(self.tif_path, "w", **profile) as dst:
+            dst.write(rng.integers(20, 235, size=(3, 32, 32), dtype=np.uint8))
         self.previous_storage_root = os.environ.get("PROJECT_STORAGE_ROOT")
         os.environ["PROJECT_STORAGE_ROOT"] = str(self.root / "project_storage")
 

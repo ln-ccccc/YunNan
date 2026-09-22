@@ -11,6 +11,14 @@ from applications.project_hub.spatial_storage import get_storage_root, resolve_s
 
 
 def resolve_uploaded_tiff(value):
+    """推理输入解析（S1 泛化）：受支持地理栅格均可；ENVI 需 .hdr 同目录。"""
+    from applications.common.utils.raster_formats import (
+        RasterFormatError,
+        SUPPORTED_RASTER_EXTENSIONS,
+        ENVI_DATA_EXTENSIONS,
+        validate_raster,
+    )
+
     if not value:
         raise ValueError("缺少 new_tif_path")
     upload_root = Path(current_app.config["UPLOADED_PHOTOS_DEST"]).expanduser().resolve()
@@ -18,12 +26,21 @@ def resolve_uploaded_tiff(value):
     try:
         tif_path.relative_to(upload_root)
     except ValueError as exc:
-        raise ValueError("TIFF 路径不在上传目录中") from exc
+        raise ValueError("影像路径不在上传目录中") from exc
     if not tif_path.is_file():
-        raise FileNotFoundError("TIFF 文件不存在")
-    if tif_path.suffix.lower() not in {".tif", ".tiff"}:
-        raise ValueError("地物分类仅支持 tif/tiff")
+        raise FileNotFoundError("影像文件不存在")
+    ext = tif_path.suffix.lstrip(".").lower()
+    if ext not in (SUPPORTED_RASTER_EXTENSIONS | ENVI_DATA_EXTENSIONS):
+        raise ValueError("地物分类仅支持 tif/tiff/img/jp2 或 ENVI(.dat/.bin+.hdr) 影像")
+    try:
+        validate_raster(tif_path)
+    except RasterFormatError as exc:
+        raise ValueError(str(exc)) from exc
     return tif_path
+
+
+# S1 泛化别名
+resolve_uploaded_raster = resolve_uploaded_tiff
 
 
 def _parse_year(value):

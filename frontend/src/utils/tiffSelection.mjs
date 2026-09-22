@@ -2,11 +2,15 @@
 // （isValidTiff 还出现了大小写处理漂移），统一收敛到这里供两视图及后续共享上传卡组件使用。
 // readDroppedItems/walkFileTree 依赖浏览器 DataTransfer API，node --test 不执行它们，
 // 模块本身无顶层浏览器调用，可被 Node 直接 import 做纯函数测试。
+// 支持的地理栅格格式（S1）：与后端 raster_formats.SUPPORTED_IMAGERY_EXTENSIONS 同源
+// ——tif/tiff/img/jp2 单文件 + ENVI(.dat/.bin 与 .hdr 成对) + .hdr 伴生
+export const SUPPORTED_IMAGERY_SUFFIXES = ['tif', 'tiff', 'img', 'jp2', 'dat', 'bin', 'hdr'];
+
 export function isValidTiff(fileLike) {
   const raw = fileLike?.raw || fileLike?.file || fileLike;
   const name = String(fileLike?.relativePath || raw?.webkitRelativePath || raw?.name || '');
   const suffix = name.substring(name.lastIndexOf('.') + 1).toLowerCase();
-  return ['tif', 'tiff'].includes(suffix);
+  return SUPPORTED_IMAGERY_SUFFIXES.includes(suffix);
 }
 
 export function normalizeSelectedItems(inputFiles) {

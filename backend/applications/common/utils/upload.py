@@ -22,8 +22,11 @@ def get_photo(page, limit):
     return data, count
 
 
-def upload_one(photo, mime, type_=0, enable_slicing=False, keep_tiff_raw=False):
-    filename = photos.save(photo, name=str(uuid.uuid4()) + ".")
+def upload_one(photo, mime, type_=0, enable_slicing=False, keep_tiff_raw=False, name_hint=None):
+    # name_hint（S1 ENVI 支持）：数据文件与 .hdr 必须共享词干落盘，rasterio 才能按
+    # 同名约定找到头文件；常规文件不传则各自随机 UUID。
+    stem = str(name_hint) if name_hint else str(uuid.uuid4())
+    filename = photos.save(photo, name=stem + ".")
     upload_url = current_app.config.get("UPLOADED_PHOTOS_DEST")
     full_path = os.path.join(upload_url, filename)
 

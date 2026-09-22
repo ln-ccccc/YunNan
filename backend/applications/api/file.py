@@ -29,8 +29,17 @@ def upload_api():
     to_type = type_utils.str_to_type(type_)
     photos = request.files.getlist('files')
 
+    # S1 格式扩展：ENVI 成对校验（.dat/.bin 必须与同名 .hdr 同批上传）
+    from applications.common.utils.raster_formats import RasterFormatError, detect_raster_kind
+
+    try:
+        raster_entries = detect_raster_kind([photo.filename for photo in photos])
+    except RasterFormatError as error:
+        return fail_api(str(error)), 400
+    raster_filenames = {entry["filename"] for entry in raster_entries}
+
     for photo in photos:
-        if is_tiff_file(photo.filename):
+        if is_tiff_file(photo.filename) and photo.filename in raster_filenames:
             photo.seek(0, 2)
             size_bytes = photo.tell()
             photo.seek(0)
@@ -41,13 +50,21 @@ def upload_api():
             # 超过该上限（前端阈值 512MB 以上即分流）请走分片续传通道：
             # /api/file/upload/init|chunk/<sid>/<idx>|complete/<sid>
             if size_mb > MAX_UPLOAD_TIFF_SIZE_MB:
-                return fail_api(f"TIFF 文件 '{photo.filename}' 大小 ({size_mb:.1f}MB) 超过硬上限 ({MAX_UPLOAD_TIFF_SIZE_MB}MB)")
+                return fail_api(f"影像文件 '{photo.filename}' 大小 ({size_mb:.1f}MB) 超过硬上限 ({MAX_UPLOAD_TIFF_SIZE_MB}MB)")
 
     data = []
     is_slice_str = request.form.get('isSlice', 'false')
     is_slice = is_slice_str.lower() == 'true'
     keep_raw_tiff_str = request.form.get('keepRawTiff', 'false')
     keep_raw_tiff = keep_raw_tiff_str.lower() == 'true'
+
+    # ENVI 对（数据+头）共享 UUID 词干；.dat 与 .hdr 分别落 <stem>.dat / <stem>.hdr
+    envi_shared_stems = {}
+    for entry in raster_entries:
+        if entry["kind"] == "envi":
+            shared = str(uuid.uuid4())
+            envi_shared_stems[entry["filename"]] = shared
+            envi_shared_stems[entry["header"]] = shared
 
     for photo in photos:
         mime = photo.content_type
@@ -58,6 +75,7 @@ def upload_api():
                 type_=to_type,
                 enable_slicing=is_slice,
                 keep_tiff_raw=keep_raw_tiff,
+                name_hint=envi_shared_stems.get(photo.filename),
             )
             for file_url, photo_id, display_name, raw_tiff_path in upload_results:
                 data.append({
