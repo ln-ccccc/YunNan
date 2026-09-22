@@ -157,6 +157,7 @@ export function createProjectRoutes({
     }
   });
   router.get('/:projectId/classification-results', relay('GET', () => '/classification-results'));
+  router.get('/:projectId/mines/parcel-summary', relay('GET', () => '/mines/parcel-summary', { query: true }));
   router.get('/:projectId/mines/:fid/traceability', relay('GET', (req) => `/mines/${encodeURIComponent(req.params.fid)}/traceability`));
 
   router.get('/:projectId/mines/original-imagery/:jobId/download', async (req, res) => {

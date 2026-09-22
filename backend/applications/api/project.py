@@ -555,6 +555,26 @@ def project_imagery_slice_api(project_id):
         return business_or_server_failure(exc, "影像切片失败", logger=LOGGER)
 
 
+@project_api.get("/<int:project_id>/mines/parcel-summary")
+@login_required
+def project_mines_parcel_summary_api(project_id):
+    """图斑清单（M3 补交）：每矿山图斑数/最新年份/最近解译时间。"""
+    try:
+        from applications.project_hub.parcel_summary import build_parcel_summary
+
+        page = max(1, request.args.get("page", 1, type=int) or 1)
+        limit = min(200, max(1, request.args.get("limit", 50, type=int) or 50))
+        return success_api(data=build_parcel_summary(
+            project_id, page=page, limit=limit, fid_filter=request.args.get("fid"),
+        ))
+    except ValueError as exc:
+        return fail_api(str(exc)), 400
+    except Exception as exc:
+        return business_or_server_failure(
+            exc, "图斑清单读取失败", logger=LOGGER, business_status=404
+        )
+
+
 @project_api.get("/<int:project_id>/mines/<int:fid>/traceability")
 @login_required
 def project_mine_traceability_api(project_id, fid):

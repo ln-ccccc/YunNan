@@ -127,6 +127,11 @@
             :project-id="currentProjectId"
             @imported="refreshCurrent(INVALIDATION.project)"
           />
+
+          <ParcelPanel
+            :project-id="currentProjectId"
+            @locate-mine="locateMine"
+          />
         </template>
 
         <section v-else-if="listSlice.loading" class="panel empty-detail">
@@ -151,6 +156,7 @@ import ProjectAssetsPanel from './projectWorkspace/ProjectAssetsPanel.vue';
 import ProjectDatasetRegistrationPanel from './projectWorkspace/ProjectDatasetRegistrationPanel.vue';
 import ProjectExportSnapshotPanel from './projectWorkspace/ProjectExportSnapshotPanel.vue';
 import ProjectArchivePanel from './projectWorkspace/ProjectArchivePanel.vue';
+import ParcelPanel from './projectWorkspace/ParcelPanel.vue';
 import ProjectForm from './projectWorkspace/ProjectForm.vue';
 import ProjectOverviewPanel from './projectWorkspace/ProjectOverviewPanel.vue';
 import ProjectSelector from './projectWorkspace/ProjectSelector.vue';
@@ -487,6 +493,10 @@ function runNextAction(action) {
 function openMap(mineFid = null) {
   if (!currentProjectId.value || !overview.value?.capabilities?.can_open_map) return;
   emit('open-map', currentProjectId.value, mineFid === null ? null : Number(mineFid));
+}
+
+function locateMine(fid) {
+  emit('open-map', currentProjectId.value, fid);
 }
 
 function startInference() {
