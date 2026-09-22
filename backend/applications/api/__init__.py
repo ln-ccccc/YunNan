@@ -7,6 +7,7 @@ from applications.api.history import history_api
 from applications.api.inference import inference_api
 from applications.api.model import model_api
 from applications.api.project import project_api
+from applications.api.stats import stats_api
 
 
 def system_api(app: Flask):
@@ -17,3 +18,4 @@ def system_api(app: Flask):
     app.register_blueprint(model_api)
     app.register_blueprint(project_api)
     app.register_blueprint(inference_api)
+    app.register_blueprint(stats_api)

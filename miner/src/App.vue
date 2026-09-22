@@ -6,38 +6,73 @@
     :error="authError"
     @login="handleLogin"
   />
-  <div v-else class="app-shell">
-    <div v-show="currentView === 'projects'" class="workspace-shell">
-      <ProjectWorkspace
-        :username="sessionState.username"
-        @open-map="openMapView"
-        @logout="handleLogout"
+  <div v-else class="app-shell" :class="{ 'with-sidebar': showSidebar }">
+    <aside v-if="showSidebar" class="side-nav">
+      <div class="brand">矿山监测<br />主控台</div>
+      <nav class="nav-list">
+        <button
+          v-for="item in navItems"
+          :key="item.key"
+          :class="{ active: currentView === item.key || (item.key === 'projects' && currentView === 'map') }"
+          @click="navigateToView(item)"
+        >
+          <span class="nav-label">{{ item.label }}</span>
+          <span v-if="!item.implemented" class="nav-badge">规划中</span>
+        </button>
+      </nav>
+      <div class="nav-footer">
+        <span class="username">{{ sessionState.username }}</span>
+        <button class="logout-btn" @click="handleLogout">退出</button>
+      </div>
+    </aside>
+    <main class="content-area" :class="{ scrollable: currentView !== 'map' }">
+      <div v-show="currentView === 'projects' || currentView === 'map'" class="workspace-routed">
+        <ProjectWorkspace
+          v-show="currentView === 'projects'"
+          :username="sessionState.username"
+          @open-map="openMapView"
+        />
+        <MapDashboard
+          v-show="currentView === 'map'"
+          ref="mapDashboardRef"
+          :key="selectedProjectId"
+          :project-id="selectedProjectId"
+          :username="sessionState.username"
+          headerActionLabel="返回项目工作台"
+          @back-to-projects="returnToProjectsView"
+        />
+      </div>
+      <ModulePlaceholder
+        v-if="placeholderItem"
+        :label="placeholderItem.label"
+        :milestone="placeholderItem.milestone"
+        @go-projects="navigateToView(navItems[0])"
       />
-    </div>
-    <div v-show="currentView === 'map'" class="map-shell">
-      <MapDashboard
-        ref="mapDashboardRef"
-        :key="selectedProjectId"
-        :project-id="selectedProjectId"
-        :username="sessionState.username"
-        headerActionLabel="返回项目工作台"
-        @back-to-projects="returnToProjectsView"
-        @logout="handleLogout"
-      />
-    </div>
+    </main>
   </div>
 </template>
 
 <script setup>
 import axios from 'axios';
-import { nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 import { resolveInitialView } from './auth/authGuards.js';
 import { fetchSession, login as loginRequest, logout as logoutRequest } from './auth/sessionClient.js';
 import LoginPage from './components/LoginPage.vue';
 import MapDashboard from './components/MapDashboard.vue';
+import ModulePlaceholder from './components/ModulePlaceholder.vue';
 import ProjectWorkspace from './components/ProjectWorkspace.vue';
-import { VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
+import { NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
+
+// 占位模块 → 交付里程碑标注（M1 骨架诚实占位，M3/M4 填充）
+const PLACEHOLDER_MILESTONES = {
+  imagery: 'M4',
+  interpretation: 'M4',
+  editing: 'M3',
+  data: 'M4',
+  search: 'M4',
+  settings: 'M4',
+};
 
 const currentView = ref('login');
 const mapDashboardRef = ref(null);
@@ -47,6 +82,14 @@ const initializing = ref(true);
 const authLoading = ref(false);
 const authError = ref('');
 const sessionState = ref({ authenticated: false, username: '' });
+
+const navItems = NAV_ITEMS;
+const showSidebar = computed(() => currentView.value !== 'login');
+const placeholderItem = computed(() => {
+  if (!PLACEHOLDER_MILESTONES[currentView.value]) return null;
+  const item = NAV_ITEMS.find((entry) => entry.key === currentView.value);
+  return item ? { ...item, milestone: PLACEHOLDER_MILESTONES[currentView.value] } : null;
+});
 
 let responseInterceptorId = null;
 
@@ -62,10 +105,20 @@ const navigateToLogin = (message = '') => {
 const syncHash = (view) => {
   const targetHash = view === 'map' && selectedProjectId.value
     ? buildMapHash(selectedProjectId.value)
-    : VIEW_HASH.projects;
+    : (VIEW_HASH[view] || VIEW_HASH.projects);
   if (window.location.hash !== targetHash) {
     window.location.hash = targetHash;
   }
+};
+
+const navigateToView = (item) => {
+  if (!sessionState.value.authenticated) {
+    navigateToLogin();
+    return;
+  }
+  selectedProjectId.value = null;
+  currentView.value = item.key;
+  syncHash(item.key);
 };
 
 const applyPendingMineFocus = async () => {
@@ -173,18 +226,98 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.app-shell,
-.workspace-shell,
-.map-shell {
+.app-shell {
   width: 100vw;
   height: 100vh;
+  display: flex;
 }
 
-/* 工作台是长页面：超出视口的部分在工作台外壳内纵向滚动。
-   地图视图保持满屏不滚（仪表盘布局），body 全局隐藏溢出不变。 */
-.workspace-shell {
-  overflow-y: auto;
+.with-sidebar .content-area {
+  flex: 1;
+  min-width: 0;
 }
+
+.side-nav {
+  width: 200px;
+  flex-shrink: 0;
+  background: #1d3b36;
+  color: #e8f2ef;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 12px;
+  gap: 16px;
+}
+
+.brand {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+  padding: 4px 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.nav-list { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+
+.nav-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: none;
+  color: #cfe3de;
+  padding: 10px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+}
+
+.nav-list button:hover { background: rgba(255, 255, 255, 0.08); }
+
+.nav-list button.active {
+  background: #2f6f61;
+  color: #fff;
+}
+
+.nav-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #b8d4cd;
+}
+
+.nav-list button.active .nav-badge { background: rgba(255, 255, 255, 0.22); }
+
+.nav-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 13px;
+}
+
+.username { color: #b8d4cd; }
+
+.logout-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #cfe3de;
+  border-radius: 5px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.logout-btn:hover { background: rgba(255, 255, 255, 0.1); }
+
+.content-area { position: relative; }
+
+.content-area.scrollable { overflow-y: auto; }
+
+.workspace-routed { width: 100%; height: 100%; }
+
+.workspace-routed > div { width: 100%; height: 100%; }
 
 .loading-shell {
   width: 100vw;

@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
 import { createProjectRoutes } from './routes/projects.js';
+import { createStatsRoutes } from './routes/stats.js';
 import { authBackend } from './services/authBackend.js';
 import { relayBackendResponse, requireMinerAuth } from './services/authProxy.js';
 import { inferenceBackend } from './services/inferenceBackend.js';
@@ -63,6 +64,7 @@ app.post('/api/auth/logout', async (req, res) => {
 });
 
 app.use('/api/projects', authGuard, createProjectRoutes());
+app.use('/api/stats', authGuard, createStatsRoutes());
 
 app.get('/tiles/:z/:x/:y.png', (req, res) => {
   return res.status(410).json({ error: '全局瓦片接口已停用，请使用项目瓦片地址' });

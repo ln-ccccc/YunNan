@@ -166,10 +166,10 @@ def _storage_key(*parts):
     return Path(*parts).as_posix()
 
 
-def _serialize_summary(project):
+def _serialize_summary(project, feature_count=None, latest_inference=None, include_card_fields=False):
     latest_activity = project.activities[0].create_time if project.activities else None
     spatial_state = serialize_project_spatial_state(project)
-    return ProjectSummarySchema().dump({
+    payload = {
         "id": project.id,
         "name": project.name,
         "region": project.region,
@@ -184,7 +184,21 @@ def _serialize_summary(project):
         "latest_activity_at": latest_activity,
         "create_time": project.create_time,
         "update_time": project.update_time,
-    })
+    }
+    # M1 主控台卡片字段：仅项目列表注入（overview/fixture 的 summary 契约不含它们）；
+    # latest_inference 键必须无条件存在（None 表示暂无解译），marshmallow 才会序列化 null
+    if include_card_fields:
+        payload["feature_count"] = feature_count or 0
+        payload["latest_inference"] = (
+            {
+                "job_id": latest_inference.get("job_id"),
+                "status": latest_inference.get("status"),
+                "create_time": latest_inference.get("create_time"),
+            }
+            if latest_inference
+            else None
+        )
+    return ProjectSummarySchema().dump(payload)
 
 
 def _utc_timestamp(value):
@@ -403,6 +417,51 @@ def _get_project_or_404(project_id):
     return project
 
 
+def _project_list_features():
+    """项目 → 图斑要素数（M1 看板）：每 (fid, year) 取最新一条成果（同年多任务
+    不重复计数），合计其 feature_count 冗余列。"""
+    from applications.models.classification_result import ClassificationResult
+
+    rows = (
+        db.session.query(
+            ClassificationResult.project_id,
+            ClassificationResult.mine_fid,
+            ClassificationResult.year,
+            ClassificationResult.id,
+            ClassificationResult.feature_count,
+        )
+        .order_by(ClassificationResult.id.desc())
+        .all()
+    )
+    latest = {}
+    for project_id, mine_fid, year, result_id, feature_count in rows:
+        key = (project_id, mine_fid, year)
+        if key not in latest:
+            latest[key] = feature_count or 0
+    totals = {}
+    for (project_id, _fid, _year), count in latest.items():
+        totals[project_id] = totals.get(project_id, 0) + count
+    return totals
+
+
+def _project_list_latest_inference():
+    """项目 → 最近一次推理任务（状态/时间），供项目卡片"最新解译进度"。"""
+    latest = (
+        InferenceJob.query.filter(InferenceJob.project_id.isnot(None))
+        .order_by(InferenceJob.project_id, InferenceJob.create_time.desc())
+        .all()
+    )
+    summary = {}
+    for job in latest:
+        if job.project_id not in summary:
+            summary[job.project_id] = {
+                "job_id": job.id,
+                "status": job.status,
+                "create_time": job.create_time,
+            }
+    return summary
+
+
 def list_projects(filters=None):
     query = Project.query.filter_by(deleted_at=None).order_by(Project.update_time.desc())
     filters = filters or {}
@@ -418,7 +477,18 @@ def list_projects(filters=None):
             Project.monitor_start_year <= year_value,
             Project.monitor_end_year >= year_value,
         )
-    items = [_serialize_summary(project) for project in query.all()]
+    projects = query.all()
+    feature_totals = _project_list_features()
+    latest_inference = _project_list_latest_inference()
+    items = [
+        _serialize_summary(
+            project,
+            feature_count=feature_totals.get(project.id, 0),
+            latest_inference=latest_inference.get(project.id),
+            include_card_fields=True,
+        )
+        for project in projects
+    ]
     return {"items": items, "count": len(items)}
 
 

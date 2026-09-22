@@ -56,7 +56,10 @@
           </span>
           <span>{{ item.region || '未填写区域' }}</span>
           <span>监测期：{{ formatYearRange(item.monitor_start_year, item.monitor_end_year) }}</span>
-          <span>矿山 {{ item.mine_count || 0 }} 座，数据 {{ item.dataset_count || 0 }} 份</span>
+          <span>矿山 {{ item.mine_count || 0 }} 座，数据 {{ item.dataset_count || 0 }} 份，图斑 {{ item.feature_count || 0 }} 个</span>
+          <span class="project-card-inference">
+            解译进度：{{ formatInference(item.latest_inference) }}
+          </span>
         </button>
         <p v-if="!visibleItems.length" class="empty-block">暂无匹配项目</p>
       </template>
@@ -68,6 +71,27 @@
 import { computed } from 'vue';
 
 import { filterProjects } from '../../projectWorkspace/projectWorkspaceHelpers.js';
+
+const INFERENCE_STATUS_TEXT = {
+  queued: '排队中',
+  running: '解译中',
+  succeeded: '已完成',
+  succeeded_with_fallback: '已完成（CPU 回退）',
+  partial_failed: '部分失败',
+  failed: '失败',
+  cancelled: '已取消',
+};
+
+const formatInference = (latest) => {
+  if (!latest || !latest.status) return '暂无解译';
+  const text = INFERENCE_STATUS_TEXT[latest.status] || latest.status;
+  if (!latest.create_time) return text;
+  const date = new Date(latest.create_time);
+  const time = Number.isNaN(date.getTime())
+    ? String(latest.create_time)
+    : date.toLocaleDateString('zh-CN');
+  return `${text}（${time}）`;
+};
 
 const props = defineProps({
   items: {
@@ -234,5 +258,9 @@ select {
   .filter-grid {
     grid-template-columns: 1fr;
   }
+}
+.project-card-inference {
+  font-size: 12px;
+  color: #5a7d75;
 }
 </style>

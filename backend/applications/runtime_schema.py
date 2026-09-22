@@ -31,6 +31,42 @@ def ensure_runtime_schema():
         db.session.commit()
     if db.engine.dialect.name == "mysql":
         _upgrade_long_json_columns(inspector)
+    _ensure_classification_feature_count(inspector)
+
+
+def _ensure_classification_feature_count(inspector):
+    """classification_results.feature_count 冗余列（M1 看板 2026-09-22）：
+    存量库补列并按 current FC 回填；新库由模型直接建对。"""
+    if "classification_results" not in inspector.get_table_names():
+        return
+    columns = {item["name"] for item in inspector.get_columns("classification_results")}
+    if "feature_count" not in columns:
+        db.session.execute(
+            text("ALTER TABLE classification_results ADD COLUMN feature_count INTEGER NOT NULL DEFAULT 0")
+        )
+        db.session.commit()
+        backfill_classification_feature_counts()
+
+
+def backfill_classification_feature_counts():
+    """按 current FC 回填 feature_count（表小逐条解析即可，MEDIUMTEXT 大 JSON 不走 SQL 函数）。"""
+    import json
+
+    from applications.models.classification_result import ClassificationResult
+
+    updated = 0
+    for result in ClassificationResult.query.all():
+        try:
+            collection = json.loads(result.current_feature_collection_json or "{}")
+        except (TypeError, ValueError):
+            collection = {}
+        count = len(collection.get("features") or []) if isinstance(collection, dict) else 0
+        if result.feature_count != count:
+            result.feature_count = count
+            updated += 1
+    if updated:
+        db.session.commit()
+    return updated
 
 
 def _upgrade_long_json_columns(inspector):

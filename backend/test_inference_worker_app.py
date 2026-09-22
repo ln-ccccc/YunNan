@@ -176,6 +176,7 @@ class TestInferenceWorkerApp(unittest.TestCase):
                 "inference_api",
                 "model_api",
                 "project_api",
+                "stats_api",
                 "_uploads",
             },
             set(result["blueprints"]),

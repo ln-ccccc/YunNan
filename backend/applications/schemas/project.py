@@ -83,6 +83,12 @@ class ProjectBackupRecordSchema(ma.Schema):
         return "项目配置快照"
 
 
+class ProjectLatestInferenceSchema(ma.Schema):
+    job_id = fields.Str()
+    status = fields.Str()
+    create_time = fields.DateTime(allow_none=True)
+
+
 class ProjectSummarySchema(ma.Schema):
     id = fields.Integer()
     name = fields.Str()
@@ -100,6 +106,9 @@ class ProjectSummarySchema(ma.Schema):
     latest_activity_at = fields.DateTime(allow_none=True)
     create_time = fields.DateTime()
     update_time = fields.DateTime()
+    # M1 主控台卡片：图斑要素数与最近解译进度（list 接口填充，单项目摘要可缺省）
+    feature_count = fields.Integer(allow_none=True)
+    latest_inference = fields.Nested(ProjectLatestInferenceSchema, allow_none=True)
 
 
 class ProjectAssetViewSchema(ma.Schema):

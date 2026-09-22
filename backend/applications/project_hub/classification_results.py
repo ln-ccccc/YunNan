@@ -168,6 +168,7 @@ def _mark_vector_failed(result, *, error_code, snapshot_dir=None):
     result.auto_feature_collection_json = None
     result.current_feature_collection_json = None
     result.current_revision_no = None
+    result.feature_count = 0
     result.vector_status = "vector_failed"
     result.vector_error = error_code
     db.session.commit()
@@ -380,6 +381,13 @@ def _validate_save_payload(result, payload, *, body_size):
 
 
 def _claim_current_revision(result, base_revision_no, revision_no, feature_collection_json):
+    import json as _json
+
+    try:
+        collection = _json.loads(feature_collection_json or "{}")
+        feature_count = len(collection.get("features") or []) if isinstance(collection, dict) else 0
+    except (TypeError, ValueError):
+        feature_count = 0
     return ClassificationResult.query.filter(
         ClassificationResult.id == result.id,
         ClassificationResult.project_id == result.project_id,
@@ -388,6 +396,7 @@ def _claim_current_revision(result, base_revision_no, revision_no, feature_colle
         {
             "current_feature_collection_json": feature_collection_json,
             "current_revision_no": revision_no,
+            "feature_count": feature_count,
         },
         synchronize_session=False,
     )
@@ -591,6 +600,7 @@ def publish_classification_result(
     result.auto_feature_collection_json = feature_collection_json
     result.current_feature_collection_json = feature_collection_json
     result.current_revision_no = 0
+    result.feature_count = len(feature_collection["features"])
     result.vector_status = "ready" if feature_collection["features"] else "ready_empty"
     result.vector_error = None
     db.session.add(

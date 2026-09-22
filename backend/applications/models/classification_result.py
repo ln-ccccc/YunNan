@@ -26,6 +26,9 @@ class ClassificationResult(db.Model):
     auto_feature_collection_json = db.Column(LongJSON)
     current_feature_collection_json = db.Column(LongJSON)
     current_revision_no = db.Column(db.Integer)
+    # 冗余列（M1 看板 2026-09-22）：current FC 的要素数，发布/保存修订时同步维护，
+    # 项目卡片"图斑数量"与跨项目统计避免逐条解析 MEDIUMTEXT JSON
+    feature_count = db.Column(db.Integer, nullable=False, default=0)
     vector_status = db.Column(db.String(32), nullable=False, default="vector_failed", index=True)
     vector_error = db.Column(db.String(255))
     create_time = db.Column(db.DateTime, default=datetime.datetime.now, nullable=False)

@@ -15,6 +15,8 @@
       </div>
     </header>
 
+    <StatsOverviewPanel ref="statsPanelRef" class="workspace-stats" />
+
     <section class="workspace-layout">
       <ProjectSelector
         :items="projects"
@@ -134,6 +136,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 
+import StatsOverviewPanel from './StatsOverviewPanel.vue';
 import ProjectActivityPanel from './projectWorkspace/ProjectActivityPanel.vue';
 import ProjectAssetsPanel from './projectWorkspace/ProjectAssetsPanel.vue';
 import ProjectDatasetRegistrationPanel from './projectWorkspace/ProjectDatasetRegistrationPanel.vue';
@@ -160,6 +163,7 @@ const projectOperationGate = createSelectionGate();
 const projectFormGate = createSelectionGate();
 
 const filters = ref({ name: '', region: '', status: '', monitorYear: '' });
+const statsPanelRef = ref(null);
 const assetFilters = ref({ type: '', status: '' });
 const currentProjectId = ref(null);
 const listSlice = reactive(createSlice());
@@ -339,6 +343,8 @@ async function loadSelectedProject(projectId, revision, requestedSlices = Object
 
 async function loadProjects(preferredProjectId = null) {
   const revision = listGate.next();
+  // 看板与项目列表同刷：新建/归档后统计即时跟随
+  statsPanelRef.value?.fetchOverview?.();
   if (!await loadProjectList(revision) || listSlice.error) return;
   const items = listSlice.data?.items || [];
   const preferred = preferredProjectId || currentProjectId.value || items[0]?.id;
