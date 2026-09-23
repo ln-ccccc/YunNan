@@ -366,8 +366,10 @@ defineExpose({
 }
 
 .dashboard {
-  width: 100vw;
-  height: 100vh;
+  /* 嵌套于 AppShell content-area 内：用 100% 撑满父容器。
+     100vw/100vh 是旧全屏版残留，会溢出到应用侧栏之下 */
+  width: 100%;
+  height: 100%;
   background:
     radial-gradient(circle at 50% 44%, rgba(36, 193, 255, 0.12), transparent 46%),
     #0a1929;
@@ -385,6 +387,19 @@ defineExpose({
   overflow: hidden;
   min-width: 0;
   gap: 0;
+}
+/* 地图未就绪（加载中/失败）时的占位：必须以 flex:1 占满中段，
+   否则收缩为文字宽度，左右两栏直接贴合（2026-09-22 实测缺陷） */
+.map-unavailable {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: #7dd3fc;
+  font-size: 15px;
+  text-align: center;
 }
 .map-tools {
   position: absolute;

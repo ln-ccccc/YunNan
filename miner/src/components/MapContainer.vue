@@ -264,8 +264,6 @@ const toggleGraticule = () => {
   }
 };
 
-defineExpose({ flyToMine, fitMineLayerBounds, invalidateSize, toggleGraticule });
-
 const getMineColor = (feature) => {
   const status = feature.properties.status_normalized || 'unknown';
   if (status === 'treated') return '#00b894';
@@ -347,6 +345,11 @@ const flyToMine = (fid) => {
 const invalidateSize = () => {
   if (map.value) map.value.invalidateSize();
 };
+
+// 必须位于全部被引用函数的 const 声明之后：defineExpose 的对象字面量会立即
+// 求值，早于此处引用 flyToMine 等会在 setup 期抛 TDZ ReferenceError，
+// MapContainer 整体不挂载（地图区塌成 <!---->，2026-09-22 实测 P0）
+defineExpose({ flyToMine, fitMineLayerBounds, invalidateSize, toggleGraticule });
 
 watch(() => props.minesData, () => {
   renderMapMarkers();

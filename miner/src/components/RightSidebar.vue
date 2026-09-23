@@ -229,6 +229,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .sidebar {
   width: 286px;
+  flex-shrink: 0;
   /* 同 LeftSidebar：移除 backdrop-filter 避免 GPU 合成伪影 */
   background: rgba(10, 25, 41, 0.97);
   border-right: 1px solid var(--border-color);
