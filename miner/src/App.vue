@@ -7,23 +7,34 @@
     @login="handleLogin"
   />
   <div v-else class="app-shell" :class="{ 'with-sidebar': showSidebar }">
-    <aside v-if="showSidebar" class="side-nav">
-      <div class="brand">矿山监测<br />主控台</div>
+    <aside v-if="showSidebar" class="side-nav" :class="{ collapsed: navCollapsed }">
+      <div class="brand" :title="navCollapsed ? '矿山监测主控台' : null">
+        <template v-if="!navCollapsed">矿山监测<br />主控台</template>
+        <template v-else>矿</template>
+      </div>
       <nav class="nav-list">
         <button
           v-for="item in navItems"
           :key="item.key"
           :class="{ active: currentView === item.key || (item.key === 'projects' && currentView === 'map') }"
+          :title="navCollapsed ? item.label : null"
           @click="navigateToView(item)"
         >
-          <span class="nav-label">{{ item.label }}</span>
-          <span v-if="!item.implemented" class="nav-badge">规划中</span>
+          <span v-if="!navCollapsed" class="nav-label">{{ item.label }}</span>
+          <span v-if="!navCollapsed && !item.implemented" class="nav-badge">规划中</span>
+          <span v-else-if="navCollapsed && !item.implemented" class="nav-badge-dot" />
         </button>
       </nav>
-      <div class="nav-footer">
+      <div v-if="!navCollapsed" class="nav-footer">
         <span class="username">{{ sessionState.username }}</span>
         <button class="logout-btn" @click="handleLogout">退出</button>
       </div>
+      <button
+        v-else
+        class="logout-btn logout-compact"
+        title="退出登录"
+        @click="handleLogout"
+      >⏻</button>
     </aside>
     <main class="content-area" :class="{ scrollable: currentView !== 'map' }">
       <div v-show="currentView === 'projects' || currentView === 'map'" class="workspace-routed">
@@ -88,6 +99,12 @@ const authError = ref('');
 const sessionState = ref({ authenticated: false, username: '' });
 
 const navItems = NAV_ITEMS;
+
+// 侧栏自适应：≤1100px 折叠为图标条（恢复旧版 Home.vue 的响应式行为，AppShell 化时曾丢失）
+const navCollapsed = ref(false);
+const syncNavCollapse = () => {
+  navCollapsed.value = document.documentElement.clientWidth <= 1100;
+};
 const showSidebar = computed(() => currentView.value !== 'login');
 const placeholderItem = computed(() => {
   if (!PLACEHOLDER_MILESTONES[currentView.value]) return null;
@@ -197,6 +214,8 @@ onMounted(async () => {
   if (!window.location.hash) {
     window.history.replaceState(null, '', VIEW_HASH.projects);
   }
+  syncNavCollapse();
+  window.addEventListener('resize', syncNavCollapse);
   responseInterceptorId = axios.interceptors.response.use(
     (response) => response,
     (error) => {
@@ -222,6 +241,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener('resize', syncNavCollapse);
   window.removeEventListener('hashchange', handleHashChange);
   if (responseInterceptorId !== null) {
     axios.interceptors.response.eject(responseInterceptorId);
@@ -243,6 +263,7 @@ onUnmounted(() => {
 
 .side-nav {
   width: 200px;
+  transition: width 0.2s ease;
   flex-shrink: 0;
   background: #1d3b36;
   color: #e8f2ef;
@@ -281,6 +302,38 @@ onUnmounted(() => {
 .nav-list button.active {
   background: #2f6f61;
   color: #fff;
+}
+
+/* 折叠态（≤1100px 自动）：图标条 */
+.side-nav.collapsed {
+  width: 56px;
+  padding: 16px 6px;
+}
+.side-nav.collapsed .brand {
+  font-size: 18px;
+  text-align: center;
+  padding: 4px 0 12px;
+}
+.side-nav.collapsed .nav-list button {
+  justify-content: center;
+  padding: 10px 4px;
+  font-size: 13px;
+}
+.nav-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.45);
+  display: inline-block;
+}
+.logout-compact {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #cfe3de;
+  border-radius: 5px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 14px;
 }
 
 .nav-badge {

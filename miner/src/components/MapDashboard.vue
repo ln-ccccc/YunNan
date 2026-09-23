@@ -146,7 +146,10 @@ const projectApi = createProjectWorkspaceApi({
 const showMineDetail = ref(false);
 const showInferenceModal = ref(false);
 const showTrendReportModal = ref(false);
-const rightSidebarCollapsed = ref(false);
+// 窄屏（≤1024px）初始收起右栏，避免地图被双栏挤到不可用（GUI 自适应检查 2026-09-23）
+const rightSidebarCollapsed = ref(
+  typeof window !== 'undefined' && document.documentElement.clientWidth <= 1024,
+);
 const graticuleOn = ref(false);
 
 const toggleGraticule = () => {
