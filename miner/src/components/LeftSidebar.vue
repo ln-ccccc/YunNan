@@ -77,26 +77,27 @@
         </div>
       </div>
 
-      <!-- 统计列表 -->
+      <!-- 统计列表：与右栏同款横向条形（statBarOption 共享构建器） -->
       <div class="ranking-panel glass-panel">
-        <div class="panel-header"><h3>修复方式 TOP5</h3></div>
-        <div class="ranking-list">
-          <div class="ranking-item" v-for="(item, index) in restorationMethodList" :key="index">
-            <span class="rank-num" :class="'top-' + (index + 1)">{{ index + 1 }}</span>
-            <span class="rank-name">{{ item.name }}</span>
-            <div class="rank-bar-container">
-              <div class="rank-bar" :style="{ width: (item.count / (restorationMethodList[0]?.count || 1) * 100) + '%' }"></div>
-            </div>
-            <span class="rank-val">{{ item.count }}</span>
-          </div>
+        <div class="panel-header">
+          <h3>修复方式 TOP5</h3>
+          <span class="panel-unit">按矿山数 · 个</span>
         </div>
+        <div
+          v-if="(restorationMethodList || []).length"
+          ref="rankChartRef"
+          class="rank-chart-box"
+        ></div>
+        <p v-else class="panel-empty">暂无修复方式统计</p>
       </div>
     </div>
   </aside>
 </template>
 
 <script setup>
-import { defineProps, defineEmits } from 'vue';
+import { defineProps, defineEmits, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import * as echarts from 'echarts';
+import { makeStatBarOption } from './statBarOption.js';
 
 const props = defineProps({
   mineTotal: Number,
@@ -128,6 +129,48 @@ const emit = defineEmits([
 const emitApply = () => emit('apply-filters');
 const emitReset = () => emit('reset-filters');
 const emitSearch = () => emit('search');
+
+// 修复方式 TOP5：与右栏同款横向条形，面板 flex-grow 时柱体随图幅自动加粗
+const rankChartRef = ref(null);
+let rankChartInst = null;
+let rankChartResizeObserver = null;
+
+const rankRows = () =>
+  [...(props.restorationMethodList || [])]
+    .sort((a, b) => (b.count || 0) - (a.count || 0))
+    .slice(0, 5);
+
+const renderRankChart = () => {
+  if (!rankChartRef.value) return;
+  if (!rankChartInst) {
+    rankChartInst = echarts.init(rankChartRef.value);
+    if (typeof ResizeObserver !== 'undefined') {
+      rankChartResizeObserver = new ResizeObserver(() => rankChartInst?.resize());
+      rankChartResizeObserver.observe(rankChartRef.value.parentElement);
+    }
+  }
+  const rows = rankRows();
+  rankChartInst.setOption(
+    makeStatBarOption({ names: rows.map((item) => item.name), values: rows.map((item) => item.count) }),
+    true,
+  );
+};
+
+watch(
+  () => props.restorationMethodList,
+  () => nextTick(renderRankChart),
+  { deep: true },
+);
+
+onMounted(() => {
+  nextTick(renderRankChart);
+});
+
+onBeforeUnmount(() => {
+  rankChartResizeObserver?.disconnect();
+  rankChartInst?.dispose();
+  rankChartInst = null;
+});
 </script>
 
 <style scoped>
@@ -270,15 +313,10 @@ const emitSearch = () => emit('search');
 }
 .search-box button { background: #4ecdc4; border: none; border-radius: 4px; cursor: pointer; }
 
-/* 弹性面板：大屏下 TOP5 吃掉侧栏剩余高度，行距均匀铺开，底部不再留白 */
+/* 弹性面板：TOP5 条形图吃掉侧栏剩余高度，柱体随图幅加粗，底部不再留白；
+   矮屏时 min-height 托底、整栏滚动 */
 .ranking-panel { flex: 1 1 auto; display: flex; flex-direction: column; }
-.ranking-list { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: space-evenly; gap: 4px; min-height: 140px; }
-.ranking-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.rank-num { width: 18px; height: 18px; background: #333; border-radius: 50%; text-align: center; line-height: 18px; font-size: 10px; }
-.top-1 { background: #f1c40f; color: #000; }
-.top-2 { background: #bdc3c7; color: #000; }
-.top-3 { background: #e67e22; color: #000; }
-.rank-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rank-bar-container { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; }
-.rank-bar { height: 100%; background: linear-gradient(90deg, #7fd8a6, #54997a); border-radius: 3px; }
+.rank-chart-box { width: 100%; flex: 1 1 auto; min-height: 150px; }
+.panel-unit { font-size: 11px; color: #78918f; white-space: nowrap; }
+.panel-empty { margin: 8px 0; font-size: 12px; color: #8da3b6; text-align: center; }
 </style>

@@ -60,6 +60,7 @@
 <script setup>
 import { defineProps, ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import * as echarts from 'echarts';
+import { makeStatBarOption } from './statBarOption.js';
 
 const props = defineProps({
   collapsed: Boolean,
@@ -111,71 +112,6 @@ const landChartMinHeight = computed(() => {
 
 const landChartRows = () => (props.landTypeList || []).slice(0, 12);
 
-// 江西同款横向条形：统一渐变配色 + 长类目名换行不截断 + tooltip confine，
-// 修复后地类与开采方式统计共用，保证柱状图风格一致
-const makeBarOption = (names, values) => ({
-  backgroundColor: 'transparent',
-  tooltip: {
-    trigger: 'axis',
-    confine: true,
-    backgroundColor: 'rgba(9, 23, 34, 0.96)',
-    borderColor: 'rgba(112, 160, 151, 0.3)',
-    borderWidth: 1,
-    padding: [8, 10],
-    textStyle: { color: '#d3e1dd', fontSize: 11 },
-    axisPointer: {
-      type: 'shadow',
-      shadowStyle: { color: 'rgba(91, 151, 142, 0.08)' },
-    },
-    formatter: (params) => {
-      const item = params?.[0];
-      if (!item) return '';
-      return `${item.name}<br/>${item.value} 个`;
-    },
-  },
-  grid: { left: '4%', right: '8%', bottom: '6%', top: '5%', containLabel: true },
-  xAxis: {
-    type: 'value',
-    axisLine: { show: false },
-    axisTick: { show: false },
-    splitLine: {
-      show: true,
-      lineStyle: { color: 'rgba(136, 169, 162, 0.12)', type: 'dashed' },
-    },
-    axisLabel: { color: '#78918f', fontSize: 10, margin: 8 },
-  },
-  yAxis: {
-    type: 'category',
-    // inverse 让数量最多的一档排在顶部，未知桶（聚合时固定在末位）落在底部
-    inverse: true,
-    data: names,
-    axisLine: { show: false },
-    axisTick: { show: false },
-    axisLabel: {
-      color: '#a2b8b3',
-      fontSize: 11,
-      margin: 10,
-      width: 96,
-      overflow: 'break',
-      lineHeight: 14,
-    },
-  },
-  series: [
-    {
-      type: 'bar',
-      data: values,
-      barWidth: '60%',
-      itemStyle: {
-        color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [
-          { offset: 0, color: '#7fd8a6' },
-          { offset: 0.62, color: '#54997a' },
-          { offset: 1, color: '#e2c285' },
-        ]),
-      },
-    },
-  ],
-});
-
 const miningBarRows = () => {
   const list = (props.miningMethodList || []).slice(0, 5);
   return {
@@ -226,14 +162,14 @@ const initBarChart = () => {
   if (!barChartRef.value) return;
   barChartInst = echarts.init(barChartRef.value);
   const rows = miningBarRows();
-  barChartInst.setOption(makeBarOption(rows.names, rows.values));
+  barChartInst.setOption(makeStatBarOption({ names: rows.names, values: rows.values }));
 };
 
 const initLandChart = () => {
   if (!landChartRef.value) return;
   landChartInst = echarts.init(landChartRef.value);
   const rows = landChartRows();
-  landChartInst.setOption(makeBarOption(rows.map((item) => item.name), rows.map((item) => item.value)));
+  landChartInst.setOption(makeStatBarOption({ names: rows.map((item) => item.name), values: rows.map((item) => item.value) }));
 };
 
 const updateCharts = () => {
@@ -245,7 +181,7 @@ const updateCharts = () => {
 
   if (barChartInst) {
     const rows = miningBarRows();
-    barChartInst.setOption(makeBarOption(rows.names, rows.values), true);
+    barChartInst.setOption(makeStatBarOption({ names: rows.names, values: rows.values }), true);
   }
 
   nextTick(() => {
@@ -255,7 +191,7 @@ const updateCharts = () => {
     }
     if (landChartInst) {
       const rows = landChartRows();
-      landChartInst.setOption(makeBarOption(rows.map((item) => item.name), rows.map((item) => item.value)), true);
+      landChartInst.setOption(makeStatBarOption({ names: rows.map((item) => item.name), values: rows.map((item) => item.value) }), true);
     }
     resizeCharts();
   });
