@@ -270,7 +270,9 @@ const emitSearch = () => emit('search');
 }
 .search-box button { background: #4ecdc4; border: none; border-radius: 4px; cursor: pointer; }
 
-.ranking-list { display: flex; flex-direction: column; gap: 8px; }
+/* 弹性面板：大屏下 TOP5 吃掉侧栏剩余高度，行距均匀铺开，底部不再留白 */
+.ranking-panel { flex: 1 1 auto; display: flex; flex-direction: column; }
+.ranking-list { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: space-evenly; gap: 4px; min-height: 140px; }
 .ranking-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .rank-num { width: 18px; height: 18px; background: #333; border-radius: 50%; text-align: center; line-height: 18px; font-size: 10px; }
 .top-1 { background: #f1c40f; color: #000; }
@@ -278,5 +280,5 @@ const emitSearch = () => emit('search');
 .top-3 { background: #e67e22; color: #000; }
 .rank-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rank-bar-container { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; }
-.rank-bar { height: 100%; background: #4ecdc4; border-radius: 3px; }
+.rank-bar { height: 100%; background: linear-gradient(90deg, #7fd8a6, #54997a); border-radius: 3px; }
 </style>

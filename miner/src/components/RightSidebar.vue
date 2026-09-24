@@ -26,12 +26,12 @@
         </div>
       </div>
 
-      <div class="chart-panel glass-panel">
+      <div class="chart-panel glass-panel grow">
         <div class="panel-header"><h3>治理状态分布</h3></div>
         <div ref="pieChartRef" class="chart-box pie-chart-box"></div>
       </div>
 
-      <div class="chart-panel glass-panel">
+      <div class="chart-panel glass-panel grow">
         <div class="panel-header">
           <h3>修复后地类</h3>
           <span class="panel-unit">按矿山数 · 个</span>
@@ -40,14 +40,17 @@
           v-if="(landTypeList || []).length"
           ref="landChartRef"
           class="chart-box"
-          :style="{ height: landChartHeight }"
+          :style="{ minHeight: landChartMinHeight }"
         ></div>
         <p v-else class="panel-empty">暂无地类统计</p>
         <p v-if="(landTypeList || []).length" class="panel-note">矿山涉及多个地类时按地类分别计入</p>
       </div>
 
-      <div class="chart-panel glass-panel">
-        <div class="panel-header"><h3>开采方式统计</h3></div>
+      <div class="chart-panel glass-panel grow">
+        <div class="panel-header">
+          <h3>开采方式统计</h3>
+          <span class="panel-unit">按矿山数 · 个</span>
+        </div>
         <div ref="barChartRef" class="chart-box"></div>
       </div>
     </div>
@@ -99,16 +102,18 @@ const resizeCharts = () => {
   landChartInst?.resize();
 };
 
-// 面板高度随行数走（每行约 26px + 轴留白），钳在 180~380px
-const landChartHeight = computed(() => {
+// 面板最小高度随行数走（每行约 26px + 轴留白），钳在 180~380px；
+// 面板本身随侧栏弹性伸展（flex-grow），大屏下图表吃掉剩余高度而不是留白
+const landChartMinHeight = computed(() => {
   const rows = Math.min(12, (props.landTypeList || []).length);
   return `${Math.min(380, Math.max(180, rows * 26 + 64))}px`;
 });
 
 const landChartRows = () => (props.landTypeList || []).slice(0, 12);
 
-// 参照江西 RightSidebar 的条形面板：统一渐变配色 + 长类目名换行不截断 + tooltip confine
-const makeLandBarOption = () => ({
+// 江西同款横向条形：统一渐变配色 + 长类目名换行不截断 + tooltip confine，
+// 修复后地类与开采方式统计共用，保证柱状图风格一致
+const makeBarOption = (names, values) => ({
   backgroundColor: 'transparent',
   tooltip: {
     trigger: 'axis',
@@ -143,7 +148,7 @@ const makeLandBarOption = () => ({
     type: 'category',
     // inverse 让数量最多的一档排在顶部，未知桶（聚合时固定在末位）落在底部
     inverse: true,
-    data: landChartRows().map((item) => item.name),
+    data: names,
     axisLine: { show: false },
     axisTick: { show: false },
     axisLabel: {
@@ -158,7 +163,7 @@ const makeLandBarOption = () => ({
   series: [
     {
       type: 'bar',
-      data: landChartRows().map((item) => item.value),
+      data: values,
       barWidth: '60%',
       itemStyle: {
         color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [
@@ -170,6 +175,14 @@ const makeLandBarOption = () => ({
     },
   ],
 });
+
+const miningBarRows = () => {
+  const list = (props.miningMethodList || []).slice(0, 5);
+  return {
+    names: list.map((item) => item.name),
+    values: list.map((item) => item.value),
+  };
+};
 
 const getPieData = () => ([
   { value: props.treatedCount, name: '已治理', itemStyle: { color: '#00b894' } },
@@ -212,38 +225,15 @@ const initPieChart = () => {
 const initBarChart = () => {
   if (!barChartRef.value) return;
   barChartInst = echarts.init(barChartRef.value);
-  const list = (props.miningMethodList || []).slice(0, 5);
-
-  barChartInst.setOption({
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    grid: { left: '3%', right: '4%', bottom: '3%', top: '3%', containLabel: true },
-    xAxis: { type: 'value', splitLine: { show: false }, axisLabel: { color: '#ccc' } },
-    yAxis: {
-      type: 'category',
-      data: list.map((item) => item.name),
-      axisLabel: { color: '#ccc', width: 80, overflow: 'truncate' }
-    },
-    series: [
-      {
-        type: 'bar',
-        data: list.map((item) => item.value),
-        itemStyle: {
-          color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [
-            { offset: 0, color: '#0984e3' },
-            { offset: 1, color: '#74b9ff' }
-          ])
-        },
-        barWidth: '60%'
-      }
-    ]
-  });
+  const rows = miningBarRows();
+  barChartInst.setOption(makeBarOption(rows.names, rows.values));
 };
 
 const initLandChart = () => {
   if (!landChartRef.value) return;
   landChartInst = echarts.init(landChartRef.value);
-  landChartInst.setOption(makeLandBarOption());
+  const rows = landChartRows();
+  landChartInst.setOption(makeBarOption(rows.map((item) => item.name), rows.map((item) => item.value)));
 };
 
 const updateCharts = () => {
@@ -254,11 +244,8 @@ const updateCharts = () => {
   }
 
   if (barChartInst) {
-    const list = (props.miningMethodList || []).slice(0, 5);
-    barChartInst.setOption({
-      yAxis: { data: list.map((item) => item.name) },
-      series: [{ data: list.map((item) => item.value) }]
-    });
+    const rows = miningBarRows();
+    barChartInst.setOption(makeBarOption(rows.names, rows.values), true);
   }
 
   nextTick(() => {
@@ -267,7 +254,8 @@ const updateCharts = () => {
       initLandChart();
     }
     if (landChartInst) {
-      landChartInst.setOption(makeLandBarOption(), true);
+      const rows = landChartRows();
+      landChartInst.setOption(makeBarOption(rows.map((item) => item.name), rows.map((item) => item.value)), true);
     }
     resizeCharts();
   });
@@ -423,13 +411,22 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
+/* 弹性面板：大屏下三个图表均分侧栏剩余高度，图表容器吃满面板（ResizeObserver
+   已监听面板尺寸变化自动重绘），底部不再留白；矮屏时被 min-height 托底、整栏滚动 */
+.chart-panel.grow {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
 .chart-box {
   width: 100%;
-  height: 168px;
+  flex: 1 1 auto;
+  min-height: 150px;
 }
 
 .pie-chart-box {
-  height: clamp(190px, 24vh, 230px);
+  min-height: 200px;
 }
 
 .metric-grid {
