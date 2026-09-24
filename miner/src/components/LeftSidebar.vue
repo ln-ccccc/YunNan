@@ -90,6 +90,20 @@
         ></div>
         <p v-else class="panel-empty">暂无修复方式统计</p>
       </div>
+
+      <!-- 开采方式统计：自右栏迁入，与修复方式同属矿山属性分布 -->
+      <div class="ranking-panel glass-panel">
+        <div class="panel-header">
+          <h3>开采方式统计</h3>
+          <span class="panel-unit">按矿山数 · 个</span>
+        </div>
+        <div
+          v-if="(miningMethodList || []).length"
+          ref="miningChartRef"
+          class="rank-chart-box"
+        ></div>
+        <p v-else class="panel-empty">暂无开采方式统计</p>
+      </div>
     </div>
   </aside>
 </template>
@@ -105,6 +119,7 @@ const props = defineProps({
   treatedCount: Number,
   untreatedCount: Number,
   restorationMethodList: Array,
+  miningMethodList: Array,
   cityOptions: Array,
   miningMethodOptions: Array,
   filterCity: String,
@@ -130,46 +145,63 @@ const emitApply = () => emit('apply-filters');
 const emitReset = () => emit('reset-filters');
 const emitSearch = () => emit('search');
 
-// 修复方式 TOP5：与右栏同款横向条形，面板 flex-grow 时柱体随图幅自动加粗
+// 侧栏条形图插槽工厂：修复方式 TOP5 与开采方式统计共用挂载/重绘/销毁逻辑，
+// 面板 flex-grow 时柱体随图幅自动加粗（ref 须以命名 ref 形式传入供模板绑定）
+function createSidebarBarChart(elRef) {
+  let inst = null;
+  let observer = null;
+  const render = (names, values) => {
+    if (!elRef.value) return;
+    if (!inst) {
+      inst = echarts.init(elRef.value);
+      if (typeof ResizeObserver !== 'undefined') {
+        observer = new ResizeObserver(() => inst?.resize());
+        observer.observe(elRef.value.parentElement);
+      }
+    }
+    inst.setOption(makeStatBarOption({ names, values }), true);
+  };
+  const dispose = () => {
+    observer?.disconnect();
+    inst?.dispose();
+    inst = null;
+  };
+  return { render, dispose };
+}
+
 const rankChartRef = ref(null);
-let rankChartInst = null;
-let rankChartResizeObserver = null;
+const miningChartRef = ref(null);
+const rankChart = createSidebarBarChart(rankChartRef);
+const miningChart = createSidebarBarChart(miningChartRef);
 
 const rankRows = () =>
   [...(props.restorationMethodList || [])]
     .sort((a, b) => (b.count || 0) - (a.count || 0))
     .slice(0, 5);
-
-const renderRankChart = () => {
-  if (!rankChartRef.value) return;
-  if (!rankChartInst) {
-    rankChartInst = echarts.init(rankChartRef.value);
-    if (typeof ResizeObserver !== 'undefined') {
-      rankChartResizeObserver = new ResizeObserver(() => rankChartInst?.resize());
-      rankChartResizeObserver.observe(rankChartRef.value.parentElement);
-    }
-  }
-  const rows = rankRows();
-  rankChartInst.setOption(
-    makeStatBarOption({ names: rows.map((item) => item.name), values: rows.map((item) => item.count) }),
-    true,
-  );
-};
+const miningRows = () => (props.miningMethodList || []).slice(0, 5);
 
 watch(
   () => props.restorationMethodList,
-  () => nextTick(renderRankChart),
+  () => nextTick(() => rankChart.render(rankRows().map((item) => item.name), rankRows().map((item) => item.count))),
+  { deep: true },
+);
+
+watch(
+  () => props.miningMethodList,
+  () => nextTick(() => miningChart.render(miningRows().map((item) => item.name), miningRows().map((item) => item.value))),
   { deep: true },
 );
 
 onMounted(() => {
-  nextTick(renderRankChart);
+  nextTick(() => {
+    rankChart.render(rankRows().map((item) => item.name), rankRows().map((item) => item.count));
+    miningChart.render(miningRows().map((item) => item.name), miningRows().map((item) => item.value));
+  });
 });
 
 onBeforeUnmount(() => {
-  rankChartResizeObserver?.disconnect();
-  rankChartInst?.dispose();
-  rankChartInst = null;
+  rankChart.dispose();
+  miningChart.dispose();
 });
 </script>
 

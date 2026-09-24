@@ -45,14 +45,6 @@
         <p v-else class="panel-empty">暂无地类统计</p>
         <p v-if="(landTypeList || []).length" class="panel-note">矿山涉及多个地类时按地类分别计入</p>
       </div>
-
-      <div class="chart-panel glass-panel grow">
-        <div class="panel-header">
-          <h3>开采方式统计</h3>
-          <span class="panel-unit">按矿山数 · 个</span>
-        </div>
-        <div ref="barChartRef" class="chart-box"></div>
-      </div>
     </div>
   </aside>
 </template>
@@ -67,7 +59,6 @@ const props = defineProps({
   treatedCount: Number,
   untreatedCount: Number,
   landTypeList: Array,
-  miningMethodList: Array,
   changeAreaStats: {
     type: Object,
     default: () => ({
@@ -90,16 +81,13 @@ const formatCoverage = (value) => {
 };
 
 const pieChartRef = ref(null);
-const barChartRef = ref(null);
 const landChartRef = ref(null);
 let pieChartInst = null;
-let barChartInst = null;
 let landChartInst = null;
 let chartResizeObserver = null;
 
 const resizeCharts = () => {
   pieChartInst?.resize();
-  barChartInst?.resize();
   landChartInst?.resize();
 };
 
@@ -111,14 +99,6 @@ const landChartMinHeight = computed(() => {
 });
 
 const landChartRows = () => (props.landTypeList || []).slice(0, 12);
-
-const miningBarRows = () => {
-  const list = (props.miningMethodList || []).slice(0, 5);
-  return {
-    names: list.map((item) => item.name),
-    values: list.map((item) => item.value),
-  };
-};
 
 const getPieData = () => ([
   { value: props.treatedCount, name: '已治理', itemStyle: { color: '#00b894' } },
@@ -158,13 +138,6 @@ const initPieChart = () => {
   });
 };
 
-const initBarChart = () => {
-  if (!barChartRef.value) return;
-  barChartInst = echarts.init(barChartRef.value);
-  const rows = miningBarRows();
-  barChartInst.setOption(makeStatBarOption({ names: rows.names, values: rows.values }));
-};
-
 const initLandChart = () => {
   if (!landChartRef.value) return;
   landChartInst = echarts.init(landChartRef.value);
@@ -177,11 +150,6 @@ const updateCharts = () => {
     pieChartInst.setOption({
       series: [{ data: getPieData() }]
     });
-  }
-
-  if (barChartInst) {
-    const rows = miningBarRows();
-    barChartInst.setOption(makeStatBarOption({ names: rows.names, values: rows.values }), true);
   }
 
   nextTick(() => {
@@ -198,7 +166,6 @@ const updateCharts = () => {
 };
 
 watch(() => [props.treatedCount, props.untreatedCount], updateCharts);
-watch(() => props.miningMethodList, updateCharts, { deep: true });
 watch(() => props.landTypeList, updateCharts, { deep: true });
 watch(() => props.collapsed, () => {
   nextTick(() => {
@@ -209,7 +176,6 @@ watch(() => props.collapsed, () => {
 onMounted(() => {
   nextTick(() => {
     initPieChart();
-    initBarChart();
     initLandChart();
     resizeCharts();
   });
@@ -223,9 +189,6 @@ onMounted(() => {
     if (pieChartRef.value?.parentElement) {
       chartResizeObserver.observe(pieChartRef.value.parentElement);
     }
-    if (barChartRef.value?.parentElement) {
-      chartResizeObserver.observe(barChartRef.value.parentElement);
-    }
     if (landChartRef.value?.parentElement) {
       chartResizeObserver.observe(landChartRef.value.parentElement);
     }
@@ -236,7 +199,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts);
   chartResizeObserver?.disconnect();
   pieChartInst?.dispose();
-  barChartInst?.dispose();
   landChartInst?.dispose();
 });
 </script>
