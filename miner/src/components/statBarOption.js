@@ -54,7 +54,9 @@ export function makeStatBarOption({ names, values, unit = '个' }) {
       {
         type: 'bar',
         data: values,
-        barWidth: '60%',
+        // 固定像素宽：各面板行数/图幅不同，百分比宽度会让左右柱子粗细漂移；
+        // 固定 16px 保证所有柱状图粗细一致，图幅增高时长出的空间由行间留白吸收
+        barWidth: 16,
         itemStyle: {
           color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [
             { offset: 0, color: '#7fd8a6' },
