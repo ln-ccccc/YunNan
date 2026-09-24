@@ -403,7 +403,8 @@ defineExpose({
 }
 .map-tools {
   position: absolute;
-  right: 16px;
+  /* 避开右侧栏 286px：贴 main 右缘会压住右栏图表轴标签（2026-09-25 实测） */
+  right: calc(286px + 16px);
   bottom: 70px;
   z-index: 900;
   display: flex;

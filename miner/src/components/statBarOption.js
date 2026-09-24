@@ -32,7 +32,7 @@ export function makeStatBarOption({ names, values, unit = '个' }) {
         show: true,
         lineStyle: { color: 'rgba(136, 169, 162, 0.12)', type: 'dashed' },
       },
-      axisLabel: { color: '#78918f', fontSize: 10, margin: 8 },
+      axisLabel: { color: '#78918f', fontSize: 10, margin: 8, hideOverlap: true },
     },
     yAxis: {
       type: 'category',
