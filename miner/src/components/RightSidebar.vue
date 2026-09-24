@@ -32,21 +32,18 @@
       </div>
 
       <div class="chart-panel glass-panel">
-        <div class="panel-header"><h3>修复后地类</h3></div>
-        <div class="land-type-list">
-          <div class="land-item" v-for="(item, idx) in landTypeList" :key="idx">
-            <div class="land-info">
-              <span class="land-name">{{ item.name }}</span>
-              <span class="land-val">{{ item.value }}</span>
-            </div>
-            <div class="progress-bg">
-              <div
-                class="progress-fill"
-                :style="{ width: Math.min(100, (item.value / (landTypeList[0]?.value || 1)) * 100) + '%' }"
-              ></div>
-            </div>
-          </div>
+        <div class="panel-header">
+          <h3>修复后地类</h3>
+          <span class="panel-unit">按矿山数 · 个</span>
         </div>
+        <div
+          v-if="(landTypeList || []).length"
+          ref="landChartRef"
+          class="chart-box"
+          :style="{ height: landChartHeight }"
+        ></div>
+        <p v-else class="panel-empty">暂无地类统计</p>
+        <p v-if="(landTypeList || []).length" class="panel-note">矿山涉及多个地类时按地类分别计入</p>
       </div>
 
       <div class="chart-panel glass-panel">
@@ -58,7 +55,7 @@
 </template>
 
 <script setup>
-import { defineProps, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
+import { defineProps, ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import * as echarts from 'echarts';
 
 const props = defineProps({
@@ -90,14 +87,89 @@ const formatCoverage = (value) => {
 
 const pieChartRef = ref(null);
 const barChartRef = ref(null);
+const landChartRef = ref(null);
 let pieChartInst = null;
 let barChartInst = null;
+let landChartInst = null;
 let chartResizeObserver = null;
 
 const resizeCharts = () => {
   pieChartInst?.resize();
   barChartInst?.resize();
+  landChartInst?.resize();
 };
+
+// 面板高度随行数走（每行约 26px + 轴留白），钳在 180~380px
+const landChartHeight = computed(() => {
+  const rows = Math.min(12, (props.landTypeList || []).length);
+  return `${Math.min(380, Math.max(180, rows * 26 + 64))}px`;
+});
+
+const landChartRows = () => (props.landTypeList || []).slice(0, 12);
+
+// 参照江西 RightSidebar 的条形面板：统一渐变配色 + 长类目名换行不截断 + tooltip confine
+const makeLandBarOption = () => ({
+  backgroundColor: 'transparent',
+  tooltip: {
+    trigger: 'axis',
+    confine: true,
+    backgroundColor: 'rgba(9, 23, 34, 0.96)',
+    borderColor: 'rgba(112, 160, 151, 0.3)',
+    borderWidth: 1,
+    padding: [8, 10],
+    textStyle: { color: '#d3e1dd', fontSize: 11 },
+    axisPointer: {
+      type: 'shadow',
+      shadowStyle: { color: 'rgba(91, 151, 142, 0.08)' },
+    },
+    formatter: (params) => {
+      const item = params?.[0];
+      if (!item) return '';
+      return `${item.name}<br/>${item.value} 个`;
+    },
+  },
+  grid: { left: '4%', right: '8%', bottom: '6%', top: '5%', containLabel: true },
+  xAxis: {
+    type: 'value',
+    axisLine: { show: false },
+    axisTick: { show: false },
+    splitLine: {
+      show: true,
+      lineStyle: { color: 'rgba(136, 169, 162, 0.12)', type: 'dashed' },
+    },
+    axisLabel: { color: '#78918f', fontSize: 10, margin: 8 },
+  },
+  yAxis: {
+    type: 'category',
+    // inverse 让数量最多的一档排在顶部，未知桶（聚合时固定在末位）落在底部
+    inverse: true,
+    data: landChartRows().map((item) => item.name),
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: {
+      color: '#a2b8b3',
+      fontSize: 11,
+      margin: 10,
+      width: 96,
+      overflow: 'break',
+      lineHeight: 14,
+    },
+  },
+  series: [
+    {
+      type: 'bar',
+      data: landChartRows().map((item) => item.value),
+      barWidth: '60%',
+      itemStyle: {
+        color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [
+          { offset: 0, color: '#7fd8a6' },
+          { offset: 0.62, color: '#54997a' },
+          { offset: 1, color: '#e2c285' },
+        ]),
+      },
+    },
+  ],
+});
 
 const getPieData = () => ([
   { value: props.treatedCount, name: '已治理', itemStyle: { color: '#00b894' } },
@@ -168,6 +240,12 @@ const initBarChart = () => {
   });
 };
 
+const initLandChart = () => {
+  if (!landChartRef.value) return;
+  landChartInst = echarts.init(landChartRef.value);
+  landChartInst.setOption(makeLandBarOption());
+};
+
 const updateCharts = () => {
   if (pieChartInst) {
     pieChartInst.setOption({
@@ -184,12 +262,20 @@ const updateCharts = () => {
   }
 
   nextTick(() => {
+    // 地类面板是 v-if 门控：数据晚到时 ref 才出现，这里补初始化
+    if (!landChartInst && landChartRef.value) {
+      initLandChart();
+    }
+    if (landChartInst) {
+      landChartInst.setOption(makeLandBarOption(), true);
+    }
     resizeCharts();
   });
 };
 
 watch(() => [props.treatedCount, props.untreatedCount], updateCharts);
 watch(() => props.miningMethodList, updateCharts, { deep: true });
+watch(() => props.landTypeList, updateCharts, { deep: true });
 watch(() => props.collapsed, () => {
   nextTick(() => {
     resizeCharts();
@@ -200,6 +286,7 @@ onMounted(() => {
   nextTick(() => {
     initPieChart();
     initBarChart();
+    initLandChart();
     resizeCharts();
   });
 
@@ -215,6 +302,9 @@ onMounted(() => {
     if (barChartRef.value?.parentElement) {
       chartResizeObserver.observe(barChartRef.value.parentElement);
     }
+    if (landChartRef.value?.parentElement) {
+      chartResizeObserver.observe(landChartRef.value.parentElement);
+    }
   }
 });
 
@@ -223,6 +313,7 @@ onBeforeUnmount(() => {
   chartResizeObserver?.disconnect();
   pieChartInst?.dispose();
   barChartInst?.dispose();
+  landChartInst?.dispose();
 });
 </script>
 
@@ -298,12 +389,38 @@ onBeforeUnmount(() => {
   padding: 10px;
 }
 
+.panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .panel-header h3 {
   font-size: 14px;
   color: #fff;
   margin: 0 0 10px 0;
   border-left: 3px solid #4ecdc4;
   padding-left: 8px;
+}
+
+.panel-unit {
+  font-size: 11px;
+  color: #78918f;
+  white-space: nowrap;
+}
+
+.panel-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: #78918f;
+}
+
+.panel-empty {
+  margin: 8px 0;
+  font-size: 12px;
+  color: #8da3b6;
+  text-align: center;
 }
 
 .chart-box {
@@ -358,33 +475,5 @@ onBeforeUnmount(() => {
 
 .text-yellow {
   color: #f1c40f;
-}
-
-.land-type-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.land-item {
-  font-size: 12px;
-}
-
-.land-info {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 2px;
-}
-
-.progress-bg {
-  height: 6px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
-}
-
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #6c5ce7, #a29bfe);
-  border-radius: 3px;
 }
 </style>
