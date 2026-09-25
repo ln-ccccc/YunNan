@@ -211,15 +211,9 @@ const initMap = () => {
   const firstLayer = baseMaps[currentLayer.value] || baseMaps.base;
   if (firstLayer) firstLayer.addTo(map.value);
 
-  // M4 地图工具：图层显隐 / 比例尺 / 经纬网辅助（默认关，可开关）
-  const overlayLayers = {};
-  if (mineLayer.value) overlayLayers['矿山图层'] = mineLayer.value;
-  const baseLabels = { base: '标准', satellite: '影像', terrain: '地形' };
-  const baseForControl = {};
-  Object.entries(baseMaps).forEach(([key, layer]) => {
-    if (layer) baseForControl[baseLabels[key] || key] = layer;
-  });
-  L.control.layers(baseForControl, overlayLayers, { position: 'topright', collapsed: true }).addTo(map.value);
+  // M4 地图工具：比例尺 / 经纬网辅助（默认关，可开关）。
+  // 图层切换控件已移除（2026-09-25）：部署中仅影像底图有瓦片，标准/地形切换无意义，
+  // 默认图层固定 currentLayer（satellite）
   L.control.scale({ position: 'bottomleft', imperial: false, metric: true }).addTo(map.value);
   initGraticule();
 };
