@@ -56,6 +56,7 @@
       <EditingView v-if="currentView === 'editing'" @go-projects="navigateToView(navItems[0])" />
       <ImageryView v-else-if="currentView === 'imagery'" @go-map="openMapView" />
       <SearchView v-else-if="currentView === 'search'" @open-map="openMapView" />
+      <SmartInterpretationView v-else-if="currentView === 'interpretation'" @go-map="openMapView" />
       <SettingsView v-else-if="currentView === 'settings'" :username="sessionState.username" />
       <ModulePlaceholder
         v-else-if="placeholderItem"
@@ -79,13 +80,13 @@ import EditingView from './components/EditingView.vue';
 import ImageryView from './components/ImageryView.vue';
 import SearchView from './components/SearchView.vue';
 import SettingsView from './components/SettingsView.vue';
+import SmartInterpretationView from './components/SmartInterpretationView.vue';
 import ModulePlaceholder from './components/ModulePlaceholder.vue';
 import ProjectWorkspace from './components/ProjectWorkspace.vue';
 import { NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
 
-// 占位模块 → 交付里程碑标注（M1 骨架诚实占位，M3/M4 填充）
+// 占位模块 → 交付里程碑标注（M1 骨架诚实占位；智能解译 M5.1 转正，数据管理仍占位）
 const PLACEHOLDER_MILESTONES = {
-  interpretation: '项目工作台内发起',
   data: '项目工作台内操作',
 };
 

@@ -48,11 +48,11 @@ test('NAV_ITEMS covers the seven modules with unique keys and hashes', () => {
     assert.equal(typeof item.label, 'string');
     assert.equal(typeof item.implemented, 'boolean');
   }
-  // 诚实施标：M4 后七个模块中六个有独立页面；智能解译/数据管理在项目工作台内操作
-  for (const key of ['projects', 'imagery', 'editing', 'search', 'settings']) {
+  // 诚实施标：M5.1 后智能解译转正（推理记录页），仅数据管理仍在项目工作台内操作
+  for (const key of ['projects', 'imagery', 'editing', 'search', 'settings', 'interpretation']) {
     assert.equal(NAV_ITEMS.find((item) => item.key === key).implemented, true, key);
   }
-  assert.equal(NAV_ITEMS.filter((item) => !item.implemented).length, 2);
+  assert.equal(NAV_ITEMS.filter((item) => !item.implemented).length, 1);
 });
 
 test('map hash keeps the project context', () => {
