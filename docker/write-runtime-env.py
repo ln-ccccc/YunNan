@@ -49,9 +49,11 @@ def main():
     )
 
     miner_api_base_url = os.environ.get("VITE_MINER_API_BASE_URL", "")
+    # 不带 hash 路径：GeoView 已改 history 路由，残留 hash（旧 /#/segmentation）
+    # 会让 Miner"编辑矢量"拼出的 URL 被 GeoView 的 / 重定向吞掉（2026-09-25 实测）
     geoview_url = os.environ.get(
         "VITE_GEOVIEW_URL",
-        f"http://localhost:{frontend_port}/#/segmentation",
+        f"http://localhost:{frontend_port}",
     )
     local_max_native_zoom = (
         os.environ.get("VITE_MINER_LOCAL_MAX_NATIVE_ZOOM")

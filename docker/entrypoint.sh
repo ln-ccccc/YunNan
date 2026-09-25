@@ -121,8 +121,10 @@ if [ "${MINER_ENABLED}" = "true" ]; then
   MINER_LOCAL_TMS="${MINER_LOCAL_TMS:-0}"
 
   # Write Miner .env for GeoView URL
+  # 注意：不能带 hash 路径（如 /#/segmentation，hash 路由时代残留）——GeoView 已改
+  # history 路由，残留 hash 会让 Miner 的"编辑矢量"跳转被 / 重定向吞掉（2026-09-25 实测）
   cat > /app/miner/.env <<MENV
-VITE_GEOVIEW_URL="http://localhost:${FRONTEND_PORT}/#/segmentation"
+VITE_GEOVIEW_URL="http://localhost:${FRONTEND_PORT}"
 VITE_MINER_MAP_PROVIDER=${MINER_MAP_PROVIDER}
 VITE_TDT_KEY=${MINER_TDT_KEY}
 MENV

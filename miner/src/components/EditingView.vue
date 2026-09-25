@@ -110,8 +110,11 @@ const statusText = (status) => ({
 }[status] || status || '状态未知');
 
 const openEditor = (row) => {
-  // GeoView 与 Miner 不同源（:3000 vs :4000）：按本机主机名拼 GeoView 基地址
-  const target = new URL(`${GEOVIEW_BASE_URL.replace(/\/$/, '')}/classification-results/editor`);
+  // GeoView 与 Miner 不同源（:3000 vs :4000）：按本机主机名拼 GeoView 基地址。
+  // 只取 origin——配置值若残留路径/hash（旧 hash 路由时代遗留），会把编辑器
+  // URL 的路径吞进 hash，被 GeoView 的 / → /segmentation 重定向吞掉
+  const geoviewOrigin = new URL(GEOVIEW_BASE_URL, window.location.origin).origin;
+  const target = new URL('/classification-results/editor', geoviewOrigin);
   target.searchParams.set('project_id', String(selectedProjectId.value));
   if (row.resultId) target.searchParams.set('result_id', String(row.resultId));
   window.open(target.toString(), '_blank');
