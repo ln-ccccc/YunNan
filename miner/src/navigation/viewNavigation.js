@@ -1,5 +1,5 @@
 // 主控台路由表（M1 2026-09-22）：左导航七模块的 hash 路由。
-// 仅 #/map/:id 带参数；未实现模块指向占位视图（智能解译 M5.1 转正，数据管理仍占位）。
+// 仅 #/map/:id 带参数；未实现模块指向占位视图（M5.4 起七大模块全部转正）。
 export const VIEW_HASH = {
   projects: '#/projects',
   imagery: '#/imagery',
@@ -16,7 +16,7 @@ export const NAV_ITEMS = [
   { key: 'imagery', label: '影像管理', hash: VIEW_HASH.imagery, implemented: true },
   { key: 'interpretation', label: '智能解译', hash: VIEW_HASH.interpretation, implemented: true },
   { key: 'editing', label: '图斑编辑', hash: VIEW_HASH.editing, implemented: true },
-  { key: 'data', label: '数据管理', hash: VIEW_HASH.data, implemented: false },
+  { key: 'data', label: '数据管理', hash: VIEW_HASH.data, implemented: true },
   { key: 'search', label: '查询搜索', hash: VIEW_HASH.search, implemented: true },
   { key: 'settings', label: '系统设置', hash: VIEW_HASH.settings, implemented: true },
 ];

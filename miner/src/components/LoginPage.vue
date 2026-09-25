@@ -14,7 +14,7 @@
           <input v-model="password" type="password" autocomplete="current-password" required />
         </label>
         <button class="login-btn" type="submit" :disabled="submitting">
-          {{ submitting ? '登录中...' : '登录' }}
+          {{ submitting ? '登录中…' : '登录' }}
         </button>
       </form>
       <p v-if="error" class="error-text">{{ error }}</p>

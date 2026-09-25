@@ -57,6 +57,7 @@
       <ImageryView v-else-if="currentView === 'imagery'" @go-map="openMapView" />
       <SearchView v-else-if="currentView === 'search'" @open-map="openMapView" />
       <SmartInterpretationView v-else-if="currentView === 'interpretation'" @go-map="openMapView" />
+      <DataManagerView v-else-if="currentView === 'data'" />
       <SettingsView v-else-if="currentView === 'settings'" :username="sessionState.username" />
       <ModulePlaceholder
         v-else-if="placeholderItem"
@@ -81,14 +82,13 @@ import ImageryView from './components/ImageryView.vue';
 import SearchView from './components/SearchView.vue';
 import SettingsView from './components/SettingsView.vue';
 import SmartInterpretationView from './components/SmartInterpretationView.vue';
+import DataManagerView from './components/DataManagerView.vue';
 import ModulePlaceholder from './components/ModulePlaceholder.vue';
 import ProjectWorkspace from './components/ProjectWorkspace.vue';
 import { NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
 
-// 占位模块 → 交付里程碑标注（M1 骨架诚实占位；智能解译 M5.1 转正，数据管理仍占位）
-const PLACEHOLDER_MILESTONES = {
-  data: '项目工作台内操作',
-};
+// 占位机制备用：M5.4 起七大模块全部转正，此表清空；后续新增模块可复用
+const PLACEHOLDER_MILESTONES = {};
 
 const currentView = ref('login');
 const mapDashboardRef = ref(null);

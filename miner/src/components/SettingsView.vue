@@ -59,7 +59,7 @@ const modules = [
   { key: 'imagery', label: '影像管理', implemented: true },
   { key: 'interpretation', label: '智能解译', implemented: true, milestone: '发起经地图工作台' },
   { key: 'editing', label: '图斑编辑', implemented: true },
-  { key: 'data', label: '数据管理', implemented: false, milestone: '工作台导出/快照' },
+  { key: 'data', label: '数据管理', implemented: true, milestone: '' },
   { key: 'search', label: '查询搜索', implemented: true },
   { key: 'settings', label: '系统设置', implemented: true },
 ];

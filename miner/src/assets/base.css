@@ -53,6 +53,17 @@
   font-weight: normal;
 }
 
+/* 宿主开启"减少动态效果"时停用过渡与动画（web-interface-guidelines 可访问性项） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 body {
   min-height: 100vh;
   color: var(--color-text);

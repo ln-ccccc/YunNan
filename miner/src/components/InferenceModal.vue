@@ -139,7 +139,7 @@ function handleSubmit() {
 .half { flex: 1; }
 .form-group label { display: block; margin-bottom: 6px; color: #8da3b6; font-size: 13px; }
 .form-input { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 4px; outline: none; background: rgba(0, 0, 0, 0.3); color: #fff; }
-.form-input:focus { border-color: #4ecdc4; }
+.form-input:focus { border-color: #4ecdc4; box-shadow: 0 0 0 2px rgba(78, 205, 196, 0.28); }
 .tip { display: block; margin-top: 4px; color: #8da3b6; font-size: 11px; }
 .error-msg, .success-msg, .task-status { margin-bottom: 15px; padding: 10px; border-radius: 4px; font-size: 13px; }
 .error-msg { background: rgba(255, 118, 117, 0.1); color: #ff7675; }

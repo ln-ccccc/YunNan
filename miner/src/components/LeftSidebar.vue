@@ -298,7 +298,7 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   cursor: pointer;
   font-weight: bold;
-  transition: all 0.2s;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
   display: flex;
   align-items: center;
   justify-content: center;
