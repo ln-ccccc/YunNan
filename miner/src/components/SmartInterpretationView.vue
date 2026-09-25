@@ -17,11 +17,14 @@
             {{ project.name }}（{{ project.status }}）
           </option>
         </select>
-        <button class="primary-btn" type="button" :disabled="!selectedProjectId" @click="$emit('go-map')">
+        <button class="primary-btn" type="button" :disabled="!selectedProjectId" @click="showInferenceModal = true">
           发起新解译
         </button>
+        <button class="link-btn" type="button" @click="$emit('go-map')">打开地图工作台</button>
       </div>
-      <p class="hint-text">发起新解译将跳转到地图工作台，选择矿山后按 KML ROI 推理。</p>
+      <p class="hint-text">
+        发起前请在「影像管理」登记并就绪影像；推理按 KML ROI 逐矿山执行，完成后记录自动出现在下方。
+      </p>
 
       <p v-if="loading" class="empty-block">解译记录加载中…</p>
       <p v-else-if="error" class="error-text">{{ error }}</p>
@@ -49,12 +52,27 @@
         </div>
       </template>
     </section>
+
+    <InferenceModal
+      :visible="showInferenceModal"
+      :running="inferenceRunning"
+      :error="imageryAssetsError || inferenceError"
+      :result="inferenceResult"
+      :imagery-assets="imageryAssets"
+      :assets-loading="imageryAssetsLoading"
+      @close="showInferenceModal = false"
+      @load-imagery="loadImageryAssets"
+      @submit="handleInferenceSubmit"
+    />
   </div>
 </template>
 
 <script setup>
 import axios from 'axios';
 import { computed, ref } from 'vue';
+
+import InferenceModal from './InferenceModal.vue';
+import { useProjectInference } from '../composables/useProjectInference.js';
 
 defineEmits(['go-map']);
 
@@ -72,6 +90,19 @@ const error = ref('');
 let requestSeq = 0;
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
+
+// M5.3：页内发起推理（编排复用 useProjectInference，与地图工作台同一实现）
+const showInferenceModal = ref(false);
+const {
+  inferenceRunning,
+  inferenceResult,
+  inferenceError,
+  imageryAssets,
+  imageryAssetsLoading,
+  imageryAssetsError,
+  loadImageryAssets,
+  runProjectInference,
+} = useProjectInference(() => selectedProjectId.value);
 
 const loadProjects = async () => {
   try {
@@ -113,6 +144,18 @@ const changePage = (next) => {
   loadHistory();
 };
 
+const handleInferenceSubmit = async (formData) => {
+  try {
+    const terminal = await runProjectInference(formData);
+    if (['succeeded', 'succeeded_with_fallback', 'partial_failed'].includes(terminal?.status)) {
+      showInferenceModal.value = false;
+      resetAndLoad();
+    }
+  } catch (_) {
+    // 失败详情已由 composable 写入 inferenceError，弹窗内展示；弹窗保持打开
+  }
+};
+
 loadProjects();
 </script>
 
@@ -148,6 +191,10 @@ loadProjects();
   padding: 8px 18px; cursor: pointer; font-size: 13px;
 }
 .primary-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+.link-btn {
+  background: none; border: none; color: #2f6f61; cursor: pointer;
+  font-size: 12px; text-decoration: underline;
+}
 
 .empty-block { margin: 18px 0; text-align: center; color: #5a7d75; font-size: 13px; }
 .error-text { margin: 12px 0 0; color: #b43c2f; font-size: 13px; }

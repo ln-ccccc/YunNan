@@ -1,6 +1,6 @@
-import { ref, unref, onScopeDispose } from 'vue';
+import { ref, unref } from 'vue';
 import axios from 'axios';
-import { pollInferenceJob } from '../services/inferencePolling.js';
+import { useProjectInference } from './useProjectInference.js';
 
 const rawMinerApiBase = import.meta.env.VITE_MINER_API_BASE_URL;
 const MINER_API_BASE_URL = rawMinerApiBase ? String(rawMinerApiBase).replace(/\/$/, '') : '';
@@ -62,9 +62,6 @@ export function useMineData(projectId) {
     const mineTraceability = ref(null);
   // fetchIndices/fetchChangeMatrix 的竞态序号：过期响应直接丢弃
   let fetchIndicesSeq = 0;
-  const inferenceRunning = ref(false);
-  const inferenceResult = ref(null);
-  const inferenceError = ref('');
   const dataLoadError = ref('');
   const trendReportLoading = ref(false);
   const trendReportError = ref('');
@@ -313,57 +310,13 @@ export function useMineData(projectId) {
     URL.revokeObjectURL(url);
   };
 
-  // 推理轮询取消位：App.vue 按 selectedProjectId 用 :key 重建组件，
-  // 旧实例的 while 轮询若无取消会以 1s/次无限打后端
-  let inferencePollCancelled = false;
-  onScopeDispose(() => {
-    inferencePollCancelled = true;
-  });
-
-  const runProjectInference = async ({ datasetId, year = '', device = 'auto' } = {}) => {
-    inferenceRunning.value = true;
-    inferenceError.value = '';
-    inferenceResult.value = null;
-    inferencePollCancelled = false;
-    try {
-      const payload = {
-        project_id: resolveProjectId(),
-        dataset_id: Number(datasetId),
-        device,
-      };
-      if (year) payload.year = year;
-      const res = await axios.post(apiUrl('/api/inference/jobs'), payload);
-      const createdJob = res?.data?.data;
-      if (!createdJob?.id) throw new Error('推理任务创建后未返回任务编号');
-      inferenceResult.value = createdJob;
-      const terminalJob = await pollInferenceJob({
-        jobId: createdJob.id,
-        getJob: async (jobId) => {
-          const jobRes = await axios.get(apiUrl(`/api/inference/jobs/${encodeURIComponent(jobId)}`));
-          return jobRes?.data?.data;
-        },
-        onUpdate: (job) => {
-          inferenceResult.value = job;
-        },
-        isCancelled: () => inferencePollCancelled,
-      });
-      if (terminalJob.status === 'failed' || terminalJob.status === 'cancelled') {
-        throw new Error(terminalJob?.error?.message || `推理任务${terminalJob.status === 'cancelled' ? '已取消' : '失败'}`);
-      }
-      return terminalJob;
-    } catch (e) {
-      if (e?.cancelled) {
-        // 组件已销毁：不再写状态，静默退出轮询链
-        throw e;
-      }
-      inferenceError.value = e?.response?.data?.msg || e?.response?.data?.error || e?.message || '推理任务执行失败';
-      throw e;
-    } finally {
-      if (!inferencePollCancelled) {
-        inferenceRunning.value = false;
-      }
-    }
-  };
+  // 推理编排已抽至 useProjectInference（M5.3）：地图工作台与智能解译页共用同一实现
+  const {
+    inferenceRunning,
+    inferenceResult,
+    inferenceError,
+    runProjectInference,
+  } = useProjectInference(resolveProjectId);
 
   const formatMaybeNumber = (v, d = 2) => {
     const n = Number(v);
