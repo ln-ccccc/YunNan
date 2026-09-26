@@ -42,6 +42,13 @@
               {{ row.type }} · {{ row.data?.file || '未知产物' }}
             </span>
           </div>
+          <button
+            v-if="editorTargets.get(`${row.data?.fid}:${row.data?.year ?? ''}`)?.editable"
+            class="edit-btn"
+            type="button"
+            title="在 GeoView 编辑器中打开"
+            @click="openEditor(row)"
+          >编辑矢量</button>
           <span class="record-mode">{{ row.data?.mode === 'project' ? '项目推理' : '快速推理' }}</span>
         </div>
 
@@ -73,6 +80,7 @@ import { computed, ref } from 'vue';
 
 import InferenceModal from './InferenceModal.vue';
 import { useProjectInference } from '../composables/useProjectInference.js';
+import { buildGeoViewEditorUrl } from '../navigation/geoviewNavigation.js';
 
 defineEmits(['go-map']);
 
@@ -90,6 +98,46 @@ const error = ref('');
 let requestSeq = 0;
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
+
+// 成果映射：fid+year → 可编辑的 result_id（供解译记录一键转编辑）
+const editorTargets = ref(new Map());
+const EDITABLE_STATUS = new Set(['ready', 'ready_empty']);
+
+const loadEditorTargets = async () => {
+  if (!selectedProjectId.value) {
+    editorTargets.value = new Map();
+    return;
+  }
+  try {
+    const res = await axios.get(`${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/classification-results`);
+    const items = res.data?.data?.items || res.data?.data || [];
+    const map = new Map();
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item?.result_id) continue;
+      map.set(`${item.mine_fid}:${item.year ?? ''}`, {
+        resultId: item.result_id,
+        editable: EDITABLE_STATUS.has(item.vector_status),
+      });
+    }
+    editorTargets.value = map;
+  } catch (_) {
+    editorTargets.value = new Map();
+  }
+};
+
+const openEditor = (row) => {
+  const fid = row.data?.fid;
+  const year = row.data?.year ?? '';
+  const target = editorTargets.value.get(`${fid}:${year}`);
+  if (!target?.editable) return;
+  const url = buildGeoViewEditorUrl(
+    import.meta.env.VITE_GEOVIEW_URL || `${window.location.protocol}//${window.location.hostname}:3000`,
+    window.location,
+    selectedProjectId.value,
+    target.resultId,
+  );
+  window.open(url, '_blank');
+};
 
 // M5.3：页内发起推理（编排复用 useProjectInference，与地图工作台同一实现）
 const showInferenceModal = ref(false);
@@ -137,6 +185,7 @@ const loadHistory = async () => {
 const resetAndLoad = () => {
   page.value = 1;
   loadHistory();
+  loadEditorTargets();
 };
 
 const changePage = (next) => {
@@ -211,6 +260,11 @@ loadProjects();
 .record-main { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .record-main strong { font-size: 14px; }
 .record-mode { font-size: 12px; color: #5a7d75; }
+.edit-btn {
+  background: none; border: 1px solid rgba(38, 75, 69, 0.35); color: #2f6f61;
+  border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 12px;
+}
+.edit-btn:hover { background: rgba(47, 111, 97, 0.08); }
 
 .pager-row {
   display: flex; align-items: center; justify-content: center; gap: 14px;

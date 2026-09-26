@@ -384,6 +384,34 @@ export function createProjectRoutes({
     }
   });
 
+  router.get('/:projectId/exports/:exportId/artifact', async (req, res) => {
+    const projectId = String(req.params.projectId || '');
+    const exportId = String(req.params.exportId || '');
+    if (!/^[1-9]\d*$/.test(projectId) || !/^[1-9]\d*$/.test(exportId)) {
+      return res.status(400).json({ error: 'Invalid export path' });
+    }
+    try {
+      relayBinary(res, await projectApi.getProjectExportArtifact(projectId, exportId, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+
+  router.get('/:projectId/backups/:backupId/manifest', async (req, res) => {
+    const projectId = String(req.params.projectId || '');
+    const backupId = String(req.params.backupId || '');
+    if (!/^[1-9]\d*$/.test(projectId) || !/^[1-9]\d*$/.test(backupId)) {
+      return res.status(400).json({ error: 'Invalid backup path' });
+    }
+    try {
+      relayBinary(res, await projectApi.getProjectBackupManifest(projectId, backupId, requestCookie(req)));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+
   router.post('/:projectId/backups/:backupId/restore', async (req, res) => {
     try {
       relayJson(res, await projectApi.restoreProjectBackup(req.params.projectId, req.params.backupId, req.body || {}, requestCookie(req)));

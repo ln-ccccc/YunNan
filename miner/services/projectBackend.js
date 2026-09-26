@@ -79,6 +79,20 @@ export const projectApi = {
   createProject(payload, cookie) {
     return requestJson('POST', '/api/projects', { body: payload, cookie });
   },
+  getProjectExportArtifact(projectId, exportId, cookie) {
+    return requestBinary(
+      'GET',
+      `/api/projects/${positiveRouteId(projectId, '项目')}/exports/${positiveRouteId(exportId, '导出')}/artifact`,
+      { cookie },
+    );
+  },
+  getProjectBackupManifest(projectId, backupId, cookie) {
+    return requestBinary(
+      'GET',
+      `/api/projects/${positiveRouteId(projectId, '项目')}/backups/${positiveRouteId(backupId, '快照')}/manifest`,
+      { cookie },
+    );
+  },
   getProjectInferenceOutput(projectId, fid, filename, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');
     const safeFid = positiveRouteId(fid, '矿山');

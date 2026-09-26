@@ -34,6 +34,8 @@
         @create-export="createExport"
         @create-snapshot="createSnapshot"
         @restore-snapshot="restoreSnapshot"
+        @download-export="downloadExport"
+        @download-snapshot="downloadSnapshot"
       />
     </section>
   </div>
@@ -63,6 +65,7 @@ const snapshots = ref([]);
 const capabilities = ref({});
 const loading = ref(false);
 const busy = ref(false);
+const downloading = ref(false);
 const pageError = ref('');
 const operationError = ref('');
 
@@ -138,6 +141,42 @@ const createSnapshot = async () => {
   } finally {
     busy.value = false;
   }
+};
+
+const downloadFile = async (path, filename) => {
+  downloading.value = true;
+  operationError.value = '';
+  try {
+    const res = await axios.get(url(path), { responseType: 'blob' });
+    const objectUrl = URL.createObjectURL(res.data);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+  } catch (_) {
+    operationError.value = '下载失败，请稍后重试';
+  } finally {
+    downloading.value = false;
+  }
+};
+
+const downloadExport = (item) => {
+  if (!selectedProjectId.value || downloading.value) return;
+  return downloadFile(
+    `/api/projects/${selectedProjectId.value}/exports/${item.id}/artifact`,
+    item.artifact_name || `export-${item.id}`,
+  );
+};
+
+const downloadSnapshot = (item) => {
+  if (!selectedProjectId.value || downloading.value) return;
+  return downloadFile(
+    `/api/projects/${selectedProjectId.value}/backups/${item.id}/manifest`,
+    `snapshot-${item.id}-manifest.json`,
+  );
 };
 
 const restoreSnapshot = async (snapshotId) => {

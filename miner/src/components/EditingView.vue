@@ -49,6 +49,7 @@
 <script setup>
 import axios from 'axios';
 import { ref } from 'vue';
+import { buildGeoViewEditorUrl } from '../navigation/geoviewNavigation.js';
 
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
 const GEOVIEW_BASE_URL = import.meta.env.VITE_GEOVIEW_URL || `${window.location.protocol}//${window.location.hostname}:3000`;
@@ -110,14 +111,14 @@ const statusText = (status) => ({
 }[status] || status || '状态未知');
 
 const openEditor = (row) => {
-  // GeoView 与 Miner 不同源（:3000 vs :4000）：按本机主机名拼 GeoView 基地址。
-  // 只取 origin——配置值若残留路径/hash（旧 hash 路由时代遗留），会把编辑器
-  // URL 的路径吞进 hash，被 GeoView 的 / → /segmentation 重定向吞掉
-  const geoviewOrigin = new URL(GEOVIEW_BASE_URL, window.location.origin).origin;
-  const target = new URL('/classification-results/editor', geoviewOrigin);
-  target.searchParams.set('project_id', String(selectedProjectId.value));
-  if (row.resultId) target.searchParams.set('result_id', String(row.resultId));
-  window.open(target.toString(), '_blank');
+  // 共享构建器：origin 归一防配置残留污染（见 geoviewNavigation.js 注释）
+  const target = buildGeoViewEditorUrl(
+    GEOVIEW_BASE_URL,
+    window.location,
+    selectedProjectId.value,
+    row.resultId,
+  );
+  window.open(target, '_blank');
 };
 
 loadProjects();

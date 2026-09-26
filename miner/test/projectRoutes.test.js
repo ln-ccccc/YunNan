@@ -481,3 +481,56 @@ test('createProjectRoutes relays backup manifest import', async () => {
   assert.equal(calls[0].projectId, '7');
   assert.deepEqual(calls[0].body.manifest, manifest);
 });
+
+// M5.4：导出制品/快照清单的二进制转发（数据管理下载闭环）
+test('export artifact relay streams binary with content-type passthrough', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectExportArtifact(projectId, exportId, cookie) {
+        calls.push({ projectId, exportId, cookie });
+        return {
+          status: 200,
+          contentType: 'application/geo+json',
+          body: Buffer.from('{"type":"FeatureCollection"}'),
+        };
+      },
+    },
+  });
+
+  const res = await withServer(router, '/1/exports/7/artifact');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'application/geo+json');
+  assert.equal(await res.text(), '{"type":"FeatureCollection"}');
+  assert.deepEqual(calls, [{ projectId: '1', exportId: '7', cookie: '' }]);
+});
+
+test('export artifact relay rejects non-numeric ids without upstream call', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectExportArtifact() {
+        calls.push(1);
+        return { status: 200, contentType: 'text/plain', body: Buffer.from('x') };
+      },
+    },
+  });
+
+  const res = await withServer(router, '/1/exports/abc/artifact');
+  assert.equal(res.status, 400);
+  assert.deepEqual(calls, []);
+});
+
+test('backup manifest relay passes upstream status through', async () => {
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectBackupManifest() {
+        return { status: 404, contentType: 'application/json', body: Buffer.from('{"msg":"不存在"}') };
+      },
+    },
+  });
+
+  const res = await withServer(router, '/1/backups/9/manifest');
+  assert.equal(res.status, 404);
+  assert.equal(await res.text(), '{"msg":"不存在"}');
+});

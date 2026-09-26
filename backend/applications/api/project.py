@@ -29,6 +29,8 @@ from applications.project_hub.service import (
     batch_delete_projects,
     create_backup,
     create_dataset,
+    resolve_project_backup_manifest,
+    resolve_project_export_artifact,
     create_export,
     create_project,
     delete_project,
@@ -778,6 +780,36 @@ def project_backup_list_api(project_id):
         return success_api(data=list_backups(project_id))
     except Exception as exc:
         return business_or_server_failure(exc, "项目快照列表读取失败", logger=LOGGER)
+
+
+@project_api.get("/<int:project_id>/exports/<int:export_id>/artifact")
+@login_required
+def project_export_artifact_download_api(project_id, export_id):
+    """导出制品下载（数据管理闭环）：受控目录校验后按附件返回。"""
+    try:
+        record, path = resolve_project_export_artifact(project_id, export_id)
+    except ProjectStorageValidationError as exc:
+        return fail_api(str(exc), status=404)
+    except ValueError as exc:
+        return fail_api(str(exc), status=409)
+    except FileNotFoundError as exc:
+        return fail_api(str(exc) or "导出制品文件不存在"), 404
+    return send_file(path, as_attachment=True, download_name=path.name)
+
+
+@project_api.get("/<int:project_id>/backups/<int:backup_id>/manifest")
+@login_required
+def project_backup_manifest_download_api(project_id, backup_id):
+    """配置快照清单下载：跨环境导入的输入文件。"""
+    try:
+        record, path = resolve_project_backup_manifest(project_id, backup_id)
+    except ProjectStorageValidationError as exc:
+        return fail_api(str(exc), status=404)
+    except ValueError as exc:
+        return fail_api(str(exc), status=409)
+    except FileNotFoundError as exc:
+        return fail_api(str(exc) or "快照清单文件不存在"), 404
+    return send_file(path, as_attachment=True, download_name=f"snapshot-{backup_id}-manifest.json")
 
 
 @project_api.post("/<int:project_id>/backups/<int:backup_id>/restore")

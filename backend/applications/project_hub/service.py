@@ -1359,6 +1359,36 @@ def _project_manifest(project, backup_id):
     }
 
 
+def resolve_project_export_artifact(project_id, export_id):
+    """导出制品下载解析：校验记录归属与完成态，返回 (record, 落盘路径)。"""
+    record = ProjectExportRecord.query.get(export_id)
+    if record is None or record.project_id != project_id:
+        raise ProjectStorageValidationError("导出记录不存在")
+    if record.status != "completed":
+        raise ValueError("导出尚未完成，无法下载")
+    # 模型无 artifact_name 列（列表展示由 schema 从 file_path 派生），取存储键末段
+    artifact_name = Path(record.file_path or "").name
+    if not artifact_name:
+        raise ProjectStorageValidationError("导出制品缺失")
+    path = resolve_project_record_file(
+        project_id, "exports", export_id, artifact_name, require_exists=True
+    )
+    return record, path
+
+
+def resolve_project_backup_manifest(project_id, backup_id):
+    """配置快照清单下载解析：校验记录归属与完成态，返回 (record, 落盘路径)。"""
+    record = ProjectBackupRecord.query.get(backup_id)
+    if record is None or record.project_id != project_id:
+        raise ProjectStorageValidationError("项目配置快照不存在")
+    if record.status != "completed":
+        raise ValueError("快照尚未完成，无法下载")
+    path = resolve_project_record_file(
+        project_id, "snapshots", backup_id, "manifest.json", require_exists=True
+    )
+    return record, path
+
+
 def create_backup(project_id, payload, actor="system"):
     if not isinstance(payload, dict):
         raise ProjectStorageValidationError("项目配置快照请求格式不合法")
