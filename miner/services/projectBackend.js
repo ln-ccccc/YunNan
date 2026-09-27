@@ -80,6 +80,20 @@ export const projectApi = {
   createProject(payload, cookie) {
     return requestJson('POST', '/api/projects', { body: payload, cookie });
   },
+  listRetainedBasemaps(projectId, cookie) {
+    return requestJson(
+      'GET',
+      `/api/projects/${positiveRouteId(projectId, '项目')}/spatial/basemaps/retained`,
+      { cookie },
+    );
+  },
+  reactivateProjectBasemap(projectId, resourceId, payload, cookie) {
+    return requestJson(
+      'POST',
+      `/api/projects/${positiveRouteId(projectId, '项目')}/spatial/basemaps/${positiveRouteId(resourceId, '底图')}/reactivate`,
+      { body: payload, cookie },
+    );
+  },
   getProjectExportArtifact(projectId, exportId, cookie) {
     return requestBinary(
       'GET',

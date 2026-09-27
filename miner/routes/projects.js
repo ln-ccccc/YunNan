@@ -416,6 +416,27 @@ export function createProjectRoutes({
     }
   });
 
+  router.get('/:projectId/spatial/basemaps/retained', relay('GET', () => '/spatial/basemaps/retained'));
+
+  router.post('/:projectId/spatial/basemaps/:resourceId/reactivate', async (req, res) => {
+    const projectId = String(req.params.projectId || '');
+    const resourceId = String(req.params.resourceId || '');
+    if (!/^[1-9]\d*$/.test(projectId) || !/^[1-9]\d*$/.test(resourceId)) {
+      return res.status(400).json({ error: 'Invalid basemap path' });
+    }
+    try {
+      relayJson(res, await projectApi.reactivateProjectBasemap(
+        projectId,
+        resourceId,
+        req.body || {},
+        requestCookie(req),
+      ));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+
   router.post('/:projectId/backups/:backupId/restore', async (req, res) => {
     try {
       relayJson(res, await projectApi.restoreProjectBackup(req.params.projectId, req.params.backupId, req.body || {}, requestCookie(req)));
