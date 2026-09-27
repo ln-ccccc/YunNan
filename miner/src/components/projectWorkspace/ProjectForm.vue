@@ -8,7 +8,14 @@
     <form class="project-form" @submit.prevent="submit">
       <label>
         项目名称
-        <input v-model.trim="draft.name" required placeholder="项目名称" />
+        <input
+          v-model.trim="draft.name"
+          required
+          placeholder="项目名称"
+          @invalid.prevent="nameError = '请填写项目名称'"
+          @input="nameError = ''"
+        />
+        <span v-if="nameError" class="field-error" role="alert">{{ nameError }}</span>
       </label>
       <label>
         区域
@@ -50,7 +57,7 @@
 </template>
 
 <script setup>
-import { reactive, watch } from 'vue';
+import { reactive, ref, watch } from 'vue';
 
 const props = defineProps({
   model: {
@@ -74,6 +81,8 @@ const props = defineProps({
 const emit = defineEmits(['submit', 'cancel']);
 const lifecycleStatuses = ['draft', 'active', 'completed', 'archived'];
 const draft = reactive(createEmptyModel());
+// 原生 required 的气泡提示在截图/无障碍树里不可见，改为同登录页风格的行内红字
+const nameError = ref('');
 
 watch(
   () => props.model,
@@ -210,6 +219,13 @@ button {
 .error-text {
   margin: 0;
   color: #b43c2f;
+}
+
+.field-error {
+  display: block;
+  margin-top: 4px;
+  color: #b43c2f;
+  font-size: 12px;
 }
 
 @media (max-width: 720px) {
