@@ -82,3 +82,37 @@ test('project selection store persists via localStorage when available', () => {
     _resetForTest();
   }
 });
+
+test('project selection store bridges cross-tab storage writes', () => {
+  const saved = {};
+  const listeners = [];
+  const fakeStorage = {
+    getItem: (k) => (k in saved ? saved[k] : null),
+    setItem: (k, v) => { saved[k] = String(v); },
+    removeItem: (k) => { delete saved[k]; },
+  };
+  const fakeWindow = {
+    localStorage: fakeStorage,
+    addEventListener: (type, fn) => { listeners.push({ type, fn }); },
+  };
+  globalThis.window = fakeWindow;
+  try {
+    _resetForTest();
+    setSelectedProjectId(3);
+    const bridge = listeners.find((l) => l.type === 'storage');
+    assert.ok(bridge, '必须注册 storage 事件监听（多标签页同步，审查 P3-5）');
+    const notified = [];
+    subscribeProjectSelection((id) => notified.push(id));
+    // 模拟另一标签页写入 8
+    bridge.fn({ key: 'miner.selected-project-id', newValue: '8', oldValue: '3' });
+    assert.equal(getSelectedProjectId(), 8);
+    assert.deepEqual(notified, [8]);
+    // 无关键目与同值写入不触发
+    bridge.fn({ key: 'other-key', newValue: '9' });
+    bridge.fn({ key: 'miner.selected-project-id', newValue: '8' });
+    assert.deepEqual(notified, [8]);
+  } finally {
+    delete globalThis.window;
+    _resetForTest();
+  }
+});

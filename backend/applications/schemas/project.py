@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from marshmallow import fields
@@ -26,7 +27,8 @@ class UtcDateTime(fields.DateTime):
 
     def _serialize(self, value, attr, obj, **kwargs):
         result = super()._serialize(value, attr, obj, **kwargs)
-        if result is None or result.endswith(("Z", "+00:00")):
+        if result is None or re.search(r"(Z|[+-]\d{2}:\d{2})$", result):
+            # 已带时区标记（Z 或任意偏移）：感知型值保留原偏移，避免产出非法的 "...+08:00Z"
             return result
         return f"{result}Z"
 

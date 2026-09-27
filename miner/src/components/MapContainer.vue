@@ -29,6 +29,7 @@ const emit = defineEmits(['select-mine']);
 
 const map = ref(null);
 const mineLayer = ref(null);
+let mineRenderer = null; // 见 renderMapMarkers：复用避免 renderer 泄漏
 const currentLayer = ref('satellite');
 const mapContainer = ref(null);
 const mapElement = ref(null);
@@ -284,7 +285,9 @@ const renderMapMarkers = () => {
 
   // canvas 渲染器 + 命中容差：矿山多边形是真实尺度（约百米），省级视野下仅 ~2px，
   // SVG 精确命中几乎点不中；tolerance 给点击/悬停各方向 10px 的判定外扩。
-  const mineRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
+  // 渲染器必须单例复用：Leaflet 对自定义 renderer 隐式 addLayer，图层移除不回收
+  // renderer，每次新建会在 overlay pane 累积空 canvas（数 MB 位图/张，审查 P2-1）。
+  if (!mineRenderer) mineRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
 
   mineLayer.value = L.geoJSON(geoJsonData, {
     renderer: mineRenderer,

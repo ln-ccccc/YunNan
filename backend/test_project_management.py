@@ -287,6 +287,21 @@ class TestTimestampSerialization(ProjectManageBase):
             "2026-09-25T14:53:19Z",
         )
 
+    def test_utc_datetime_keeps_aware_non_utc_offset_without_z(self):
+        # 数据流遍 Low：感知型非 UTC 值须保留原偏移，不得叠加成非法 "...+08:00Z"
+        from datetime import datetime, timezone, timedelta
+
+        from applications.schemas.project import ProjectLatestInferenceSchema
+
+        class _Row:
+            job_id = "job-2"
+            status = "running"
+            create_time = datetime(2026, 9, 22, 20, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+
+        dumped = ProjectLatestInferenceSchema().dump(_Row())["create_time"]
+        self.assertEqual(dumped, "2026-09-22T20:00:00+08:00")
+        self.assertFalse(dumped.endswith("Z"))
+
 
 if __name__ == "__main__":
     unittest.main()

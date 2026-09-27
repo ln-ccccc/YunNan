@@ -137,11 +137,10 @@ label span {
 
 .error-text {
   min-height: 18px;
-  margin: 8px 0 0;
+  margin: 14px 0 0;
 }
 
 .error-text.visible {
-  margin-top: 14px;
   color: #b43c2f;
 }
 </style>

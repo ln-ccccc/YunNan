@@ -120,6 +120,16 @@ class TestImageryCandidates(ImageryProcessingBase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("不合法", response.get_json()["msg"])
 
+    def test_cross_project_storage_key_is_rejected(self):
+        # AGENTS §9 沙箱归属：source key 必须落在当前项目前缀下（审查 P3-3）
+        response = self._clip({
+            "source": "projects/999999/inputs/imagery/source_full.tif",
+            "geometry": {"type": "Polygon", "coordinates": [[[100.1, 25.95], [100.2, 25.95], [100.2, 25.99], [100.1, 25.99], [100.1, 25.95]]]},
+            "buffer_meters": 0,
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("不合法", response.get_json()["msg"])
+
     def test_requires_login(self):
         fresh = self.app.test_client()
         response = fresh.get(f"/api/projects/{self.project_id}/imagery/candidates")

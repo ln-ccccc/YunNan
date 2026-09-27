@@ -24,6 +24,11 @@ export function getSelectedProjectId() {
 }
 
 export function setSelectedProjectId(value) {
+  try {
+    installStorageBridge();
+  } catch {
+    // 忽略
+  }
   const next = normalize(value);
   if (next === currentId) return;
   currentId = next;
@@ -48,10 +53,40 @@ export function subscribeProjectSelection(listener) {
   return () => listeners.delete(listener);
 }
 
+// 多标签页：监听其他页签的写入，桥接为本页内存态 + 订阅通知。
+// 幂等延迟安装：import 时无 window（SSR/测试）则首次写入时再装。
+let storageBridgeInstalled = false;
+function installStorageBridge() {
+  if (storageBridgeInstalled) return;
+  const w = globalThis.window;
+  if (!w || typeof w.addEventListener !== "function") return;
+  w.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEY) return;
+    const next = normalize(event.newValue);
+    if (next === currentId) return;
+    currentId = next;
+    for (const listener of listeners) {
+      try {
+        listener(next);
+      } catch {
+        // 单个订阅者异常不阻断其余通知
+      }
+    }
+  });
+  storageBridgeInstalled = true;
+}
+
+try {
+  installStorageBridge();
+} catch {
+  // 监听不可用时跳过（单页签语义不受影响）
+}
+
 // 仅供测试使用：重置模块级状态，避免用例间串扰
 export function _resetForTest() {
   currentId = null;
   listeners.clear();
+  storageBridgeInstalled = false;
   try {
     globalThis.window?.localStorage?.removeItem(STORAGE_KEY);
   } catch {

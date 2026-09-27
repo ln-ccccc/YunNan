@@ -143,7 +143,7 @@
             :activities="activityItems"
             :loading="slices.assets.loading || slices.snapshots.loading || slices.activity.loading"
             :error="slices.assets.error || slices.snapshots.error || slices.activity.error"
-            @imported="refreshCurrent(INVALIDATION.project)"
+            @imported="refreshCurrent(INVALIDATION.restoreSnapshot)"
           />
 
           <ParcelPanel
@@ -529,7 +529,7 @@ function runNextAction(action) {
   if (!target) return;
   if (target === 'spatial-resources') openSpatialResources();
   const element = typeof document === 'undefined' ? null : document.getElementById(target);
-  element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  element?.scrollIntoView({ behavior: 'auto', block: 'start' });
 }
 
 function openMap(mineFid = null) {

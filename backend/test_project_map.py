@@ -421,6 +421,28 @@ class TestProjectStatsAreaAggregation(unittest.TestCase):
                             },
                         }
                     )
+                # 第五座：area 属性为真值非数字，必须级联回落 TBTYMJ_1 而非丢面积（数据流遍 Low）
+                features.append(
+                    {
+                        "type": "Feature",
+                        "properties": {"FID_1": 605, "area": "待定", "TBTYMJ_1": 500_000},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[102.0, 25.0], [102.01, 25.0], [102.0, 25.01], [102.0, 25.0]]],
+                        },
+                    }
+                )
+                # 第四座：官方面积字段名为 TBTYMJ_1 变体（三调合并 shapefile 命名，审查 P2-2）
+                features.append(
+                    {
+                        "type": "Feature",
+                        "properties": {"FID_1": 604, "TBTYMJ_1": 2_400_000, "HFZLQK": "已治理"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[101.5, 25.0], [101.51, 25.0], [101.5, 25.01], [101.5, 25.0]]],
+                        },
+                    }
+                )
                 # 第三座无任何面积属性，仅绑定快照（按 m² 兜底口径 800000）
                 features.append(
                     {
@@ -462,8 +484,8 @@ class TestProjectStatsAreaAggregation(unittest.TestCase):
                 db.session.commit()
 
                 stats = get_project_stats(project["id"])
-                self.assertAlmostEqual(stats["mineAreaTotal"], 9375.71 + 1_500_000 + 800_000, places=2)
-                self.assertEqual(stats["areaStats"], {"small": 2, "medium": 1, "large": 0})
+                self.assertAlmostEqual(stats["mineAreaTotal"], 9375.71 + 1_500_000 + 2_400_000 + 800_000 + 500_000, places=2)
+                self.assertEqual(stats["areaStats"], {"small": 3, "medium": 1, "large": 1})  # 605 级联成功入small；604=2.4M²>2M 为 large
             finally:
                 if previous_root is None:
                     os.environ.pop("PROJECT_STORAGE_ROOT", None)

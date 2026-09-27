@@ -158,12 +158,27 @@ def get_project_stats(project_id):
             binding = binding_by_fid.get(int(fid))
         except (TypeError, ValueError):
             binding = None
-        # 面积取值优先级：矢量属性 area/TBTYMJ（官方图斑面积，m²）优先；
+        # 面积取值优先级：矢量属性 area/TBTYMJ_1/TBTYMJ（官方图斑面积别名，m²，
+        # 与 spatial_service 字段别名表口径一致）优先；
         # binding.area_snapshot 是导入映射的原始值，量纲随源数据（历史项目曾误映射
         # 到 SHAPE_Area 平方度），仅作无属性时的兜底，避免污染 m² 口径汇总。
-        area = properties.get("area") or properties.get("TBTYMJ") or (binding.area_snapshot if binding else None) or 0
-        try:
-            numeric_area = float(area)
+        # 候选逐个尝试解析：真值非数字（如 "待定"）时回落下一来源，而非整矿丢面积。
+        area_candidates = (
+            properties.get("area"),
+            properties.get("TBTYMJ_1"),
+            properties.get("TBTYMJ"),
+            binding.area_snapshot if binding else None,
+        )
+        numeric_area = None
+        for candidate in area_candidates:
+            if candidate in (None, ""):
+                continue
+            try:
+                numeric_area = float(candidate)
+                break
+            except (TypeError, ValueError):
+                continue
+        if numeric_area is not None:
             total_area += numeric_area
             if numeric_area < 1_000_000:
                 small_mines += 1
@@ -171,8 +186,6 @@ def get_project_stats(project_id):
                 medium_mines += 1
             else:
                 large_mines += 1
-        except (TypeError, ValueError):
-            pass
         status = str((binding.status_snapshot if binding else None) or properties.get("HFZLQK") or properties.get("status") or "")
         if any(word in status for word in ("已", "治理", "恢复", "复垦")) and "未" not in status:
             treated += 1

@@ -4,8 +4,8 @@
       <h2>项目档案</h2>
       <span class="muted-text">一项目一档案：资产台账 · 配置快照 · 活动时间线</span>
     </div>
-    <p v-if="error" class="error-text">{{ error }}</p>
-    <p v-else-if="loading" class="empty-block">档案加载中…</p>
+    <p v-if="error" class="error-text error-strip">{{ error }}（以下为最近一次可用数据）</p>
+    <p v-if="loading && !assetCount && !backups.length && !activities.length" class="empty-block">档案加载中…</p>
     <template v-else>
       <div class="archive-grid">
         <article class="archive-card">
@@ -148,6 +148,8 @@ const handleImportFile = async (event) => {
 .panel-title-row { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
 .panel-title-row h2 { margin: 0; font-size: 17px; color: #264b45; }
 .muted-text { color: #7ba39a; font-size: 12px; }
+
+.error-strip { margin-bottom: 8px; }
 
 .archive-grid {
   display: grid;

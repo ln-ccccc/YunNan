@@ -62,8 +62,10 @@ def _resolve_source(project, source_key):
         if not text:
             raise ImageryProcessingError("缺少影像来源")
         storage_root = get_storage_root()
-        # 仅接受相对 storage 根的 key（projects/<id>/inputs/...）；
-        # 绝对路径/项目内物理路径/目录遍历一律 400，浏览器不得提交服务器物理路径（AGENTS §6）
+        # 仅接受本项目沙箱内的相对 key（projects/<本项目id>/...）；
+        # 他项目 key / 绝对路径 / 目录遍历一律 400，浏览器不得提交服务器物理路径（AGENTS §6/§9）
+        if not text.startswith(f"projects/{project.id}/"):
+            raise ImageryProcessingError("影像来源路径不合法")
         try:
             path = resolve_storage_path(storage_root, Path(text))
         except ValueError:
