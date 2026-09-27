@@ -81,6 +81,62 @@ def get_project_map_manifest(project_id):
     }
 
 
+def _aggregate_project_indices(project_id, fids):
+    """项目级光谱指数聚合：逐矿 indices 产物求均值/趋势分布（M5 后数据完善）。
+
+    数据源是 outputs/indices/<fid>.json（来自 NDVI/NDBI 等 xlsx 的逐矿序列）；
+    unavailable 的矿山按"缺失"计数，不进均值。返回 ndviStats 与趋势分布。
+    """
+    summary_years = {}
+    means = []
+    trend_counter = {"upward": 0, "downward": 0, "stable": 0, "no_data": 0}
+    available = 0
+    for fid in fids:
+        try:
+            payload = _read_project_output(project_id, "indices", f"{int(fid)}.json")
+        except (ValueError, TypeError):
+            continue
+        ndvi = payload.get("ndvi") or {}
+        if not ndvi.get("available"):
+            trend_counter["no_data"] += 1
+            continue
+        available += 1
+        try:
+            means.append(float(ndvi.get("mean")))
+        except (TypeError, ValueError):
+            pass
+        mk = str(ndvi.get("mk_trend") or "no_data")
+        if mk in trend_counter:
+            trend_counter[mk] += 1
+        for point in ndvi.get("data") or []:
+            year = point.get("year")
+            value = point.get("value")
+            if year is None or value is None:
+                continue
+            summary_years.setdefault(year, []).append(float(value))
+
+    yearly = [
+        {
+            "year": year,
+            "mean": round(sum(values) / len(values), 4),
+            "sample_count": len(values),
+        }
+        for year, values in sorted(summary_years.items(), key=lambda item: item[0])
+    ]
+    overall_mean = round(sum(means) / len(means), 4) if means else 0
+    first = yearly[0]["mean"] if yearly else 0
+    last = yearly[-1]["mean"] if len(yearly) >= 2 else 0
+    return {
+        "ndviStats": {
+            "mean": overall_mean,
+            "trend": round(last - first, 4),
+            "available_mine_count": available,
+            "mk_trend_counter": trend_counter,
+            "yearly": yearly,
+        },
+    }
+
+
 def get_project_stats(project_id):
     geojson = get_project_geojson(project_id)
     features = geojson["features"]
@@ -135,7 +191,7 @@ def get_project_stats(project_id):
         "restorationMethodList": [{"name": key, "count": value} for key, value in restoration_methods.items()],
         "landTypeList": [{"name": key, "value": value} for key, value in land_types.items()],
         "closingYearList": [],
-        "ndviStats": {"mean": 0, "trend": 0},
+        **_aggregate_project_indices(project_id, binding_by_fid.keys()),
         "changeAreaStats": {
             "total_changed_km2": 0,
             "valid_mine_count": 0,

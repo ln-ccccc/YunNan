@@ -42,6 +42,7 @@ export function useMineData(projectId) {
   const restorationMethodList = ref([]);
   const miningMethodList = ref([]);
   const landTypeList = ref([]);
+  const ndviStats = ref({});
   const changeAreaStats = ref({
     total_changed_km2: 0,
     valid_mine_count: 0,
@@ -91,6 +92,7 @@ export function useMineData(projectId) {
       restorationMethodList.value = stats.restorationMethodList || [];
       miningMethodList.value = stats.miningMethodList || [];
       landTypeList.value = stats.landTypeList || [];
+      ndviStats.value = stats.ndviStats || ndviStats.value;
       changeAreaStats.value = stats.changeAreaStats || changeAreaStats.value;
       mineChangeAreaList.value = stats.mineChangeAreaList || [];
 
@@ -352,6 +354,7 @@ export function useMineData(projectId) {
     miningMethodList,
     landTypeList,
     changeAreaStats,
+    ndviStats,
     mineChangeAreaList,
     mineIndices,
     mineChangeMatrix,

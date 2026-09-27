@@ -59,6 +59,8 @@
         :treatedCount="treatedCount"
         :untreatedCount="untreatedCount"
         :landTypeList="landTypeList"
+        :ndviStats="ndviStats"
+        :mineTotal="mineTotal"
         :changeAreaStats="changeAreaStats"
         :collapsed="rightSidebarCollapsed"
         @toggle="rightSidebarCollapsed = !rightSidebarCollapsed"
@@ -186,6 +188,7 @@ const {
   restorationMethodList,
   miningMethodList,
   landTypeList,
+  ndviStats,
   changeAreaStats,
   dataLoadError,
   mineIndices,

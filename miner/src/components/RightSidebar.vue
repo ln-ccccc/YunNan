@@ -10,19 +10,19 @@
     <div class="sidebar-content" v-show="!collapsed">
       <div class="metric-grid glass-panel">
         <div class="metric-card">
-          <div class="metric-label">变化面积</div>
-          <div class="metric-value text-cyan">{{ formatKm2(changeAreaStats?.total_changed_km2) }}</div>
-          <div class="metric-unit">km²</div>
+          <div class="metric-label">NDVI 均值</div>
+          <div class="metric-value text-cyan">{{ formatNdvi(ndviStats?.mean) }}</div>
+          <div class="metric-unit">项目均值</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">覆盖率</div>
-          <div class="metric-value text-blue">{{ formatCoverage(changeAreaStats?.coverage_ratio) }}</div>
-          <div class="metric-unit">%</div>
+          <div class="metric-label">NDVI 趋势</div>
+          <div class="metric-value" :class="ndviTrendClass">{{ formatNdviDelta(ndviStats?.trend) }}</div>
+          <div class="metric-unit">首末差值</div>
         </div>
         <div class="metric-card full-width">
-          <div class="metric-label">缺失矿山数</div>
-          <div class="metric-value text-yellow">{{ changeAreaStats?.missing_mine_count ?? 0 }}</div>
-          <div class="metric-unit">无数据</div>
+          <div class="metric-label">光谱覆盖矿山</div>
+          <div class="metric-value text-blue">{{ ndviStats?.available_mine_count ?? 0 }} / {{ mineTotalForCoverage }}</div>
+          <div class="metric-unit">有指数数据 / 矿山总数</div>
         </div>
       </div>
 
@@ -59,6 +59,8 @@ const props = defineProps({
   treatedCount: Number,
   untreatedCount: Number,
   landTypeList: Array,
+  ndviStats: Object,
+  mineTotal: Number,
   changeAreaStats: {
     type: Object,
     default: () => ({
@@ -70,15 +72,24 @@ const props = defineProps({
   }
 });
 
-const formatKm2 = (value) => {
+const formatNdvi = (value) => {
   const num = Number(value);
   return Number.isFinite(num) ? num.toFixed(3) : '--';
 };
 
-const formatCoverage = (value) => {
+const formatNdviDelta = (value) => {
   const num = Number(value);
-  return Number.isFinite(num) ? (num * 100).toFixed(1) : '--';
+  if (!Number.isFinite(num)) return '--';
+  return (num >= 0 ? '+' : '') + num.toFixed(4);
 };
+
+const ndviTrendClass = computed(() => {
+  const num = Number(props.ndviStats?.trend);
+  if (!Number.isFinite(num) || num === 0) return 'text-blue';
+  return num > 0 ? 'text-cyan' : 'text-yellow';
+});
+
+const mineTotalForCoverage = computed(() => Number(props.mineTotal) || (props.ndviStats?.available_mine_count ?? 0));
 
 const pieChartRef = ref(null);
 const landChartRef = ref(null);
