@@ -19,7 +19,7 @@
         <span class="muted-text">{{ item.actor || 'system' }}</span>
         <small>{{ formatTimestamp(item.created_at) }}</small>
       </li>
-      <li v-if="!items.length" class="empty-block">暂无项目活动。</li>
+      <li v-if="!items.length" class="empty-block">暂无项目活动</li>
     </ol>
   </section>
 </template>

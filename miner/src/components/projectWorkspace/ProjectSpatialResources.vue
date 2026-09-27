@@ -67,7 +67,7 @@
           >重试原任务</button>
         </article>
 
-        <p v-if="!basemapCandidates.length" class="muted-text">暂无可用底图候选。</p>
+        <p v-if="!basemapCandidates.length" class="muted-text">暂无可用底图候选</p>
         <label v-for="item in basemapCandidates" :key="item.candidate" class="candidate-item">
           <input
             type="radio"

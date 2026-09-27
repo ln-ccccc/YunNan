@@ -43,7 +43,7 @@
         <span>{{ formatTemporal(asset.temporal) }}</span>
         <p v-if="asset.error?.message" class="asset-error">{{ asset.error.message }}</p>
       </article>
-      <p v-if="!items.length" class="empty-block">暂无符合条件的公开资产。</p>
+      <p v-if="!items.length" class="empty-block">暂无符合条件的公开资产</p>
     </div>
   </section>
 </template>
@@ -166,7 +166,7 @@ button {
 select {
   border: 1px solid rgba(35, 86, 78, 0.18);
   border-radius: 10px;
-  padding: 8px 10px;
+  padding: 9px 11px;
   background: #fff;
 }
 

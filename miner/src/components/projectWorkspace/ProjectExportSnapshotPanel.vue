@@ -42,7 +42,7 @@
             @click="$emit('download-export', item)"
           >下载</button>
         </article>
-        <p v-if="!exports.length" class="empty-block">暂无导出记录。</p>
+        <p v-if="!exports.length" class="empty-block">暂无导出记录</p>
       </div>
     </section>
 
@@ -70,7 +70,7 @@
             >恢复配置</button>
           </span>
         </article>
-        <p v-if="!snapshots.length" class="empty-block">暂无项目配置快照。</p>
+        <p v-if="!snapshots.length" class="empty-block">暂无项目配置快照</p>
       </div>
     </section>
   </section>

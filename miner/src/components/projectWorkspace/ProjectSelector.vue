@@ -205,7 +205,7 @@ select {
   box-sizing: border-box;
   border: 1px solid rgba(35, 86, 78, 0.18);
   border-radius: 10px;
-  padding: 8px 10px;
+  padding: 9px 11px;
 }
 
 .action-row,
