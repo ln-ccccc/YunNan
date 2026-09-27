@@ -27,11 +27,25 @@ export function createInterpretationRoutes({
     const limit = String(req.query.limit || '20');
     try {
       const query = new URLSearchParams({ page, limit, project_id: projectId });
-      relayJson(res, await projectApi.request(
+      const upstream = await projectApi.request(
         'GET',
         `/api/analysis/kml_roi_history?${query.toString()}`,
         { cookie: requestCookie(req) },
-      ));
+      );
+      // 展示排序：年份降序、同年份按矿山 ID 升序、未知年份沉底
+      //（后端按推理先后自然序返回，直出会显得杂乱——2026-09-25 UI 巡检实锤）
+      if (upstream.status === 200 && Array.isArray(upstream.body?.data)) {
+        upstream.body.data.sort((a, b) => {
+          const ya = Number(a?.data?.year) || 0;
+          const yb = Number(b?.data?.year) || 0;
+          if (yb !== ya) return yb - ya;
+          const fa = Number(a?.data?.fid) || 0;
+          const fb = Number(b?.data?.fid) || 0;
+          if (fb !== fa) return fa - fb;
+          return String(a?.data?.file || '').localeCompare(String(b?.data?.file || ''), 'zh-CN');
+        });
+      }
+      relayJson(res, upstream);
     } catch (error) {
       console.error('interpretation route upstream error:', error);
       res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });

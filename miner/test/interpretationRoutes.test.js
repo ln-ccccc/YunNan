@@ -89,3 +89,35 @@ test('kml-roi-history：上游非 200 原样透传不塑形', async () => {
   const body = await res.json();
   assert.equal(body.msg, '上游异常');
 });
+
+test('kml-roi-history：记录按年份降序、同年按矿山升序重排后下发', async () => {
+  const router = createInterpretationRoutes({
+    projectApi: {
+      async request() {
+        return {
+          status: 200,
+          body: {
+            code: 0,
+            data: [
+              { record_id: 'a', data: { fid: 714, year: 2024 } },
+              { record_id: 'b', data: { fid: 713, year: 2020 } },
+              { record_id: 'c', data: { fid: 713, year: 2024 } },
+              { record_id: 'd', data: { fid: 715, year: 2020 } },
+              { record_id: 'e', data: { fid: 714, year: 2020 } },
+            ],
+          },
+        };
+      },
+    },
+  });
+
+  const res = await withServer(router, '/kml-roi-history?project_id=1');
+  const body = await res.json();
+  assert.deepEqual(body.data.map((row) => `${row.data.fid}:${row.data.year}`), [
+    '713:2024',
+    '714:2024',
+    '713:2020',
+    '714:2020',
+    '715:2020',
+  ]);
+});

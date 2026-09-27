@@ -35,6 +35,12 @@
           <span>{{ formatRecordStatus(item.status) }}</span>
           <span>{{ item.artifact_name || '制品处理中' }}</span>
           <small>{{ formatTimestamp(item.create_time) }}</small>
+          <button
+            v-if="item.status === 'completed'"
+            class="link-btn"
+            type="button"
+            @click="$emit('download-export', item)"
+          >下载</button>
         </article>
         <p v-if="!exports.length" class="empty-block">暂无导出记录。</p>
       </div>
@@ -50,12 +56,19 @@
           <strong>{{ item.snapshot_name || '项目配置快照' }}</strong>
           <span>{{ formatRecordStatus(item.status) }}</span>
           <small>{{ formatTimestamp(item.create_time) }}</small>
-          <button
-            class="link-btn"
-            type="button"
-            :disabled="loading || busy || !item.restorable"
-            @click="$emit('restore-snapshot', item.id)"
-          >恢复配置</button>
+          <span class="row-actions">
+            <button
+              class="link-btn"
+              type="button"
+              @click="$emit('download-snapshot', item)"
+            >下载清单</button>
+            <button
+              class="link-btn"
+              type="button"
+              :disabled="loading || busy || !item.restorable"
+              @click="$emit('restore-snapshot', item.id)"
+            >恢复配置</button>
+          </span>
         </article>
         <p v-if="!snapshots.length" class="empty-block">暂无项目配置快照。</p>
       </div>
@@ -91,7 +104,7 @@ defineProps({
   },
 });
 
-defineEmits(['create-export', 'create-snapshot', 'restore-snapshot']);
+defineEmits(['create-export', 'create-snapshot', 'restore-snapshot', 'download-export', 'download-snapshot']);
 
 const exportFormats = ['geojson', 'csv', 'shp', 'xlsx'];
 
@@ -141,6 +154,8 @@ function formatTimestamp(value) {
 .panel-title-row p,
 .section-title-row h3,
 .error-text,
+.row-actions { display: flex; align-items: center; gap: 10px; }
+
 .empty-block {
   margin: 0;
 }
@@ -152,7 +167,7 @@ function formatTimestamp(value) {
 
 .table-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) auto minmax(150px, 1fr) minmax(150px, 1fr);
+  grid-template-columns: minmax(120px, 1fr) auto minmax(150px, 1fr) minmax(150px, 1fr) auto;
   align-items: center;
   gap: 10px;
   border: 1px solid rgba(35, 86, 78, 0.1);
