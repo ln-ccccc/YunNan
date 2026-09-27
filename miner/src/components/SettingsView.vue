@@ -37,8 +37,27 @@
         </li>
       </ul>
 
+      <h3>口令修改</h3>
+      <form class="password-form" @submit.prevent="submitPasswordChange">
+        <div class="pwd-row">
+          <label for="pwd-old">原口令</label>
+          <input id="pwd-old" v-model="pwdForm.oldPassword" type="password" autocomplete="current-password" required />
+        </div>
+        <div class="pwd-row">
+          <label for="pwd-new">新口令</label>
+          <input id="pwd-new" v-model="pwdForm.newPassword" type="password" autocomplete="new-password" minlength="8" required />
+        </div>
+        <div class="pwd-row">
+          <label for="pwd-confirm">确认新口令</label>
+          <input id="pwd-confirm" v-model="pwdForm.confirm" type="password" autocomplete="new-password" minlength="8" required />
+        </div>
+        <p v-if="pwdMessage.text" :class="pwdMessage.ok ? 'ok-text' : 'error-text'">{{ pwdMessage.text }}</p>
+        <button class="primary-btn" type="submit" :disabled="pwdSubmitting">更新口令</button>
+      </form>
+
       <p class="muted-text note">
-        口令修改与多用户权限属后期范围（本期不做 RBAC）；运行环境与部署配置由管理员在服务器侧维护。
+        多用户权限属后期范围（本期不做 RBAC）；口令修改后请妥善保管新口令——服务重启会以服务器 .env 中
+        ADMIN_PASSWORD 覆盖，改密后需管理员同步更新服务器配置。
       </p>
     </section>
   </div>
@@ -53,6 +72,35 @@ defineProps({ username: { type: String, default: '' } });
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
 
 const stats = ref(null);
+
+const pwdForm = ref({ oldPassword: '', newPassword: '', confirm: '' });
+const pwdSubmitting = ref(false);
+const pwdMessage = ref({ text: '', ok: false });
+
+const submitPasswordChange = async () => {
+  pwdMessage.value = { text: '', ok: false };
+  if (pwdForm.value.newPassword !== pwdForm.value.confirm) {
+    pwdMessage.value = { text: '两次输入的新口令不一致', ok: false };
+    return;
+  }
+  if (pwdForm.value.newPassword.length < 8) {
+    pwdMessage.value = { text: '新口令至少 8 位', ok: false };
+    return;
+  }
+  pwdSubmitting.value = true;
+  try {
+    const res = await axios.post(
+      `${MINER_API_BASE_URL}/api/auth/change-password`,
+      { old_password: pwdForm.value.oldPassword, new_password: pwdForm.value.newPassword },
+    );
+    pwdMessage.value = { text: res.data?.msg || '口令修改成功', ok: true };
+    pwdForm.value = { oldPassword: '', newPassword: '', confirm: '' };
+  } catch (e) {
+    pwdMessage.value = { text: e?.response?.data?.msg || '口令修改失败，请稍后重试', ok: false };
+  } finally {
+    pwdSubmitting.value = false;
+  }
+};
 
 const modules = [
   { key: 'projects', label: '项目管理', implemented: true },
@@ -106,5 +154,17 @@ h3 { font-size: 14px; color: #2f6f61; margin: 14px 0 8px; }
 .pending { color: #b8860b; }
 
 .muted-text { color: #5a7d75; font-size: 12px; }
+.password-form { display: grid; gap: 10px; margin-top: 6px; max-width: 420px; }
+.pwd-row { display: grid; gap: 4px; }
+.pwd-row label { font-size: 13px; color: #264b45; }
+.pwd-row input {
+  padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(38, 75, 69, 0.3); font-size: 13px;
+}
+.primary-btn {
+  background: #2f6f61; color: #fff; border: none; border-radius: 6px;
+  padding: 8px 18px; cursor: pointer; font-size: 13px; justify-self: start;
+}
+.primary-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+.ok-text { color: #2f6f61; font-size: 13px; }
 .note { margin-top: 14px; }
 </style>

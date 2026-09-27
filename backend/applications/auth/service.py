@@ -56,3 +56,24 @@ def authenticate_admin(username, password):
     user.last_login_at = datetime.datetime.now()
     db.session.commit()
     return user
+
+
+def change_admin_password(user_id, old_password, new_password):
+    """管理员自助改密：验旧密码 + 更新 hash。
+
+    注意：部署环境 ADMIN_PASSWORD 环境变量会在 gunicorn 重启时经
+    sync_admin_from_env 覆盖回旧值——改密后如重启需同步更新 .env，
+    接口返回中带提示。
+    """
+    from applications.models import AdminUser
+
+    if not new_password or len(str(new_password)) < 8:
+        raise ValueError("新口令至少 8 位")
+    user = AdminUser.query.filter_by(id=user_id, is_active=True).first()
+    if user is None:
+        raise ValueError("当前账号不存在")
+    if not check_password_hash(user.password_hash, old_password or ""):
+        raise PermissionError("原口令不正确")
+    user.password_hash = generate_password_hash(str(new_password))
+    db.session.commit()
+    return user

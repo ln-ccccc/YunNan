@@ -56,6 +56,8 @@ from applications.project_hub.spatial_service import (
     preview_mine_vector,
     register_basemap,
     retry_spatial_job,
+    list_retained_basemaps,
+    reactivate_basemap,
 )
 from applications.project_hub.project_map import (
     get_project_change_matrix,
@@ -317,6 +319,28 @@ def _request_zoom(value, default):
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+@project_api.get("/<int:project_id>/spatial/basemaps/retained")
+@login_required
+def project_retained_basemaps_api(project_id):
+    try:
+        return success_api(data={"items": list_retained_basemaps(project_id)})
+    except Exception as exc:
+        return _spatial_failure_response(exc, "历史底图读取失败", project_id)
+
+
+@project_api.post("/<int:project_id>/spatial/basemaps/<int:resource_id>/reactivate")
+@login_required
+def project_basemap_reactivate_api(project_id, resource_id):
+    try:
+        return success_api(
+            data=reactivate_basemap(
+                project_id, resource_id, actor=_request_actor()
+            )
+        )
+    except Exception as exc:
+        return _spatial_failure_response(exc, "底图重新激活失败", project_id)
 
 
 @project_api.post("/<int:project_id>/spatial/basemaps")

@@ -537,6 +537,81 @@ def _sidecar_paths(path):
     return sorted({item.name for item in names if item.is_file()})
 
 
+def list_retained_basemaps(project_id):
+    """列出 retained 历史底图（保留最近 2 个的策略产物），供重新激活。"""
+    if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    rows = (
+        ProjectSpatialResource.query.filter_by(
+            project_id=project_id,
+            resource_type="basemap",
+            status="retained",
+        )
+        .order_by(ProjectSpatialResource.version.desc())
+        .all()
+    )
+    return [_serialize_resource(row) for row in rows]
+
+
+def reactivate_basemap(project_id, resource_id, actor="system"):
+    """重新激活 retained 历史底图：互斥激活（旧 active 置 retained）。
+
+    前提是瓦片目录与 .active 标记仍在其自身 resource 目录中（激活期只改
+    状态与标记，不复制数据——性能计划遗留项的收敛实现）。
+    """
+    if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    target = ProjectSpatialResource.query.filter_by(
+        id=resource_id,
+        project_id=project_id,
+        resource_type="basemap",
+    ).first()
+    if target is None:
+        raise ValueError("历史底图不存在")
+    if target.status == "active":
+        raise ValueError("该底图已是激活状态")
+
+    storage_root = ensure_storage_layout()
+    target_tile_dir = resolve_storage_path(
+        storage_root,
+        Path("projects") / str(project_id) / "tiles" / str(target.id),
+    )
+    if not (target_tile_dir / ".active").is_file():
+        raise ValueError("该底图的瓦片数据已被清理，无法重新激活")
+
+    current_active = (
+        ProjectSpatialResource.query.filter_by(
+            project_id=project_id,
+            resource_type="basemap",
+            status="active",
+        )
+        .order_by(ProjectSpatialResource.version.desc())
+        .first()
+    )
+    if current_active is not None:
+        current_tile_dir = resolve_storage_path(
+            storage_root,
+            Path("projects") / str(project_id) / "tiles" / str(current_active.id),
+        )
+        active_marker = current_tile_dir / ".active"
+        if active_marker.exists():
+            active_marker.unlink()
+        current_active.status = "retained"
+
+    (target_tile_dir / ".active").write_text("1", encoding="utf-8")
+    target.status = "active"
+    _activity(
+        project_id,
+        "basemap_reactivated",
+        {"resource_id": target.id, "version": target.version,
+         "previous_resource_id": current_active.id if current_active else None},
+        actor=actor,
+        target={"type": "spatial_resource", "id": str(target.id)},
+    )
+    db.session.commit()
+    return _serialize_resource(target)
+
+
 def list_basemap_candidates(project_id):
     project = Project.query.filter_by(id=project_id, deleted_at=None).first()
     if project is None:

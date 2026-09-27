@@ -67,6 +67,13 @@ def create_app(config_name=None):
                 return unauthorized
 
     app.config['SESSION_TYPE'] = 'filesystem'
+    # 会话寿命显式化：login 设 permanent=True，但此前无 LIFETIME 配置，
+    # Flask 默认 31 天与实测 20 分钟过期不符——显式 7 天并随响应刷新，
+    # 消除"双端各自 20 分钟掉线"的体验问题（2026-09-27 会话联动项）
+    from datetime import timedelta
+
+    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     # 上传上限与 8GB 大影像闸门（tiff_processor.MAX_UPLOAD_TIFF_SIZE_MB）保持
     # 同源：Werkzeug 在表单解析阶段按该值抛 413，若小于视图内闸门会把
     # 大文件功能在 HTTP 层拦死（2026-09-20 审查 P1）。视图内仍保留逐文件

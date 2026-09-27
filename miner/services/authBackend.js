@@ -35,6 +35,9 @@ export const authBackend = {
   logout(cookie = '') {
     return requestBackendAuth('POST', '/api/auth/logout', { cookie });
   },
+  changePassword(payload, cookie = '') {
+    return requestBackendAuth('POST', '/api/auth/change-password', { body: payload, cookie });
+  },
   session(cookie = '') {
     // session 检查在每个受保护请求上执行：5s 超时足够，避免上游挂起时长时间占用请求线程
     return requestBackendAuth('GET', '/api/auth/session', { cookie, timeoutMs: 5000 });

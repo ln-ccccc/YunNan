@@ -124,6 +124,34 @@
       <p v-if="displayError" class="error-text">{{ displayError }}</p>
     </template>
 
+    <section class="mine-list-panel">
+      <div class="panel-title-row">
+        <h3>历史底图</h3>
+        <button
+          class="link-btn"
+          type="button"
+          :disabled="retainedLoading"
+          @click="$emit('load-retained-basemaps')"
+        >{{ retainedLoading ? '加载中…' : '刷新历史底图' }}</button>
+      </div>
+      <p v-if="!retainedBasemaps.length" class="muted-text">无 retained 历史底图（切换底图时自动保留最近 2 个）</p>
+      <div v-else class="mine-list">
+        <article v-for="item in retainedBasemaps" :key="item.id" class="mine-item">
+          <div>
+            <strong>底图 v{{ item.version }}</strong>
+            <small>status: {{ item.status }} · zoom {{ item.min_zoom }}-{{ item.max_zoom }}</small>
+          </div>
+          <button
+            class="link-btn"
+            type="button"
+            :disabled="busy || !canConfigure"
+            :title="item.tiles_available === false ? '瓦片数据已被清理，无法重激活' : '重新激活此底图'"
+            @click="$emit('reactivate-basemap', item.id)"
+          >重新激活</button>
+        </article>
+      </div>
+    </section>
+
     <section v-if="mineOptions.length" class="mine-list-panel">
       <div class="panel-title-row">
         <h3>已绑定矿山</h3>
@@ -185,6 +213,14 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  retainedBasemaps: {
+    type: Array,
+    default: () => [],
+  },
+  retainedLoading: {
+    type: Boolean,
+    default: false,
+  },
   basemapCandidates: {
     type: Array,
     default: () => [],
@@ -210,6 +246,8 @@ const emit = defineEmits([
   'cancel-job',
   'update:selected-basemap-candidate',
   'open-map',
+  'load-retained-basemaps',
+  'reactivate-basemap',
 ]);
 
 const wizardStep = ref(2);

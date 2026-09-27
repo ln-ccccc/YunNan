@@ -55,6 +55,15 @@ app.get('/api/auth/session', async (req, res) => {
   }
 });
 
+app.post('/api/auth/change-password', async (req, res) => {
+  try {
+    relayBackendResponse(res, await authBackend.changePassword(req.body || {}, req.headers.cookie || ''));
+  } catch (error) {
+    console.error('[auth] change-password 网关请求失败:', error?.message || error);
+    res.status(502).json(AUTH_GATEWAY_ERROR);
+  }
+});
+
 app.post('/api/auth/logout', async (req, res) => {
   try {
     relayBackendResponse(res, await authBackend.logout(req.headers.cookie || ''));

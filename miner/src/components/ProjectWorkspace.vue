@@ -72,7 +72,11 @@
             :busy="spatialUi.busy || slices.spatial.loading"
             :error="spatialUi.error || slices.spatial.error"
             :mine-preview="spatialUi.minePreview"
-            :basemap-candidates="spatialUi.basemapCandidates"
+            :retained-basemaps="retainedBasemaps"
+        :retained-loading="retainedBasemapsLoading"
+        @load-retained-basemaps="loadRetainedBasemaps"
+        @reactivate-basemap="reactivateBasemap"
+        :basemap-candidates="spatialUi.basemapCandidates"
             @preview-mine="previewMineVector"
             @clear-mine-preview="clearMinePreview"
             @import-mine="importMineVector"
@@ -148,6 +152,7 @@
 </template>
 
 <script setup>
+import axios from 'axios';
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 
 import StatsOverviewPanel from './StatsOverviewPanel.vue';
@@ -355,7 +360,10 @@ async function loadSelectedProject(projectId, revision, requestedSlices = Object
   await Promise.all(requestedSlices
     .filter((name) => Object.hasOwn(loaders, name))
     .map((name) => loadSlice(name, loaders[name], revision)));
-  if (selectionGate.isCurrent(revision)) scheduleSpatialPoll();
+  if (selectionGate.isCurrent(revision)) {
+    scheduleSpatialPoll();
+    loadRetainedBasemaps();
+  }
 }
 
 async function loadProjects(preferredProjectId = null) {
@@ -621,6 +629,48 @@ async function registerDataset(payload) {
     }
   } finally {
     if (datasetMutationGate.isCurrent(revision)) savingDataset.value = false;
+  }
+}
+
+// M5.4：历史底图（retained）加载与重新激活
+const retainedBasemaps = ref([]);
+const retainedBasemapsLoading = ref(false);
+
+async function loadRetainedBasemaps() {
+  if (!currentProjectId.value) return;
+  retainedBasemapsLoading.value = true;
+  try {
+    const res = await axios.get(
+      `/api/projects/${currentProjectId.value}/spatial/basemaps/retained`,
+    );
+    retainedBasemaps.value = res.data?.data?.items || [];
+  } catch (_) {
+    retainedBasemaps.value = [];
+  } finally {
+    retainedBasemapsLoading.value = false;
+  }
+}
+
+async function reactivateBasemap(resourceId) {
+  if (!currentProjectId.value || !window.confirm('确认重新激活此历史底图吗？当前激活底图将转为 retained。')) return;
+  const operation = startProjectOperation();
+  if (!operation) return;
+  try {
+    await axios.post(
+      `/api/projects/${currentProjectId.value}/spatial/basemaps/${resourceId}/reactivate`,
+      {},
+    );
+    if (!isCurrentProjectOperation(operation)) return;
+    await Promise.all([
+      loadRetainedBasemaps(),
+      refreshCurrent(INVALIDATION.spatial),
+    ]);
+  } catch (error) {
+    if (isCurrentProjectOperation(operation)) {
+      slices.spatial.error = messageFrom(error, '底图重新激活失败');
+    }
+  } finally {
+    if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
   }
 }
 

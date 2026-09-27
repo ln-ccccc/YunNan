@@ -12,6 +12,9 @@
     </header>
 
     <section class="view-body">
+      <p class="muted-text import-hint">
+        快照 manifest 可在「项目管理 → 项目档案 → 配置快照 → 导入快照」用于跨环境恢复。
+      </p>
       <div class="toolbar-row">
         <label for="data-manager-project">项目</label>
         <select id="data-manager-project" v-model="selectedProjectId" @change="resetAndLoad">
@@ -219,6 +222,7 @@ loadProjects();
   padding: 18px 20px;
 }
 
+.import-hint { margin: 0 0 12px; }
 .toolbar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .toolbar-row label { font-size: 14px; }
 .toolbar-row select {
