@@ -20,7 +20,7 @@
         <select id="data-manager-project" v-model="selectedProjectId" @change="resetAndLoad">
           <option :value="null" disabled>请选择项目</option>
           <option v-for="project in projects" :key="project.id" :value="project.id">
-            {{ project.name }}（{{ project.status }}）
+            {{ project.name }}（{{ formatLifecycleStatus(project.status) }}）
           </option>
         </select>
       </div>
@@ -49,6 +49,8 @@ import axios from 'axios';
 import { ref } from 'vue';
 
 import ProjectExportSnapshotPanel from './projectWorkspace/ProjectExportSnapshotPanel.vue';
+import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
+import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
 
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
 const apiBase = MINER_API_BASE_URL ? String(MINER_API_BASE_URL).replace(/\/$/, '') : '';
@@ -81,6 +83,12 @@ const loadProjects = async () => {
   try {
     const res = await axios.get(url('/api/projects'));
     projects.value = res.data?.data?.items || [];
+    // 共享项目上下文：模块页首次载入时自动回选工作台/其他模块选中的项目（gui-audit #5）
+    const sharedProjectId = getSelectedProjectId();
+    if (!selectedProjectId.value && sharedProjectId && projects.value.some((p) => p.id === sharedProjectId)) {
+      selectedProjectId.value = sharedProjectId;
+      resetAndLoad();
+    }
   } catch (_) {
     pageError.value = '项目列表读取失败';
   }
@@ -115,6 +123,7 @@ const loadProjectData = async () => {
 };
 
 const resetAndLoad = () => {
+  setSelectedProjectId(Number(selectedProjectId.value) || null); // 用户手选同步共享上下文
   exports.value = [];
   snapshots.value = [];
   capabilities.value = {};

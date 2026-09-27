@@ -14,7 +14,7 @@
         <select id="editing-project" v-model="selectedProjectId" @change="loadResults">
           <option :value="null" disabled>请选择项目</option>
           <option v-for="project in projects" :key="project.id" :value="project.id">
-            {{ project.name }}（{{ project.status }}）
+            {{ project.name }}（{{ formatLifecycleStatus(project.status) }}）
           </option>
         </select>
       </div>
@@ -50,6 +50,8 @@
 import axios from 'axios';
 import { ref } from 'vue';
 import { buildGeoViewEditorUrl } from '../navigation/geoviewNavigation.js';
+import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
+import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
 
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
 const GEOVIEW_BASE_URL = import.meta.env.VITE_GEOVIEW_URL || `${window.location.protocol}//${window.location.hostname}:3000`;
@@ -64,6 +66,12 @@ const loadProjects = async () => {
   try {
     const res = await axios.get(`${MINER_API_BASE_URL}/api/projects`);
     projects.value = res.data?.data?.items || [];
+    // 共享项目上下文：模块页首次载入时自动回选工作台/其他模块选中的项目（gui-audit #5）
+    const sharedProjectId = getSelectedProjectId();
+    if (!selectedProjectId.value && sharedProjectId && projects.value.some((p) => p.id === sharedProjectId)) {
+      selectedProjectId.value = sharedProjectId;
+      loadResults();
+    }
   } catch (_) {
     error.value = '项目列表读取失败';
   }
@@ -74,6 +82,7 @@ const EDITABLE_STATUS = new Set(['ready', 'ready_empty']);
 let resultsSeq = 0;
 
 const loadResults = async () => {
+  setSelectedProjectId(Number(selectedProjectId.value) || null); // 用户手选同步共享上下文
   // 竞态门控：快速切换项目时旧响应不得落地（收官审查 P2）
   const seq = (resultsSeq += 1);
   results.value = [];

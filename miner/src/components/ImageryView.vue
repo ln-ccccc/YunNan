@@ -126,6 +126,8 @@
 <script setup>
 import axios from 'axios';
 import { computed, ref } from 'vue';
+import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
+import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
 
 const emit = defineEmits(['go-map']);
 
@@ -176,12 +178,19 @@ const loadProjects = async () => {
   try {
     const res = await axios.get(`${MINER_API_BASE_URL}/api/projects`);
     projects.value = res.data?.data?.items || [];
+    // 共享项目上下文：模块页首次载入时自动回选工作台/其他模块选中的项目（gui-audit #5）
+    const sharedProjectId = getSelectedProjectId();
+    if (!selectedProjectId.value && sharedProjectId && projects.value.some((p) => p.id === sharedProjectId)) {
+      selectedProjectId.value = sharedProjectId;
+      loadCandidates();
+    }
   } catch (_) {
     error.value = '项目列表读取失败';
   }
 };
 
 const loadCandidates = async () => {
+  setSelectedProjectId(Number(selectedProjectId.value) || null); // 用户手选同步共享上下文
   // 刷新后按稳定标识回填选中（收官审查 P1：切片成功后清空选中曾使工具卡与"去解译"自毁）
   const previous = selectedCandidate.value;
   candidates.value = [];

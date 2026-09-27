@@ -104,6 +104,7 @@
 
 <script setup>
 import { formatActionLabel } from '../../projectWorkspace/projectWorkspaceViewModel.js';
+import { formatLifecycleStatus } from '../../utils/projectStatusLabels.js';
 
 defineProps({
   overview: {
@@ -126,14 +127,6 @@ defineProps({
 
 defineEmits(['edit', 'refresh', 'archive', 'restore', 'open-map', 'start-inference', 'run-action', 'delete']);
 
-function formatLifecycleStatus(status) {
-  return {
-    draft: '草稿',
-    active: '进行中',
-    completed: '已完成',
-    archived: '已归档',
-  }[status] || status || '--';
-}
 
 function formatReadiness(status) {
   return {

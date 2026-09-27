@@ -91,6 +91,7 @@ import { computed } from 'vue';
 
 import { filterProjects } from '../../projectWorkspace/projectWorkspaceHelpers.js';
 import { formatDate } from '../../utils/formatDate.js';
+import { formatLifecycleStatus } from '../../utils/projectStatusLabels.js';
 
 const INFERENCE_STATUS_TEXT = {
   queued: '排队中',
@@ -158,14 +159,6 @@ function isSelected(projectId) {
   return String(projectId) === String(props.selectedId);
 }
 
-function formatLifecycleStatus(status) {
-  return {
-    draft: '草稿',
-    active: '进行中',
-    completed: '已完成',
-    archived: '已归档',
-  }[status] || status || '--';
-}
 
 function formatYearRange(startYear, endYear) {
   if (!startYear && !endYear) return '未设置';

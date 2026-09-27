@@ -22,7 +22,7 @@
         <h3>项目（{{ projectHits.length }}）</h3>
         <div v-for="row in projectHits" :key="'p' + row.id" class="hit-row project-hit" @click="openMap(row.id)">
           <strong>{{ row.name }}</strong>
-          <span class="muted-text">{{ row.region || '未填区域' }} · {{ statusText(row.status) }} · 矿山 {{ row.mine_count || 0 }} 座 · 图斑 {{ row.feature_count || 0 }} 个</span>
+          <span class="muted-text">{{ row.region || '未填区域' }} · {{ formatLifecycleStatus(row.status) }} · 矿山 {{ row.mine_count || 0 }} 座 · 图斑 {{ row.feature_count || 0 }} 个</span>
         </div>
         <p v-if="!projectHits.length" class="empty-block">无匹配项目</p>
 
@@ -40,6 +40,7 @@
 <script setup>
 import axios from 'axios';
 import { ref } from 'vue';
+import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
 
 const emit = defineEmits(['open-map']);
 
@@ -50,8 +51,6 @@ const searched = ref(false);
 const projectHits = ref([]);
 const mineHits = ref([]);
 
-const STATUS = { draft: '草稿', active: '进行中', completed: '已完成', archived: '已归档' };
-const statusText = (s) => STATUS[s] || s || '未知';
 
 const runSearch = async () => {
   searched.value = true;

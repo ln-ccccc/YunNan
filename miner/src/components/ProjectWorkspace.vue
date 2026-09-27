@@ -168,6 +168,7 @@ import ProjectSelector from './projectWorkspace/ProjectSelector.vue';
 import ProjectSpatialResources from './projectWorkspace/ProjectSpatialResources.vue';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
 import { actionTarget, createSelectionGate, createSlice, INVALIDATION } from '../projectWorkspace/projectWorkspaceViewModel.js';
+import { setSelectedProjectId } from '../services/projectSelectionStore.js';
 
 defineProps({ username: { type: String, default: '' } });
 const emit = defineEmits(['open-map', 'logout']);
@@ -395,6 +396,7 @@ async function selectProject(projectId) {
   const nextProjectId = Number(projectId);
   const changed = currentProjectId.value !== nextProjectId;
   currentProjectId.value = nextProjectId;
+  setSelectedProjectId(nextProjectId); // 共享给影像/解译/编辑/数据模块页自动回选（gui-audit #5）
   if (changed) {
     listGate.next();
     listSlice.loading = false;
