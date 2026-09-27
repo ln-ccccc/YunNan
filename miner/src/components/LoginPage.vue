@@ -3,21 +3,21 @@
     <div class="login-card">
       <p class="login-kicker">矿山项目化监测平台</p>
       <h1>管理员登录</h1>
-      <p class="login-subtitle">输入管理员账号和密码后，才能访问项目工作台与矿山地图。</p>
+      <p class="login-subtitle">输入管理员账号和密码后访问平台。</p>
       <form class="login-form" @submit.prevent="submitLogin">
         <label>
           <span>账号</span>
-          <input v-model.trim="username" type="text" autocomplete="username" required />
+          <input v-model.trim="username" type="text" autocomplete="username" placeholder="请输入管理员账号" required />
         </label>
         <label>
           <span>密码</span>
-          <input v-model="password" type="password" autocomplete="current-password" required />
+          <input v-model="password" type="password" autocomplete="current-password" placeholder="请输入密码" required />
         </label>
         <button class="login-btn" type="submit" :disabled="submitting">
           {{ submitting ? '登录中…' : '登录' }}
         </button>
       </form>
-      <p v-if="error" class="error-text">{{ error }}</p>
+      <p class="error-text" :class="{ visible: error }" role="alert">{{ error || '' }}</p>
     </div>
   </div>
 </template>
@@ -136,6 +136,11 @@ label span {
 }
 
 .error-text {
+  min-height: 18px;
+  margin: 8px 0 0;
+}
+
+.error-text.visible {
   margin-top: 14px;
   color: #b43c2f;
 }
