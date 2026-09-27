@@ -418,7 +418,9 @@ const DETAIL_ANCHORS = [
   { id: 'parcel-panel', label: '图斑清单' },
 ];
 const scrollToAnchor = (anchorId) => {
-  document.getElementById(anchorId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // behavior:'auto'（瞬时）：smooth 动画在长面板（万级 scrollTop）下会被确定性中断，
+  // 停在距目标数百像素处；锚点跳转瞬时到位更符合预期
+  document.getElementById(anchorId)?.scrollIntoView({ behavior: 'auto', block: 'start' });
 };
 
 async function selectProject(projectId) {
