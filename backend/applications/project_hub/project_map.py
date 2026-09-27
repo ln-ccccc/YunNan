@@ -158,7 +158,10 @@ def get_project_stats(project_id):
             binding = binding_by_fid.get(int(fid))
         except (TypeError, ValueError):
             binding = None
-        area = (binding.area_snapshot if binding else None) or properties.get("TBTYMJ") or properties.get("area") or 0
+        # 面积取值优先级：矢量属性 area/TBTYMJ（官方图斑面积，m²）优先；
+        # binding.area_snapshot 是导入映射的原始值，量纲随源数据（历史项目曾误映射
+        # 到 SHAPE_Area 平方度），仅作无属性时的兜底，避免污染 m² 口径汇总。
+        area = properties.get("area") or properties.get("TBTYMJ") or (binding.area_snapshot if binding else None) or 0
         try:
             numeric_area = float(area)
             total_area += numeric_area

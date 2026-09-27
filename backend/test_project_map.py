@@ -382,5 +382,94 @@ class TestProjectInferenceOutputFiles(unittest.TestCase):
         self.assertEqual(data["vector_error"], "label_missing")
 
 
+class TestProjectStatsAreaAggregation(unittest.TestCase):
+    """面积聚合必须以矢量属性（m²）优先，绑定快照仅兜底（gui-audit #2）。
+
+    背景：project 1 绑定导入曾把 area 映射到 SHAPE_Area（平方度量纲），
+    聚合优先取快照导致 mineAreaTotal≈0.0007，前端按 m²÷10000 显示公顷得 0.00。
+    """
+
+    def setUp(self):
+        self.app = create_app("testing")
+        self.ctx = self.app.app_context()
+        self.ctx.push()
+        db.create_all()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    def test_property_area_wins_over_miscaled_binding_snapshot(self):
+        from applications.project_hub.project_map import get_project_stats
+
+        project = create_project({"name": "面积口径", "region": "大理"})
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            try:
+                features = []
+                # 两座带官方图斑面积（m²）的矿山 + 快照被平方度量纲污染的绑定
+                for fid, tbty in ((601, 9375.71), (602, 1_500_000)):
+                    features.append(
+                        {
+                            "type": "Feature",
+                            "properties": {"FID_1": fid, "TBTYMJ": str(tbty), "HFZLQK": "未治理"},
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[[100.0, 25.0], [100.01, 25.0], [100.0, 25.01], [100.0, 25.0]]],
+                            },
+                        }
+                    )
+                # 第三座无任何面积属性，仅绑定快照（按 m² 兜底口径 800000）
+                features.append(
+                    {
+                        "type": "Feature",
+                        "properties": {"FID_1": 603, "HFZLQK": "已治理"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[101.0, 25.0], [101.01, 25.0], [101.0, 25.01], [101.0, 25.0]]],
+                        },
+                    }
+                )
+                mine_dir = os.path.join(temp_dir, "projects", str(project["id"]), "mines", "1")
+                os.makedirs(mine_dir)
+                with open(os.path.join(mine_dir, "mines.geojson"), "w", encoding="utf-8") as stream:
+                    json.dump({"type": "FeatureCollection", "features": features}, stream)
+                db.session.add(
+                    ProjectSpatialResource(
+                        project_id=project["id"],
+                        resource_type="mine_vector",
+                        version=1,
+                        status="active",
+                        source_path=f"projects/{project['id']}/mines/1/mines.geojson",
+                        normalized_path=f"projects/{project['id']}/mines/1/mines.geojson",
+                        source_format="geojson",
+                        bounds_json=json.dumps([100.0, 25.0, 101.01, 25.01]),
+                    )
+                )
+                # 601/602 快照为平方度量纲的假值（1e-7 量级），必须被属性覆盖；603 快照为 m² 兜底值
+                for fid, snapshot in ((601, 8.4559e-07), (602, 1.2e-06), (603, 800_000.0)):
+                    db.session.add(
+                        ProjectMineBinding(
+                            project_id=project["id"],
+                            mine_fid=fid,
+                            area_snapshot=snapshot,
+                            status_snapshot="未治理" if fid != 603 else "已治理",
+                            sort_order=fid,
+                        )
+                    )
+                db.session.commit()
+
+                stats = get_project_stats(project["id"])
+                self.assertAlmostEqual(stats["mineAreaTotal"], 9375.71 + 1_500_000 + 800_000, places=2)
+                self.assertEqual(stats["areaStats"], {"small": 2, "medium": 1, "large": 0})
+            finally:
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
+
 if __name__ == "__main__":
     unittest.main()
