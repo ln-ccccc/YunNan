@@ -1,5 +1,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 
+import { formatDate } from '../utils/formatDate.js';
+
 // 本地时钟（原 useWeather 中不依赖网络的部分；天气/空气等外网能力
 // 已随内网无网络部署决策整体移除——2026-09-20 用户确认）
 export function useClock() {
@@ -10,8 +12,8 @@ export function useClock() {
 
   const updateDateTime = () => {
     const now = new Date();
-    currentDate.value = now.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
-    currentTime.value = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    currentDate.value = formatDate(now);
+    currentTime.value = formatDate(now).slice(11, 16);
   };
 
   onMounted(() => {

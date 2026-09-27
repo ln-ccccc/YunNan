@@ -1,3 +1,5 @@
+import { formatDateTime } from '../utils/formatDate.js';
+
 export function buildClassificationItems(changeMatrixData) {
   const images = changeMatrixData?.images || {};
   const items = [];
@@ -53,7 +55,7 @@ export function formatImageryTime(iso) {
   if (!iso) return '时间未知';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '时间未知';
-  return date.toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(date);
 }
 
 /**

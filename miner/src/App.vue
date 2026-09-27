@@ -13,7 +13,7 @@
         <template v-else>矿</template>
       </div>
       <nav class="nav-list">
-        <button
+        <button type="button"
           v-for="item in navItems"
           :key="item.key"
           :class="{ active: currentView === item.key || (item.key === 'projects' && currentView === 'map') }"
@@ -27,9 +27,9 @@
       </nav>
       <div v-if="!navCollapsed" class="nav-footer">
         <span class="username">{{ sessionState.username }}</span>
-        <button class="logout-btn" @click="handleLogout">退出</button>
+        <button type="button" class="logout-btn" @click="handleLogout">退出</button>
       </div>
-      <button
+      <button type="button"
         v-else
         class="logout-btn logout-compact"
         title="退出登录"

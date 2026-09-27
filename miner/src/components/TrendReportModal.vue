@@ -4,7 +4,7 @@
       <div class="modal-content glass-panel">
         <div class="modal-header">
           <h3>全矿山变化趋势统计</h3>
-          <button class="close-btn" @click="$emit('close')">×</button>
+          <button type="button" class="close-btn" @click="$emit('close')">×</button>
         </div>
 
         <div class="toolbar">
@@ -19,10 +19,10 @@
             <option value="stable">稳定</option>
             <option value="all">全部</option>
           </select>
-          <button class="btn" :disabled="loading" @click="emitRefresh">
+          <button type="button" class="btn" :disabled="loading" @click="emitRefresh">
             {{ loading ? '加载中...' : '刷新统计' }}
           </button>
-          <button class="btn primary" :disabled="loading || !report" @click="emitExport">
+          <button type="button" class="btn primary" :disabled="loading || !report" @click="emitExport">
             导出 CSV
           </button>
         </div>

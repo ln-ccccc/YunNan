@@ -4,7 +4,7 @@
       <div class="modal-content glass-panel">
         <div class="modal-header">
           <h3>{{ mineData.name }}</h3>
-          <button class="close-btn" @click="$emit('close')">×</button>
+          <button type="button" class="close-btn" @click="$emit('close')">×</button>
         </div>
         <div class="modal-body">
           <div class="info-grid">
@@ -23,7 +23,7 @@
           </div>
 
           <div class="tabs">
-            <button v-for="tab in ['NDVI', 'NDBI', 'NDWI', 'NDSI', 'Change Matrix', 'Classification', 'Original']"
+            <button type="button" v-for="tab in ['NDVI', 'NDBI', 'NDWI', 'NDSI', 'Change Matrix', 'Classification', 'Original']"
               :key="tab"
               :class="{ active: selectedTab === tab }"
               @click="$emit('tab-change', tab)">
@@ -137,7 +137,7 @@
                 </div>
                 <div class="imagery-side">
                   <span class="imagery-status">{{ item.statusText }}</span>
-                  <button
+                  <button type="button"
                     v-if="item.downloadable"
                     class="imagery-download-btn"
                     @click="$emit('download-original', item)"

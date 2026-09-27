@@ -58,6 +58,7 @@
 <script setup>
 import axios from 'axios';
 import { computed, onMounted, ref } from 'vue';
+import { formatDateTime } from '../../utils/formatDate.js';
 
 const props = defineProps({
   projectId: { type: Number, required: true },
@@ -113,7 +114,7 @@ const formatEvent = (event) => EVENT_LABELS[event] || event || '未知事件';
 const formatTime = (value) => {
   if (!value) return '时间未知';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(date);
 };
 
 const fetchArchive = async () => {

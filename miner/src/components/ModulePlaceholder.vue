@@ -3,7 +3,7 @@
     <div class="placeholder-card">
       <h3>{{ label }}</h3>
       <p>该模块规划于 {{ milestone }} 交付，当前先占位保证导航完整。</p>
-      <button class="back-btn" @click="$emit('go-projects')">返回项目管理</button>
+      <button type="button" class="back-btn" @click="$emit('go-projects')">返回项目管理</button>
     </div>
   </div>
 </template>

@@ -45,6 +45,7 @@ async function requestBinary(method, path, { cookie, timeoutMs = 30000 } = {}) {
   return {
     status: response.status,
     contentType: response.headers.get('content-type') || 'application/octet-stream',
+    contentDisposition: response.headers.get('content-disposition') || '',
     body: Buffer.from(await response.arrayBuffer()),
   };
 }

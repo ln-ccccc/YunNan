@@ -7,11 +7,11 @@
         <p class="workspace-subtitle">项目建档、空间资源、成果审阅和配置快照均在受控项目上下文中完成。</p>
       </div>
       <div class="workspace-header-actions">
-        <button v-if="username" class="ghost-btn" @click="emit('logout')">{{ username }} 退出登录</button>
-        <button class="secondary-btn" :disabled="!overview?.capabilities?.can_open_map" @click="openMap()">
+        <button type="button" v-if="username" class="ghost-btn" @click="emit('logout')">{{ username }} 退出登录</button>
+        <button type="button" class="secondary-btn" :disabled="!overview?.capabilities?.can_open_map" @click="openMap()">
           {{ overview?.capabilities?.can_open_map ? '打开矿山地图' : '地图资源未就绪' }}
         </button>
-        <button class="primary-btn" @click="startCreateProject">新建项目</button>
+        <button type="button" class="primary-btn" @click="startCreateProject">新建项目</button>
       </div>
     </header>
 

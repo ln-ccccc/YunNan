@@ -49,6 +49,7 @@
 <script setup>
 import axios from 'axios';
 import { computed, onMounted, ref, watch } from 'vue';
+import { formatDate } from '../../utils/formatDate.js';
 
 const props = defineProps({
   projectId: { type: Number, required: true },
@@ -70,7 +71,7 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
 const formatTime = (value) => {
   if (!value) return '—';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString('zh-CN');
+  return formatDate(date);
 };
 
 const loadSummary = async () => {

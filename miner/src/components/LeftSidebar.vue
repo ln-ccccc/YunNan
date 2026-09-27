@@ -11,10 +11,10 @@
 
       <!-- 快捷操作区 -->
       <div class="action-panel" style="margin-bottom: 10px;">
-        <button class="action-btn add-btn" @click="$emit('open-inference')">
+        <button type="button" class="action-btn add-btn" @click="$emit('open-inference')">
           <i class="icon">+</i> 添加矿山与解译
         </button>
-        <button class="action-btn trend-btn" @click="$emit('open-trend-report')">
+        <button type="button" class="action-btn trend-btn" @click="$emit('open-trend-report')">
           <i class="icon">↗</i> 趋势统计与导出
         </button>
       </div>
@@ -47,7 +47,7 @@
       <div class="control-panel glass-panel">
         <div class="panel-header">
           <h3>筛选查询</h3>
-          <button class="reset-btn" @click="emitReset">重置</button>
+          <button type="button" class="reset-btn" @click="emitReset">重置</button>
         </div>
         <div class="filter-group">
           <label>所属州市</label>
@@ -73,7 +73,7 @@
         </div>
         <div class="search-box">
           <input type="text" :value="searchMineId" @input="$emit('update:searchMineId', $event.target.value)" placeholder="输入矿山名称或ID..." @keyup.enter="emitSearch">
-          <button @click="emitSearch">查</button>
+          <button type="button" @click="emitSearch">查</button>
         </div>
       </div>
 

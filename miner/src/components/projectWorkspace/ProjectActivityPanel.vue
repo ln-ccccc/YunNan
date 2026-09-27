@@ -26,6 +26,7 @@
 
 <script setup>
 import { formatActivityAction } from '../../projectWorkspace/projectWorkspaceViewModel.js';
+import { formatDateTime } from '../../utils/formatDate.js';
 
 defineProps({
   items: {
@@ -61,7 +62,7 @@ function formatResult(result) {
 function formatTimestamp(value) {
   if (!value) return '时间未记录';
   const timestamp = new Date(value);
-  return Number.isNaN(timestamp.getTime()) ? String(value) : timestamp.toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(timestamp);
 }
 </script>
 

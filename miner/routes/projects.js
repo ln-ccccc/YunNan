@@ -12,6 +12,10 @@ function relayBinary(res, upstream) {
   if (upstream.contentType) {
     res.set('content-type', upstream.contentType);
   }
+  if (upstream.contentDisposition) {
+    // 附件下载名透传：前端按此保存原始文件名（导出制品/快照清单）
+    res.set('content-disposition', upstream.contentDisposition);
+  }
   res.send(upstream.body);
 }
 

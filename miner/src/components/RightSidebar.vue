@@ -1,7 +1,7 @@
 <template>
   <aside class="sidebar right-sidebar" :class="{ collapsed }">
     <div class="sidebar-header">
-      <button class="collapse-btn" @click="$emit('toggle')">
+      <button type="button" class="collapse-btn" @click="$emit('toggle')">
         {{ collapsed ? '◀' : '▶' }}
       </button>
       <h2>分析统计</h2>
