@@ -282,7 +282,12 @@ const renderMapMarkers = () => {
 
   const geoJsonData = { type: 'FeatureCollection', features: props.minesData };
 
+  // canvas 渲染器 + 命中容差：矿山多边形是真实尺度（约百米），省级视野下仅 ~2px，
+  // SVG 精确命中几乎点不中；tolerance 给点击/悬停各方向 10px 的判定外扩。
+  const mineRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
+
   mineLayer.value = L.geoJSON(geoJsonData, {
+    renderer: mineRenderer,
     style: (feature) => {
       const color = getMineColor(feature);
       return {

@@ -11,3 +11,17 @@ test('renders already-loaded mine features when the map container mounts', () =>
     'MapContainer must render the initial minesData after initializing Leaflet',
   );
 });
+
+test('mine layer uses canvas renderer with hit tolerance for tiny polygons', () => {
+  // 矿山多边形省级视野下仅 ~2px（gui-audit #3），必须带命中容差，否则点击不可达
+  assert.match(
+    mapContainerSource,
+    /L\.canvas\(\{\s*padding:[^,]+,\s*tolerance:\s*\d+\s*\}\)/,
+    'mineLayer must be rendered with L.canvas tolerance for click hit-testing',
+  );
+  assert.match(
+    mapContainerSource,
+    /renderer:\s*mineRenderer/,
+    'geoJSON layer must consume the canvas renderer',
+  );
+});
