@@ -164,7 +164,7 @@ HTTP 响应沿用标准 envelope：`{success, code, data}`。`data` 是完整的
 }
 ```
 
-`summary` 复用现有 `ProjectSummary`，完整字段固定为 `id`、`name`、`region`、`manager`、`remark`、`status`、`monitor_start_year`、`monitor_end_year`、`mine_count`、`dataset_count`、`spatial_status`、`map_ready`、`missing_resources`、`latest_activity_at`、`create_time`、`update_time`。
+`summary` 复用现有 `ProjectSummary`，完整字段固定为 `id`、`name`、`region`、`manager`、`remark`、`status`、`lifecycle_status`（与 `status` 同值的语义化别名，AGENTS §4）、`monitor_start_year`、`monitor_end_year`、`mine_count`、`dataset_count`、`spatial_status`、`map_ready`、`missing_resources`、`latest_activity_at`、`create_time`、`update_time`。
 
 `readiness` 固定为 `{status, passed, total, checks}`，其 `checks` 的顺序、代码和字段由第 4.2 节定义。`lifecycle_status` 与 `readiness` 是分离状态；归档项目仍照常计算 readiness。
 

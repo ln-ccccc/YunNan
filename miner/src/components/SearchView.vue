@@ -22,7 +22,7 @@
         <h3>项目（{{ projectHits.length }}）</h3>
         <div v-for="row in projectHits" :key="'p' + row.id" class="hit-row project-hit" @click="openMap(row.id)">
           <strong>{{ row.name }}</strong>
-          <span class="muted-text">{{ row.region || '未填区域' }} · {{ formatLifecycleStatus(row.status) }} · 矿山 {{ row.mine_count || 0 }} 座 · 图斑 {{ row.feature_count || 0 }} 个</span>
+          <span class="muted-text">{{ row.region || '未填区域' }} · {{ formatLifecycleStatus(row.lifecycle_status || row.status) }} · 矿山 {{ row.mine_count || 0 }} 座 · 图斑 {{ row.feature_count || 0 }} 个</span>
         </div>
         <p v-if="!projectHits.length" class="empty-block">无匹配项目</p>
 

@@ -14,7 +14,7 @@
         <select id="editing-project" v-model="selectedProjectId" @change="loadResults">
           <option :value="null" disabled>请选择项目</option>
           <option v-for="project in projects" :key="project.id" :value="project.id">
-            {{ project.name }}（{{ formatLifecycleStatus(project.status) }}）
+            {{ project.name }}（{{ formatLifecycleStatus(project.lifecycle_status || project.status) }}）
           </option>
         </select>
       </div>
