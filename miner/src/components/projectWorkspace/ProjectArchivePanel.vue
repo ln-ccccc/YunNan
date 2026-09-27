@@ -44,7 +44,7 @@
           <h3>最近活动</h3>
           <ul class="activity-list">
             <li v-for="activity in activities.slice(0, 8)" :key="activity.id || activity.created_at">
-              <span>{{ formatEvent(activity.event_type) }}</span>
+              <span>{{ formatActivityAction(activity.action_code) }}</span>
               <span class="muted-text">{{ formatTime(activity.created_at) }}</span>
             </li>
             <li v-if="!activities.length" class="muted-text">暂无活动</li>
@@ -57,21 +57,24 @@
 
 <script setup>
 import axios from 'axios';
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref } from 'vue';
 import { formatDateTime } from '../../utils/formatDate.js';
+import { formatActivityAction } from '../../projectWorkspace/projectWorkspaceViewModel.js';
 
+// 数据由父级 slices 传入（assets/backups/activity 与其他面板同源），
+// 本面板不再自请求同一项目状态（gui-audit 结构 H2 / AGENTS §7）
 const props = defineProps({
   projectId: { type: Number, required: true },
+  assets: { type: Array, default: () => [] },
+  backups: { type: Array, default: () => [] },
+  activities: { type: Array, default: () => [] },
+  loading: { type: Boolean, default: false },
+  error: { type: String, default: '' },
 });
 const emit = defineEmits(['imported']);
 
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
 
-const assets = ref([]);
-const backups = ref([]);
-const activities = ref([]);
-const loading = ref(true);
-const error = ref('');
 const importing = ref(false);
 const importInputRef = ref(null);
 
@@ -88,7 +91,7 @@ const ASSET_TYPE_LABELS = {
 
 const assetTypeRows = computed(() => {
   const counts = {};
-  for (const asset of assets.value) {
+  for (const asset of props.assets) {
     const type = asset.asset_type || asset.type || 'other';
     counts[type] = (counts[type] || 0) + 1;
   }
@@ -96,51 +99,12 @@ const assetTypeRows = computed(() => {
     .map(([type, count]) => ({ type, count, label: ASSET_TYPE_LABELS[type] || type }));
 });
 
-const assetCount = computed(() => assets.value.length);
+const assetCount = computed(() => props.assets.length);
 
-const EVENT_LABELS = {
-  project_created: '创建项目',
-  project_updated: '更新项目',
-  project_archived: '归档项目',
-  project_restored: '恢复项目',
-  project_deleted: '删除项目',
-  project_imported: '导入快照',
-  backup_created: '创建快照',
-  backup_restored: '恢复快照',
-  inference_started: '发起推理',
-};
-
-const formatEvent = (event) => EVENT_LABELS[event] || event || '未知事件';
 const formatTime = (value) => {
   if (!value) return '时间未知';
   const date = new Date(value);
   return formatDateTime(date);
-};
-
-const fetchArchive = async () => {
-  loading.value = true;
-  error.value = '';
-  const base = `${MINER_API_BASE_URL}/api/projects/${props.projectId}`;
-  const unwrap = (res) => res.data?.data;
-  try {
-    const [assetRes, backupRes, timelineRes] = await Promise.all([
-      axios.get(`${base}/assets`).catch(() => null),
-      axios.get(`${base}/backups`).catch(() => null),
-      axios.get(`${base}/timeline`).catch(() => null),
-    ]);
-    assets.value = unwrap(assetRes?.data ? assetRes : { data: { data: { items: [] } } })?.items || [];
-    // assets 响应形状兼容：{items:[...]} 或直接数组
-    if (Array.isArray(assets.value)) assets.value = assets.value || [];
-    const assetPayload = assetRes?.data?.data;
-    assets.value = Array.isArray(assetPayload) ? assetPayload : (assetPayload?.items || []);
-    const backupPayload = backupRes?.data?.data;
-    backups.value = Array.isArray(backupPayload) ? backupPayload : (backupPayload?.items || []);
-    activities.value = timelineRes?.data?.data?.items || [];
-  } catch (e) {
-    error.value = '项目档案读取失败';
-  } finally {
-    loading.value = false;
-  }
 };
 
 const handleImportFile = async (event) => {
@@ -162,7 +126,6 @@ const handleImportFile = async (event) => {
     );
     window.alert('快照导入成功：项目基础信息与矿山/数据集清单已应用');
     emit('imported');
-    await fetchArchive();
   } catch (e) {
     const msg = e?.response?.data?.msg || '快照导入失败，请检查文件格式';
     window.alert(msg);
@@ -172,9 +135,6 @@ const handleImportFile = async (event) => {
   }
 };
 
-defineExpose({ fetchArchive });
-
-onMounted(fetchArchive);
 </script>
 
 <style scoped>

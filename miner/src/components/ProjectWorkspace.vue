@@ -138,6 +138,11 @@
           <ProjectArchivePanel
             id="project-archive"
             :project-id="currentProjectId"
+            :assets="assetItems"
+            :backups="snapshotItems"
+            :activities="activityItems"
+            :loading="slices.assets.loading || slices.snapshots.loading || slices.activity.loading"
+            :error="slices.assets.error || slices.snapshots.error || slices.activity.error"
             @imported="refreshCurrent(INVALIDATION.project)"
           />
 
