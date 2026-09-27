@@ -62,17 +62,12 @@ def _resolve_source(project, source_key):
         if not text:
             raise ImageryProcessingError("缺少影像来源")
         storage_root = get_storage_root()
-        project_root = resolve_storage_path(storage_root, Path("projects") / str(project.id))
-        path = None
+        # 仅接受相对 storage 根的 key（projects/<id>/inputs/...）；
+        # 绝对路径/项目内物理路径/目录遍历一律 400，浏览器不得提交服务器物理路径（AGENTS §6）
         try:
             path = resolve_storage_path(storage_root, Path(text))
         except ValueError:
-            candidate = (project_root / text).resolve()
-            try:
-                candidate.relative_to(project_root)
-                path = candidate
-            except ValueError:
-                raise ImageryProcessingError("影像来源路径不合法") from None
+            raise ImageryProcessingError("影像来源路径不合法") from None
         try:
             path.relative_to(storage_root)
         except ValueError:
@@ -91,7 +86,6 @@ def list_imagery_candidates(project_id):
         items.append({
             "dataset_id": dataset.id,
             "display_name": dataset.display_name,
-            "file_path": dataset.file_path,
             "year": dataset.year_start,
             **(summary or {"width": None, "height": None, "count": None, "crs": None, "size_bytes": None}),
         })
@@ -237,7 +231,7 @@ def clip_imagery(project_id, payload):
     return {
         "dataset_id": dataset.id,
         "display_name": dataset.display_name,
-        "file_path": str(out_path),
+        "storage_key": _storage_key(out_path),
         "width": int(window.width),
         "height": int(window.height),
         "buffer_meters": buffer_meters,
@@ -318,7 +312,7 @@ def slice_imagery(project_id, payload):
                     "col": col,
                     "width": int(window.width),
                     "height": int(window.height),
-                    "file_path": str(out_path),
+                    "storage_key": _storage_key(out_path),
                 })
         db.session.commit()
     return {

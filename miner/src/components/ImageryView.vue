@@ -276,9 +276,10 @@ const runClip = async () => {
   clipResult.value = '';
   try {
     const body = {
+      // 契约（AGENTS §6）：浏览器不提交服务器物理路径；输入目录候选用相对 storage_key
       source: selectedCandidate.value.dataset_id
         ? String(selectedCandidate.value.dataset_id)
-        : selectedCandidate.value.file_path,
+        : selectedCandidate.value.storage_key,
       buffer_meters: clipBuffer.value || 0,
       ...(clipSource.value === 'mine'
         ? { mine_fid: clipMineFid.value }
@@ -322,9 +323,10 @@ const runSlice = async () => {
   sliceSummary.value = false;
   try {
     const body = {
+      // 契约（AGENTS §6）：浏览器不提交服务器物理路径；输入目录候选用相对 storage_key
       source: selectedCandidate.value.dataset_id
         ? String(selectedCandidate.value.dataset_id)
-        : selectedCandidate.value.file_path,
+        : selectedCandidate.value.storage_key,
       mode: sliceMode.value,
       limit: sliceLimit.value || 64,
       ...(sliceMode.value === 'grid_pixels'

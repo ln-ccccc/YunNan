@@ -49,6 +49,8 @@ class ImageryProcessingBase(TestProjectAPI):
         # 项目输入影像
         self.inputs_dir = self.storage_root / "projects" / str(self.project_id) / "inputs" / "imagery"
         self.source = _make_raster(self.inputs_dir / "source_full.tif")
+        # 相对 storage 根的 key：新契约下浏览器只允许提交 dataset_id 或该形态（AGENTS §6）
+        self.source_key = f"projects/{self.project_id}/inputs/imagery/source_full.tif"
         # 矿山矢量资源（GeoJSON，与影像范围重叠）
         mines_geojson = self.storage_root / "projects" / str(self.project_id) / "mines" / "1" / "mines.geojson"
         mines_geojson.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +103,23 @@ class TestImageryCandidates(ImageryProcessingBase):
         self.assertEqual(entry["crs"], "EPSG:4326")
         self.assertGreater(entry["size_bytes"], 0)
 
+    def test_candidates_never_expose_server_paths(self):
+        data = self._candidates().get_json()["data"]
+        for item in data["items"]:
+            self.assertNotIn("file_path", item)
+            if item.get("dataset_id") is None:
+                self.assertTrue(str(item.get("storage_key", "")).startswith("projects/"), item)
+
+    def test_absolute_path_source_is_rejected(self):
+        # AGENTS §6：浏览器不得提交服务器物理路径；旧实现曾接受项目内绝对路径
+        response = self._clip({
+            "source": str(self.source),
+            "geometry": {"type": "Polygon", "coordinates": [[[100.1, 25.95], [100.2, 25.95], [100.2, 25.99], [100.1, 25.99], [100.1, 25.95]]]},
+            "buffer_meters": 0,
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("不合法", response.get_json()["msg"])
+
     def test_requires_login(self):
         fresh = self.app.test_client()
         response = fresh.get(f"/api/projects/{self.project_id}/imagery/candidates")
@@ -113,10 +132,11 @@ class TestImageryClip(ImageryProcessingBase):
             "type": "Polygon",
             "coordinates": [[[100.1, 25.95], [100.2, 25.95], [100.2, 25.99], [100.1, 25.99], [100.1, 25.95]]],
         }
-        response = self._clip({"source": str(self.source), "geometry": geometry, "buffer_meters": 0})
+        response = self._clip({"source": self.source_key, "geometry": geometry, "buffer_meters": 0})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         data = response.get_json()["data"]
-        out_path = Path(data["file_path"])
+        self.assertNotIn("file_path", data)
+        out_path = self.storage_root / data["storage_key"]
         self.assertTrue(out_path.is_file())
         # 地理参考：裁剪窗与请求范围一致（像素级容差）
         with rasterio.open(out_path) as out, rasterio.open(self.source) as src:
@@ -130,7 +150,7 @@ class TestImageryClip(ImageryProcessingBase):
         self.assertIn("裁剪", dataset.display_name)
 
     def test_clip_by_mine_boundary_with_buffer(self):
-        response = self._clip({"source": str(self.source), "mine_fid": 42, "buffer_meters": 200})
+        response = self._clip({"source": self.source_key, "mine_fid": 42, "buffer_meters": 200})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         data = response.get_json()["data"]
         # 外扩后窗口严格大于矿山 bbox（0.1°≈11km 宽，200m 外扩两侧各加）
@@ -139,17 +159,17 @@ class TestImageryClip(ImageryProcessingBase):
         self.assertGreater(data["width"], mine_width_px)
 
     def test_clip_rejects_invalid_geometry_and_no_overlap(self):
-        bad = self._clip({"source": str(self.source), "geometry": {"type": "Point", "coordinates": [1, 2]}})
+        bad = self._clip({"source": self.source_key, "geometry": {"type": "Point", "coordinates": [1, 2]}})
         self.assertEqual(bad.status_code, 400)
         far = self._clip({
-            "source": str(self.source),
+            "source": self.source_key,
             "geometry": {"type": "Polygon", "coordinates": [[[1.0, 1.0], [1.1, 1.0], [1.1, 1.1], [1.0, 1.1], [1.0, 1.0]]]},
         })
         self.assertEqual(far.status_code, 400)
         self.assertIn("无有效重叠", far.get_json()["msg"])
 
     def test_clip_rejects_unknown_mine(self):
-        response = self._clip({"source": str(self.source), "mine_fid": 999})
+        response = self._clip({"source": self.source_key, "mine_fid": 999})
         self.assertEqual(response.status_code, 400)
         self.assertIn("不在项目边界", response.get_json()["msg"])
 
@@ -157,7 +177,7 @@ class TestImageryClip(ImageryProcessingBase):
 class TestImagerySlice(ImageryProcessingBase):
     def test_grid_pixels_slices_register_datasets_and_drop_small_edges(self):
         # 960×640 按 500px 网格 → 2×2 全满片（960<2*500 边缘列 460≥阈值保留）
-        response = self._slice({"source": str(self.source), "mode": "grid_pixels", "tile_pixels": 500})
+        response = self._slice({"source": self.source_key, "mode": "grid_pixels", "tile_pixels": 500})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         data = response.get_json()["data"]
         self.assertEqual(data["grid"], {"cols": 2, "rows": 2, "tile_w": 500, "tile_h": 500})
@@ -165,7 +185,8 @@ class TestImagerySlice(ImageryProcessingBase):
         self.assertEqual(len(data["items"]), 4)
         # 每片可独立打开且带地理参考
         first = data["items"][0]
-        with rasterio.open(first["file_path"]) as tile:
+        self.assertNotIn("file_path", first)
+        with rasterio.open(self.storage_root / first["storage_key"]) as tile:
             self.assertEqual(tile.crs.to_string(), "EPSG:4326")
             self.assertEqual(tile.width, first["width"])
         datasets = ProjectDataset.query.filter_by(project_id=self.project_id, dataset_kind="imagery").all()
@@ -174,23 +195,23 @@ class TestImagerySlice(ImageryProcessingBase):
     def test_grid_area_computes_tile_side_from_pixel_size(self):
         # pixel 0.0005° ≈ 55.66m → 55.66²≈3098 m²/px；1e6 m² → side≈180px
         # 像元 ~3098m² → side≈114px → 网格 9×6=54 片 < 64 上限
-        response = self._slice({"source": str(self.source), "mode": "grid_area", "tile_area_m2": 40_000_000})
+        response = self._slice({"source": self.source_key, "mode": "grid_area", "tile_area_m2": 40_000_000})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         grid = response.get_json()["data"]["grid"]
         # 像元面积 ~3098m²/px；4e7 m² 期望边 ~114px，容差 ±30%
         self.assertTrue(80 <= grid["tile_w"] <= 148, f"tile_w={grid['tile_w']} grid={grid}")
 
     def test_slice_limit_rejected_when_grid_exceeds(self):
-        response = self._slice({"source": str(self.source), "mode": "grid_pixels", "tile_pixels": 64})
+        response = self._slice({"source": self.source_key, "mode": "grid_pixels", "tile_pixels": 64})
         self.assertEqual(response.status_code, 400)
         self.assertIn("超过上限", response.get_json()["msg"])
 
     def test_slice_rejects_invalid_mode_and_pixels(self):
         for body in (
-            {"source": str(self.source), "mode": "grid_pixels", "tile_pixels": 8},
-            {"source": str(self.source), "mode": "grid_pixels", "tile_pixels": 99999},
-            {"source": str(self.source), "mode": "grid_area", "tile_area_m2": -1},
-            {"source": str(self.source), "mode": "unknown"},
+            {"source": self.source_key, "mode": "grid_pixels", "tile_pixels": 8},
+            {"source": self.source_key, "mode": "grid_pixels", "tile_pixels": 99999},
+            {"source": self.source_key, "mode": "grid_area", "tile_area_m2": -1},
+            {"source": self.source_key, "mode": "unknown"},
             {"source": "", "mode": "grid_pixels", "tile_pixels": 512},
         ):
             response = self._slice(body)
