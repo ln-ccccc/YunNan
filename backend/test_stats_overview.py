@@ -231,7 +231,8 @@ class TestProjectListEnhancements(StatsOverviewBase):
         item = next(i for i in body["data"]["items"] if i["id"] == project.id)
         self.assertEqual(item["feature_count"], 3)
         self.assertEqual(item["latest_inference"]["status"], "succeeded_with_fallback")
-        self.assertEqual(item["latest_inference"]["create_time"], "2026-09-22T12:00:00")
+        # A-1 时间口径：列表 DTO 的时间显式带 UTC 标记（gui-audit #1）
+        self.assertEqual(item["latest_inference"]["create_time"], "2026-09-22T12:00:00Z")
 
     def test_list_project_without_results_has_zero_defaults(self):
         project = self._create_project("无成果项目")
