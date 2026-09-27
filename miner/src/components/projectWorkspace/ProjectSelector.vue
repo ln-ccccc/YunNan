@@ -90,6 +90,7 @@
 import { computed } from 'vue';
 
 import { filterProjects } from '../../projectWorkspace/projectWorkspaceHelpers.js';
+import { formatDate } from '../../utils/formatDate.js';
 
 const INFERENCE_STATUS_TEXT = {
   queued: '排队中',
@@ -108,7 +109,7 @@ const formatInference = (latest) => {
   const date = new Date(latest.create_time);
   const time = Number.isNaN(date.getTime())
     ? String(latest.create_time)
-    : date.toLocaleDateString('zh-CN');
+    : formatDate(date);
   return `${text}（${time}）`;
 };
 
