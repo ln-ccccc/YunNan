@@ -46,7 +46,13 @@
         />
 
         <template v-if="currentProjectId">
+          <nav class="detail-anchor-nav" aria-label="详情面板锚点">
+            <button v-for="anchor in DETAIL_ANCHORS" :key="anchor.id" type="button" @click="scrollToAnchor(anchor.id)">
+              {{ anchor.label }}
+            </button>
+          </nav>
           <ProjectOverviewPanel
+            id="project-overview"
             :overview="overview"
             :loading="slices.overview.loading"
             :busy="projectOperationBusy"
@@ -109,6 +115,7 @@
           />
 
           <ProjectActivityPanel
+            id="project-activity"
             :items="activityItems"
             :loading="slices.activity.loading"
             :error="slices.activity.error"
@@ -116,6 +123,7 @@
           />
 
           <ProjectExportSnapshotPanel
+            id="project-export"
             :exports="exportItems"
             :snapshots="snapshotItems"
             :capabilities="overview?.capabilities || {}"
@@ -128,11 +136,13 @@
           />
 
           <ProjectArchivePanel
+            id="project-archive"
             :project-id="currentProjectId"
             @imported="refreshCurrent(INVALIDATION.project)"
           />
 
           <ParcelPanel
+            id="parcel-panel"
             :project-id="currentProjectId"
             @locate-mine="locateMine"
           />
@@ -390,6 +400,21 @@ async function refreshProjectListForForm(preferredProjectId, revision) {
   await selectProject(preferredProjectId);
   return currentProjectId.value === Number(preferredProjectId);
 }
+
+// 详情面板锚点（gui-audit #8：八段纵向堆叠无导航，565 矿山大项目下重心下沉）
+const DETAIL_ANCHORS = [
+  { id: 'project-overview', label: '概览' },
+  { id: 'spatial-resources', label: '空间资源' },
+  { id: 'dataset-registration', label: '影像登记' },
+  { id: 'project-assets', label: '资产' },
+  { id: 'project-activity', label: '活动' },
+  { id: 'project-export', label: '导出快照' },
+  { id: 'project-archive', label: '档案' },
+  { id: 'parcel-panel', label: '图斑清单' },
+];
+const scrollToAnchor = (anchorId) => {
+  document.getElementById(anchorId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
 
 async function selectProject(projectId) {
   if (!projectId) return;
@@ -872,6 +897,31 @@ onUnmounted(() => {
 .workspace-subtitle { margin-top: 8px; color: #5d6f6d; }
 .workspace-layout { align-items: flex-start; }
 .project-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 16px; }
+
+.detail-anchor-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 6px rgba(31, 92, 77, 0.12);
+}
+
+.detail-anchor-nav button {
+  border: 1px solid #d7e4df;
+  border-radius: 999px;
+  background: #f4faf8;
+  color: #1f5c4d;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.detail-anchor-nav button:hover { background: #e3f2ed; border-color: #9dc8bb; }
 .panel { box-sizing: border-box; padding: 18px; border: 1px solid rgba(35, 86, 78, 0.1); border-radius: 18px; background: rgba(255, 255, 255, 0.88); box-shadow: 0 12px 30px rgba(31, 66, 61, 0.08); }
 .empty-detail { min-height: 300px; display: flex; flex-direction: column; justify-content: center; }
 button { padding: 10px 14px; border-radius: 12px; font: inherit; cursor: pointer; }
