@@ -17,6 +17,20 @@ def _json_text_to_obj(value):
         return {}
 
 
+class UtcDateTime(fields.DateTime):
+    """DB naive datetime 按 UTC 序列化并显式带 Z。
+
+    DB 与后端容器均为 UTC；naive ISO 串会被前端按本地时间解析，
+    导致快照/导出记录显示比真实时间早 8 小时（gui-full-audit-20260927 #1）。
+    """
+
+    def _serialize(self, value, attr, obj, **kwargs):
+        result = super()._serialize(value, attr, obj, **kwargs)
+        if result is None or result.endswith(("Z", "+00:00")):
+            return result
+        return f"{result}Z"
+
+
 class ProjectMineBindingSchema(ma.Schema):
     id = fields.Integer()
     mine_fid = fields.Integer()
@@ -25,8 +39,8 @@ class ProjectMineBindingSchema(ma.Schema):
     area_snapshot = fields.Float(allow_none=True)
     status_snapshot = fields.Str(allow_none=True)
     sort_order = fields.Integer()
-    create_time = fields.DateTime()
-    update_time = fields.DateTime()
+    create_time = UtcDateTime()
+    update_time = UtcDateTime()
 
 
 class ProjectDatasetSchema(ma.Schema):
@@ -39,8 +53,8 @@ class ProjectDatasetSchema(ma.Schema):
     year_start = fields.Integer(allow_none=True)
     year_end = fields.Integer(allow_none=True)
     slice_config_json = fields.Method("get_slice_config")
-    create_time = fields.DateTime()
-    update_time = fields.DateTime()
+    create_time = UtcDateTime()
+    update_time = UtcDateTime()
 
     def get_slice_config(self, obj):
         return _json_text_to_obj(obj.slice_config_json)
@@ -51,7 +65,7 @@ class ProjectActivityLogSchema(ma.Schema):
     event_type = fields.Str()
     actor = fields.Str()
     payload = fields.Method("get_payload")
-    create_time = fields.DateTime()
+    create_time = UtcDateTime()
 
     def get_payload(self, obj):
         return _json_text_to_obj(obj.payload_json)
@@ -62,8 +76,8 @@ class ProjectExportRecordSchema(ma.Schema):
     format = fields.Str()
     artifact_name = fields.Method("get_artifact_name", allow_none=True)
     status = fields.Str()
-    create_time = fields.DateTime()
-    update_time = fields.DateTime()
+    create_time = UtcDateTime()
+    update_time = UtcDateTime()
 
     def get_artifact_name(self, obj):
         raw_path = str(obj.file_path or "").replace("\\", "/")
@@ -76,8 +90,8 @@ class ProjectBackupRecordSchema(ma.Schema):
     snapshot_name = fields.Method("get_snapshot_name")
     status = fields.Str()
     restorable = fields.Boolean()
-    create_time = fields.DateTime()
-    update_time = fields.DateTime()
+    create_time = UtcDateTime()
+    update_time = UtcDateTime()
 
     def get_snapshot_name(self, obj):
         return "项目配置快照"
@@ -86,7 +100,7 @@ class ProjectBackupRecordSchema(ma.Schema):
 class ProjectLatestInferenceSchema(ma.Schema):
     job_id = fields.Str()
     status = fields.Str()
-    create_time = fields.DateTime(allow_none=True)
+    create_time = UtcDateTime(allow_none=True)
 
 
 class ProjectSummarySchema(ma.Schema):
@@ -103,9 +117,9 @@ class ProjectSummarySchema(ma.Schema):
     spatial_status = fields.Str()
     map_ready = fields.Boolean()
     missing_resources = fields.List(fields.Str())
-    latest_activity_at = fields.DateTime(allow_none=True)
-    create_time = fields.DateTime()
-    update_time = fields.DateTime()
+    latest_activity_at = UtcDateTime(allow_none=True)
+    create_time = UtcDateTime()
+    update_time = UtcDateTime()
     # M1 主控台卡片：图斑要素数与最近解译进度（list 接口填充，单项目摘要可缺省）
     feature_count = fields.Integer(allow_none=True)
     latest_inference = fields.Nested(ProjectLatestInferenceSchema, allow_none=True)

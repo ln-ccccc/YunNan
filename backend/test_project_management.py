@@ -225,5 +225,68 @@ class TestDeleteServiceDirect(ProjectManageBase):
             delete_project(project_id)
 
 
+class TestTimestampSerialization(ProjectManageBase):
+    """快照/导出/最新解译时间必须显式带 UTC 标记，与 timeline 口径一致。
+
+    回归背景：DB 为 UTC，此前 backups/exports 经 marshmallow naive dump 丢失时区，
+    前端按本地时间解析导致显示早 8 小时（docs/gui-full-audit-20260927.md #1）。
+    """
+
+    def test_backup_create_time_matches_timeline_instant(self):
+        self.login_as_admin()
+        project_id = self._create_project("时间口径回归")
+        self._make_project_dir(project_id)
+        response = self.client.post(
+            f"/api/projects/{project_id}/backups",
+            json={"scope": "metadata_index"},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        backup_id = response.get_json()["data"]["id"]
+
+        backups = self.client.get(f"/api/projects/{project_id}/backups").get_json()["data"]["items"]
+        item = next(b for b in backups if b["id"] == backup_id)
+        self.assertTrue(str(item["create_time"]).endswith("Z"), item["create_time"])
+
+        timeline_body = self.client.get(f"/api/projects/{project_id}/timeline").get_json()["data"]
+        timeline = timeline_body.get("items", timeline_body) if isinstance(timeline_body, dict) else timeline_body
+        snapshot_event = next(a for a in timeline if a.get("action_code") == "SNAPSHOT_CREATED")
+        from datetime import datetime
+
+        backup_at = datetime.fromisoformat(str(item["create_time"]).replace("Z", "+00:00"))
+        event_at = datetime.fromisoformat(str(snapshot_event["created_at"]).replace("Z", "+00:00"))
+        # 两条记录分别取 utcnow()，允许毫秒级写入间隔，但不允许 8 小时口径漂移
+        self.assertLess(abs((backup_at - event_at).total_seconds()), 5)
+
+    def test_export_and_inference_schemas_append_z(self):
+        from datetime import datetime
+
+        from applications.schemas.project import (
+            ProjectExportRecordSchema,
+            ProjectLatestInferenceSchema,
+        )
+
+        class _ExportRow:
+            id = 1
+            format = "geojson"
+            status = "succeeded"
+            file_path = "projects/9/exports/1/artifact.geojson"
+            create_time = datetime(2026, 9, 25, 14, 53, 19)
+            update_time = datetime(2026, 9, 25, 14, 53, 20)
+
+        dumped = ProjectExportRecordSchema().dump(_ExportRow())
+        self.assertEqual(dumped["create_time"], "2026-09-25T14:53:19Z")
+        self.assertEqual(dumped["update_time"], "2026-09-25T14:53:20Z")
+
+        class _InferenceRow:
+            job_id = "job-1"
+            status = "succeeded"
+            create_time = datetime(2026, 9, 25, 14, 53, 19)
+
+        self.assertEqual(
+            ProjectLatestInferenceSchema().dump(_InferenceRow())["create_time"],
+            "2026-09-25T14:53:19Z",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
