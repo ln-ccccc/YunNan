@@ -11,6 +11,7 @@
       "manager": "项目管理员",
       "remark": "已登记矿山边界和推理输入，等待底图与成果复核。",
       "status": "active",
+      "lifecycle_status": "active",
       "monitor_start_year": 2024,
       "monitor_end_year": 2024,
       "mine_count": 1,

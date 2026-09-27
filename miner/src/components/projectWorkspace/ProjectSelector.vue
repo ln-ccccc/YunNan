@@ -70,7 +70,7 @@
           >
           <span class="project-card-top">
             <strong>{{ item.name || '未命名项目' }}</strong>
-            <span class="status-pill">{{ formatLifecycleStatus(item.lifecycle_status || item.status) }}</span>
+            <span class="status-pill">{{ formatLifecycleStatus(item.lifecycle_status) }}</span>
           </span>
           <span>{{ item.region || '未填写区域' }}</span>
           <span>监测期：{{ formatYearRange(item.monitor_start_year, item.monitor_end_year) }}</span>

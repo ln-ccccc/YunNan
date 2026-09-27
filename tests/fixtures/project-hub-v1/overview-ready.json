@@ -11,6 +11,7 @@
       "manager": "项目管理员",
       "remark": "项目已具备地图浏览、推理与成果复核条件。",
       "status": "active",
+      "lifecycle_status": "active",
       "monitor_start_year": 2024,
       "monitor_end_year": 2024,
       "mine_count": 1,

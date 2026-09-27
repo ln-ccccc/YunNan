@@ -113,6 +113,7 @@ HTTP 响应沿用标准 envelope：`{success, code, data}`。`data` 是完整的
       "manager": "项目管理员",
       "remark": "仅用于契约说明。",
       "status": "active",
+      "lifecycle_status": "active",
       "monitor_start_year": 2024,
       "monitor_end_year": 2025,
       "mine_count": 1,

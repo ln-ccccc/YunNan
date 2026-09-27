@@ -110,6 +110,7 @@ class ProjectSummarySchema(ma.Schema):
     manager = fields.Str(allow_none=True)
     remark = fields.Str(allow_none=True)
     status = fields.Str()
+    lifecycle_status = fields.Str()
     monitor_start_year = fields.Integer(allow_none=True)
     monitor_end_year = fields.Integer(allow_none=True)
     mine_count = fields.Integer()

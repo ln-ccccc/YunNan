@@ -195,6 +195,16 @@ class TestProjectAPI(unittest.TestCase):
         db.session.commit()
         return backup
 
+    def test_project_list_carries_lifecycle_status_alias(self):
+        # AGENTS §4：列表 DTO 提供 lifecycle_status 语义化别名，与 status 同值
+        self.login_as_admin()
+        project_id = self._create_project("别名回归项目")
+        response = self.client.get("/api/projects")
+        items = self._json(response)["data"]["items"]
+        item = next(i for i in items if i["id"] == project_id)
+        self.assertIn(item["lifecycle_status"], ("draft", "active", "completed", "archived"))
+        self.assertEqual(item["lifecycle_status"], item["status"])
+
     def test_dataset_registration_requires_safe_incoming_tiff_storage_key(self):
         self.login_as_admin()
         response = self.client.post(

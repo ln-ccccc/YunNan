@@ -176,6 +176,9 @@ def _serialize_summary(project, feature_count=None, latest_inference=None, inclu
         "manager": project.manager,
         "remark": project.remark,
         "status": project.status,
+        # 语义化别名（AGENTS §4）：lifecycle_status 与 status 同值，
+        # 供消费方按四层状态模型取词，前端不再需要 || status 回退
+        "lifecycle_status": project.status,
         "monitor_start_year": project.monitor_start_year,
         "monitor_end_year": project.monitor_end_year,
         "mine_count": len(project.mines),
