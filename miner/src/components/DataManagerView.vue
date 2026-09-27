@@ -66,6 +66,9 @@ const capabilities = ref({});
 const loading = ref(false);
 const busy = ref(false);
 const downloading = ref(false);
+
+// 错误提示本地化：只直出后端 msg，其余（网络层/HTTP 状态类）一律回退中文
+const messageFrom = (e, fallback) => e?.response?.data?.msg || fallback;
 const pageError = ref('');
 const operationError = ref('');
 
@@ -102,7 +105,7 @@ const loadProjectData = async () => {
     if (seq !== requestSeq) return;
     exports.value = [];
     snapshots.value = [];
-    pageError.value = e?.message || '项目数据读取失败';
+    pageError.value = messageFrom(e, '项目数据读取失败，请稍后重试');
   } finally {
     if (seq === requestSeq) loading.value = false;
   }
@@ -123,7 +126,7 @@ const createExport = async (format) => {
     await unwrap(axios.post(url(`/api/projects/${selectedProjectId.value}/exports`), { format }));
     await loadProjectData();
   } catch (e) {
-    operationError.value = e?.message || '导出创建失败';
+    operationError.value = messageFrom(e, '导出创建失败');
   } finally {
     busy.value = false;
   }
@@ -137,7 +140,7 @@ const createSnapshot = async () => {
     await unwrap(axios.post(url(`/api/projects/${selectedProjectId.value}/backups`), {}));
     await loadProjectData();
   } catch (e) {
-    operationError.value = e?.message || '项目配置快照创建失败';
+    operationError.value = messageFrom(e, '项目配置快照创建失败');
   } finally {
     busy.value = false;
   }
@@ -156,8 +159,8 @@ const downloadFile = async (path, filename) => {
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(objectUrl);
-  } catch (_) {
-    operationError.value = '下载失败，请稍后重试';
+  } catch (e) {
+    operationError.value = messageFrom(e, '下载失败，请稍后重试');
   } finally {
     downloading.value = false;
   }
@@ -188,7 +191,7 @@ const restoreSnapshot = async (snapshotId) => {
     await unwrap(axios.post(url(`/api/projects/${selectedProjectId.value}/backups/${snapshotId}/restore`), {}));
     await loadProjectData();
   } catch (e) {
-    operationError.value = e?.message || '项目配置快照恢复失败';
+    operationError.value = messageFrom(e, '项目配置快照恢复失败');
   } finally {
     busy.value = false;
   }
