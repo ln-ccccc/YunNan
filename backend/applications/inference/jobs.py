@@ -309,6 +309,10 @@ def claim_next_job(worker_id):
     while True:
         candidate = InferenceJob.query.filter_by(status="queued").order_by(InferenceJob.create_time.asc()).first()
         if candidate is None:
+            # REPEATABLE READ 下读事务不结束，新插入的 queued 行对当前快照不可见：
+            # 空转轮询必须 rollback 释放快照，否则任务要等下一次 commit（30s 心跳）
+            # 才被"看见"，端到端被抬高一个心跳周期
+            db.session.rollback()
             return None
         now = datetime.datetime.now()
         changed = InferenceJob.query.filter_by(id=candidate.id, status="queued").update(
@@ -356,6 +360,10 @@ def update_job_progress(job, current, total):
 
 def refresh_job(job):
     db, _ = _database_dependencies()
+    # 与 claim_next_job 同理：refresh 的 SELECT 也发生在当前读事务内，
+    # 旧快照下 cancel_requested 等外部更新不可见（取消延迟最多一个心跳周期），
+    # 先 rollback 结束读事务再刷新
+    db.session.rollback()
     db.session.refresh(job)
     return job
 

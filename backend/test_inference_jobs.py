@@ -790,3 +790,57 @@ class TestInferenceJobAPI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSnapshotReleaseOnPoll(unittest.TestCase):
+    """REPEATABLE READ 快照释放契约（2026-09-28 GPU 端到端优化）。
+
+    空转轮询/刷新若不结束读事务，新插入的 queued 行与 cancel_requested 更新
+    对旧快照不可见，端到端被抬高一个心跳周期（实测排队 14-29s）。
+    """
+
+    @staticmethod
+    def _load_jobs_module():
+        module_path = Path(__file__).parent / "applications" / "inference" / "jobs.py"
+        spec = importlib.util.spec_from_file_location("inference_jobs_probe", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_claim_next_job_releases_snapshot_when_idle(self):
+        jobs = self._load_jobs_module()
+        calls = []
+        fake_session = SimpleNamespace(
+            rollback=lambda: calls.append("rollback"),
+            commit=lambda: calls.append("commit"),
+        )
+        fake_db = SimpleNamespace(session=fake_session)
+
+        class _Query:
+            def filter_by(self, *a, **k):
+                return self
+
+            def order_by(self, *a, **k):
+                return self
+
+            def first(self):
+                return None
+
+        fake_model = SimpleNamespace(query=_Query(), create_time=SimpleNamespace(asc=lambda: None))
+        with patch.object(jobs, "_database_dependencies", return_value=(fake_db, fake_model)):
+            self.assertIsNone(jobs.claim_next_job("worker-1"))
+        self.assertIn("rollback", calls, "空转轮询必须 rollback 释放读事务快照")
+        self.assertNotIn("commit", calls)
+
+    def test_refresh_job_rolls_back_before_reload(self):
+        jobs = self._load_jobs_module()
+        calls = []
+        fake_session = SimpleNamespace(
+            rollback=lambda: calls.append("rollback"),
+            refresh=lambda obj: calls.append("refresh"),
+        )
+        fake_db = SimpleNamespace(session=fake_session)
+        job = SimpleNamespace(id="job-1")
+        with patch.object(jobs, "_database_dependencies", return_value=(fake_db, None)):
+            jobs.refresh_job(job)
+        self.assertEqual(calls, ["rollback", "refresh"], "必须先结束读事务再刷新实例")
