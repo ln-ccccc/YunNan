@@ -23,6 +23,7 @@ from applications.project_hub.project_map import (
     _project as _get_project,
 )
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+from applications.common.utils.utc_time import to_utc_z
 
 LOGGER = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def _years_payload(project, fid_value):
             "source_image_url": f"/api/projects/{project.id}/outputs/inference/{fid_value}/{base}_src.png",
             "mask_image_url": f"/api/projects/{project.id}/outputs/inference/{fid_value}/{base}_mask.png",
             "job_id": result.inference_job_id,
-            "created_at": result.create_time.isoformat() if result.create_time else None,
+            "created_at": to_utc_z(result.create_time),
             "class_ratio_percent": (
                 {
                     name: round(float(values[ratio_index]), 2)
@@ -98,7 +99,7 @@ def _years_payload(project, fid_value):
                     "action": audit.action,
                     "actor": audit.actor,
                     "request_source": audit.request_source,
-                    "created_at": audit.create_time.isoformat() if audit.create_time else None,
+                    "created_at": to_utc_z(audit.create_time),
                 }
                 for audit in audits
             ],
@@ -161,7 +162,7 @@ def list_project_classification_results(project_id):
                 "vector_status": result.vector_status,
                 "feature_count": result.feature_count or 0,
                 "current_revision_no": result.current_revision_no,
-                "created_at": result.create_time.isoformat() if result.create_time else None,
+                "created_at": to_utc_z(result.create_time),
             }
             for result in rows
         ],

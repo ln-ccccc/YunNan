@@ -21,6 +21,7 @@ from applications.models.classification_result import (
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+from applications.common.utils.utc_time import to_utc_z
 
 
 LOGGER = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ def list_classification_revisions(project_id, result_id):
                 "revision_no": item.revision_no,
                 "source": item.source,
                 "author": item.author,
-                "created_at": item.create_time.isoformat() if item.create_time else None,
+                "created_at": to_utc_z(item.create_time),
                 "feature_count": item.feature_count,
             }
             for item in revisions

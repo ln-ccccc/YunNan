@@ -7,6 +7,7 @@ from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.spatial_service import sanitize_public_geojson_value
 from applications.project_hub.spatial_state import serialize_project_spatial_state
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+from applications.common.utils.utc_time import to_utc_z
 
 
 def _project(project_id):
@@ -359,7 +360,7 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
             "size_bytes": size_bytes,
             "file_exists": file_exists,
             "job_status": job.status,
-            "created_at": job.create_time.isoformat() if job.create_time else None,
+            "created_at": to_utc_z(job.create_time),
         })
         if len(items) >= item_limit:
             break

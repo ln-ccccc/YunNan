@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
 from applications.extensions import db
+from applications.common.utils.utc_time import to_utc_z
 from applications.models.inference_job import InferenceJob
 from applications.models.project import (
     Project,
@@ -205,20 +206,7 @@ def _serialize_summary(project, feature_count=None, latest_inference=None, inclu
 
 
 def _utc_timestamp(value):
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        timestamp = value
-    else:
-        try:
-            timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            return value
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    else:
-        timestamp = timestamp.astimezone(timezone.utc)
-    return timestamp.isoformat().replace("+00:00", "Z")
+    return to_utc_z(value)
 
 
 def _serialize_overview_summary(project, readiness):

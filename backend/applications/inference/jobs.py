@@ -5,6 +5,7 @@ import json
 import re
 import uuid
 from pathlib import Path
+from applications.common.utils.utc_time import to_utc_z
 
 
 _PUBLIC_REQUEST_FIELDS = (
@@ -175,7 +176,7 @@ def serialize_worker_capability(state):
         "warnings": warnings,
         "gpu_name": state.gpu_name,
         "compute_capability": state.compute_capability,
-        "updated_at": state.update_time.isoformat() if state.update_time else None,
+        "updated_at": to_utc_z(state.update_time),
     }
 
 
@@ -266,9 +267,9 @@ def serialize_job(job):
         "result": None if result is _DROP_PUBLIC_VALUE else result,
         "error": _serialize_public_error(job),
         "cancel_requested": bool(job.cancel_requested),
-        "create_time": job.create_time.isoformat() if job.create_time else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "create_time": to_utc_z(job.create_time),
+        "started_at": to_utc_z(job.started_at),
+        "finished_at": to_utc_z(job.finished_at),
     }
 
 
