@@ -11,9 +11,12 @@ def to_utc_z(value):
     """datetime/ISO 串 → 带 Z 后缀的 UTC ISO 串；无法解析时原样返回。"""
     if value is None or isinstance(value, (int, float)):
         return value
-    if isinstance(value, date):
+    # datetime 是 date 的子类，必须先判 datetime，否则全部时间被截成午夜
+    if isinstance(value, datetime):
+        pass
+    elif isinstance(value, date):
         value = datetime(value.year, value.month, value.day)
-    if not isinstance(value, datetime):
+    else:
         try:
             value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         except (TypeError, ValueError):
