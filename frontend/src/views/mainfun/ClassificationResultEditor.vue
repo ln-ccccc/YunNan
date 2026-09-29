@@ -46,7 +46,11 @@
           <span v-if="selectedDrawIds.length" class="selection-count">已选择 {{ selectedDrawIds.length }} 个面</span>
         </div>
         <div class="toolbar-actions">
-          <el-button :disabled="!isDirty || saving" plain @click="resetDrawing">撤销本地修改</el-button>
+          <el-button :disabled="!canUndo || saving" plain title="Ctrl+Z" @click="undoLastEdit">撤销</el-button>
+          <el-button :disabled="!canRedo || saving" plain title="Ctrl+Y" @click="redoLastEdit">重做</el-button>
+          <el-button :disabled="!isDirty || saving" plain @click="resetDrawing">放弃全部修改</el-button>
+          <el-button :disabled="selectedDrawIds.length < 2 || saving" plain title="合并同地类的相邻选中面" @click="mergeSelectedFeatures">合并选中</el-button>
+          <el-button :disabled="!selectedDrawIds.length || saving" plain title="轻度简化选中面边缘（≈1m 容差）" @click="simplifySelectedFeatures">消除锯齿</el-button>
           <el-button :loading="exporting" plain @click="downloadCurrent">导出当前 GeoJSON</el-button>
           <el-button type="primary" :disabled="!isDirty" :loading="saving" @click="saveDrawing">保存新版本</el-button>
         </div>
@@ -71,7 +75,8 @@
             <small>{{ definition.class_name }}</small>
           </button>
           <div class="panel-note">
-            使用地图右上角的绘制按钮新建面；单击面后可拖动顶点、改类或删除。保存后会生成新的不可变版本。
+            使用地图右上角的绘制按钮新建面；单击选中后可拖动顶点、改类或删除，Shift+点击可多选
+            （多选后改类即批量改类，两个及以上同地类面可合并）。保存后会生成新的不可变版本。
           </div>
         </aside>
 
@@ -106,6 +111,8 @@
 <script>
 import { LngLatBounds, Map, NavigationControl } from 'maplibre-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
+import union from '@turf/union';
+import simplify from '@turf/simplify';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 
@@ -121,6 +128,7 @@ import {
   isEditableVectorStatus,
   resolveSecureTileTemplate,
 } from '@/utils/classificationEditor.mjs';
+import { createEditorHistory } from '@/utils/classificationEditorHistory.mjs';
 import {
   classColor as resolveClassColor,
   classColorExpression,
@@ -239,6 +247,12 @@ export default {
       isDirty: false,
       activeClassCode: 0,
       selectedDrawIds: [],
+      // 撤销/重做历史（纯逻辑在 utils/classificationEditorHistory.mjs），
+      // canUndo/canRedo 以 data 字段同步供模板响应
+      history: null,
+      canUndo: false,
+      canRedo: false,
+      suppressDrawEvents: false,
       map: null,
       draw: null,
       tileTemplate: null,
@@ -255,9 +269,11 @@ export default {
     },
   },
   mounted() {
+    document.addEventListener('keydown', this.handleKeydown);
     this.reloadResult();
   },
   beforeUnmount() {
+    document.removeEventListener('keydown', this.handleKeydown);
     this.destroyMap();
     // 组件销毁后丢弃在途响应（route query 变化会复用实例并发起第二次 reload）
     this.reloadSeq = -1;
@@ -385,8 +401,56 @@ export default {
     resetDrawing() {
       if (!this.draw || !this.result) return;
       this.draw.set(this.result.current_feature_collection || emptyFeatureCollection());
-      this.isDirty = false;
+      this.resetEditHistory();
       this.selectedDrawIds = [];
+    },
+    currentDrawJson() {
+      if (!this.draw) return '';
+      return JSON.stringify(this.draw.getAll());
+    },
+    resetEditHistory() {
+      this.history = createEditorHistory();
+      this.history.reset(this.currentDrawJson());
+      this.syncHistoryState();
+    },
+    syncHistoryState() {
+      this.canUndo = Boolean(this.history?.canUndo);
+      this.canRedo = Boolean(this.history?.canRedo);
+      this.isDirty = Boolean(this.history?.isDirty(this.currentDrawJson()));
+    },
+    recordMutation(kind = 'edit') {
+      if (!this.history) return;
+      this.history.record(kind, this.currentDrawJson(), Date.now());
+      this.syncHistoryState();
+    },
+    undoLastEdit() {
+      if (!this.draw || !this.history?.canUndo) return;
+      const previous = this.history.undo(this.currentDrawJson());
+      if (!previous) return;
+      this.draw.set(JSON.parse(previous));
+      this.selectedDrawIds = [];
+      this.syncHistoryState();
+    },
+    redoLastEdit() {
+      if (!this.draw || !this.history?.canRedo) return;
+      const next = this.history.redo(this.currentDrawJson());
+      if (!next) return;
+      this.draw.set(JSON.parse(next));
+      this.selectedDrawIds = [];
+      this.syncHistoryState();
+    },
+    handleKeydown(event) {
+      if (!this.draw || this.saving) return;
+      const target = event.target;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      const key = String(event.key || '').toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        this.undoLastEdit();
+      } else if ((event.ctrlKey || event.metaKey) && (key === 'y' || (key === 'z' && event.shiftKey))) {
+        event.preventDefault();
+        this.redoLastEdit();
+      }
     },
     selectClass(classCode) {
       this.activeClassCode = classCode;
@@ -394,24 +458,115 @@ export default {
       this.selectedDrawIds.forEach((drawId) => {
         this.draw.setFeatureProperty(drawId, 'class_code', classCode);
       });
-      this.isDirty = true;
+      this.recordMutation('properties');
     },
     handleDrawCreate(event) {
+      if (this.suppressDrawEvents) return;
       event.features.forEach((feature) => {
         this.draw.setFeatureProperty(feature.id, 'class_code', this.activeClassCode);
         this.draw.setFeatureProperty(feature.id, 'feature_id', createClientFeatureId());
       });
-      this.isDirty = true;
+      this.recordMutation('create');
     },
     handleDrawUpdate() {
-      this.isDirty = true;
+      if (this.suppressDrawEvents) return;
+      this.recordMutation('vertex');
     },
     handleDrawDelete() {
-      this.isDirty = true;
+      if (this.suppressDrawEvents) return;
       this.selectedDrawIds = [];
+      this.recordMutation('delete');
     },
     handleSelectionChange(event) {
       this.selectedDrawIds = (event.features || []).map((feature) => feature.id);
+    },
+    mergeSelectedFeatures() {
+      if (!this.draw || this.selectedDrawIds.length < 2) return;
+      const selected = this.selectedDrawIds
+        .map((id) => {
+          try {
+            return this.draw.get(id);
+          } catch (_) {
+            return null;
+          }
+        })
+        .filter((feature) => feature && ['Polygon', 'MultiPolygon'].includes(feature.geometry?.type));
+      if (selected.length < 2) {
+        this.$message.warning('选中的可合并面不足两个');
+        return;
+      }
+      const classCodes = new Set(selected.map((feature) => feature.properties?.class_code));
+      if (classCodes.size > 1) {
+        this.$message.warning('仅支持合并同地类的面；不同地类请分别合并');
+        return;
+      }
+      try {
+        const merged = union({
+          type: 'FeatureCollection',
+          features: selected.map((feature) => ({ type: 'Feature', properties: {}, geometry: feature.geometry })),
+        });
+        const geometry = merged?.type === 'Feature' ? merged.geometry : merged?.features?.[0]?.geometry;
+        if (!geometry) throw new Error('union 返回空几何');
+        const classCode = selected[0].properties?.class_code ?? this.activeClassCode;
+        this.suppressDrawEvents = true;
+        try {
+          this.draw.delete(selected.map((feature) => feature.id));
+          this.draw.add({
+            type: 'Feature',
+            id: createClientFeatureId(),
+            properties: { class_code: classCode, feature_id: createClientFeatureId() },
+            geometry,
+          });
+        } finally {
+          this.suppressDrawEvents = false;
+        }
+        this.selectedDrawIds = [];
+        this.recordMutation('merge');
+        this.$message.success(`已合并为 1 个面（原 ${selected.length} 个）`);
+      } catch (_) {
+        this.$message.error('合并失败：几何无效或边界过于复杂，可手动调整后重试');
+      }
+    },
+    simplifySelectedFeatures() {
+      if (!this.draw || !this.selectedDrawIds.length) return;
+      // 容差 ≈1.1m（0.00001°）：消除栅格掩膜边缘锯齿而不明显改变地物形状
+      const tolerance = 0.00001;
+      let simplifiedCount = 0;
+      const ids = [...this.selectedDrawIds];
+      this.suppressDrawEvents = true;
+      try {
+        ids.forEach((id) => {
+          let feature;
+          try {
+            feature = this.draw.get(id);
+          } catch (_) {
+            return;
+          }
+          if (!feature || !['Polygon', 'MultiPolygon'].includes(feature.geometry?.type)) return;
+          const simplified = simplify(
+            { type: 'Feature', properties: {}, geometry: feature.geometry },
+            { tolerance, highQuality: false },
+          );
+          if (JSON.stringify(simplified.geometry) === JSON.stringify(feature.geometry)) return;
+          this.draw.delete(id);
+          this.draw.add({
+            type: 'Feature',
+            id,
+            properties: feature.properties,
+            geometry: simplified.geometry,
+          });
+          simplifiedCount += 1;
+        });
+      } finally {
+        this.suppressDrawEvents = false;
+      }
+      if (simplifiedCount) {
+        this.selectedDrawIds = [];
+        this.recordMutation('simplify');
+        this.$message.success(`已简化 ${simplifiedCount} 个面的边缘`);
+      } else {
+        this.$message.info('选中面的边缘已足够平滑');
+      }
     },
     async saveDrawing() {
       if (!this.context || !this.result || !this.draw) return;
@@ -431,7 +586,8 @@ export default {
         this.result.current_feature_collection = saved.feature_collection;
         this.result.current_revision_no = saved.current_revision_no;
         this.draw.set(saved.feature_collection || emptyFeatureCollection());
-        this.isDirty = false;
+        // 新版本即新基线：编辑历史作废，撤销只服务当前版本的未保存手势
+        this.resetEditHistory();
         this.selectedDrawIds = [];
         await this.loadRevisions();
         this.$message.success(`已保存为 V${saved.current_revision_no}`);

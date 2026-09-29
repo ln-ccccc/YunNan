@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@mapbox/mapbox-gl-draw": "1.5.1",
+    "@turf/simplify": "^7.4.0",
+    "@turf/union": "^7.4.0",
     "@vueuse/core": "^8.5.0",
     "animate.css": "^4.1.1",
     "axios": "^0.26.1",
