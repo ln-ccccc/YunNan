@@ -842,3 +842,136 @@ class TestProjectSpatialState(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBasemapFormatExtension(unittest.TestCase):
+    """优化建议二.1：底图格式扩充（IMG/JPG/PNG/ENVI）。
+
+    底图切片链 metadata/tiling 均走 GDAL 通用驱动，扩格式只放宽投递白名单；
+    推理输入固定 GeoTIFF 不受影响。JPG/PNG 无内嵌地理参考，必须同名世界文件+.prj；
+    无 CRS 的文件在候选列表跳过、单独登记得到明确报错。
+    """
+
+    def setUp(self):
+        self.app = create_app("testing")
+        self.ctx = self.app.app_context()
+        self.ctx.push()
+        db.create_all()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.ctx.pop()
+
+    def _project_with_mines(self, name):
+        from applications.models.project import Project
+        from applications.models.project_spatial import ProjectSpatialResource
+        from applications.project_hub.service import create_project
+
+        created = create_project({"name": name, "region": "Kunming"})
+        project = Project.query.get(created["id"])
+        project.spatial_resources.append(
+            ProjectSpatialResource(
+                resource_type="mine_vector",
+                version=1,
+                status="active",
+                source_path=f"projects/{project.id}/mines/1/source.geojson",
+                normalized_path=f"projects/{project.id}/mines/1/mines.geojson",
+                source_format="geojson",
+                bounds_json=json.dumps([102.0, 25.0, 102.5, 25.5]),
+            )
+        )
+        db.session.commit()
+        return project
+
+    @staticmethod
+    def _set_georeference(dataset):
+        dataset.SetGeoTransform([102.0, 0.05, 0.0, 25.5, 0.0, -0.05])
+        crs = osr.SpatialReference()
+        crs.ImportFromEPSG(4326)
+        dataset.SetProjection(crs.ExportToWkt())
+        return None
+
+    def _write_world_files(self, incoming, stem):
+        # 世界文件给像元中心：顶左像元中心 = (102.025, 25.475)
+        (Path(incoming) / f"{stem}.jgw").write_text(
+            "0.05\n0.0\n0.0\n-0.05\n102.025\n25.475\n", encoding="utf-8"
+        )
+        crs = osr.SpatialReference()
+        crs.ImportFromEPSG(4326)
+        (Path(incoming) / f"{stem}.prj").write_text(crs.ExportToWkt(), encoding="utf-8")
+
+    def test_img_jpg_png_envi_candidates_register_and_unreferenced_rejected(self):
+        from applications.project_hub.spatial_service import (
+            list_basemap_candidates,
+            register_basemap,
+        )
+
+        project = self._project_with_mines("扩格式项目")
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            incoming = os.path.join(temp_dir, "incoming")
+            os.makedirs(incoming)
+            try:
+                # IMG (Erdas HFA)：自带地理参考
+                hfa = gdal.GetDriverByName("HFA")
+                self.assertIsNotNone(hfa)
+                ds = hfa.Create(os.path.join(incoming, "mine.img"), 10, 10, 1, gdal.GDT_Byte)
+                self._set_georeference(ds)
+                ds = None
+                # JPG：无内嵌参考，配 .jgw+.prj
+                mem = gdal.GetDriverByName("MEM").Create("", 10, 10, 1, gdal.GDT_Byte)
+                self._set_georeference(mem)
+                jpeg = gdal.GetDriverByName("JPEG")
+                self.assertIsNotNone(jpeg)
+                ds = jpeg.CreateCopy(os.path.join(incoming, "mine.jpg"), mem)
+                ds = None
+                mem = None
+                self._write_world_files(incoming, "mine")
+                # ENVI：<同名>.dat + <同名>.hdr 成对
+                envi = gdal.GetDriverByName("ENVI")
+                self.assertIsNotNone(envi)
+                ds = envi.Create(os.path.join(incoming, "mine.dat"), 10, 10, 1, gdal.GDT_Byte)
+                self._set_georeference(ds)
+                ds = None
+                # PNG：无世界文件 → 无 CRS
+                png = gdal.GetDriverByName("PNG")
+                ds = png.CreateCopy(
+                    os.path.join(incoming, "unref.png"),
+                    gdal.GetDriverByName("MEM").Create("", 10, 10, 1, gdal.GDT_Byte),
+                )
+                ds = None
+                # 非白名单扩展名
+                (Path(incoming) / "note.txt").write_text("x", encoding="utf-8")
+
+                candidates = list_basemap_candidates(project.id)
+                by_name = {
+                    Path(item["candidate"]).name: item for item in candidates
+                }
+                self.assertIn("mine.img", by_name)
+                self.assertIn("mine.jpg", by_name)
+                self.assertIn("mine.dat", by_name)
+                self.assertNotIn("unref.png", by_name)
+                self.assertNotIn("note.txt", by_name)
+                # JPG 的世界文件进入 sidecars 展示
+                self.assertIn("mine.jgw", by_name["mine.jpg"]["sidecars"])
+                self.assertIn("mine.prj", by_name["mine.jpg"]["sidecars"])
+
+                # 各格式均能走完登记（排队切片任务）
+                for candidate in ("incoming/mine.img", "incoming/mine.jpg", "incoming/mine.dat"):
+                    result = register_basemap(project.id, candidate, 8, 15)
+                    self.assertEqual(result["resource"]["status"], "pending")
+                    self.assertEqual(result["job"]["status"], "queued")
+
+                # 无 CRS 的 PNG 单独登记：明确报错而非静默
+                with self.assertRaisesRegex(ValueError, "CRS"):
+                    register_basemap(project.id, "incoming/unref.png", 8, 15)
+                # 非白名单扩展名：格式提示
+                with self.assertRaisesRegex(ValueError, "底图仅支持"):
+                    register_basemap(project.id, "incoming/note.txt", 8, 15)
+            finally:
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root

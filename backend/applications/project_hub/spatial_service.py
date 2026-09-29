@@ -434,11 +434,13 @@ def import_mine_vector(project_id, filename, content, field_mapping=None, actor=
 def _raster_metadata(path):
     dataset = gdal.OpenEx(str(path), gdal.OF_RASTER | gdal.OF_READONLY)
     if dataset is None:
-        raise ValueError(f"无法读取 GeoTIFF: {path.name}")
+        raise ValueError(f"无法读取栅格文件（支持：{_BASEMAP_FORMAT_HINT}）: {path.name}")
     try:
         projection = dataset.GetProjectionRef()
         if not projection:
-            raise ValueError(f"GeoTIFF 缺少 CRS: {path.name}")
+            raise ValueError(
+                f"栅格缺少 CRS: {path.name}（JPG/PNG 需同名世界文件与 .prj，ENVI 需成对 .hdr）"
+            )
         source_crs = osr.SpatialReference()
         source_crs.ImportFromWkt(projection)
         source_crs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
@@ -448,7 +450,7 @@ def _raster_metadata(path):
         transform = None if source_crs.IsSame(target_crs) else osr.CoordinateTransformation(source_crs, target_crs)
         geotransform = dataset.GetGeoTransform(can_return_null=True)
         if geotransform is None:
-            raise ValueError(f"GeoTIFF 缺少地理变换: {path.name}")
+            raise ValueError(f"栅格缺少地理变换: {path.name}（JPG/PNG 需同名世界文件）")
 
         def corner(pixel, line):
             x = geotransform[0] + pixel * geotransform[1] + line * geotransform[2]
@@ -507,6 +509,16 @@ def _active_mine_bounds(project_id):
 # 可选地由投递工具写入 <name>.ready 作为完成标记（系统不强制）。
 _INCOMPLETE_COPY_MARKERS = ("staging", "part", "tmp", "crdownload")
 
+# 底图格式白名单（优化建议二.1 扩格式的安全切面：底图切片链 metadata/tiling
+# 均走 GDAL 通用驱动，与推理输入固定 GeoTIFF 相互独立）。
+# JPG/PNG 必须配同名世界文件（.jgw/.pgw 等）与 .prj 才有 CRS；
+# ENVI 约定 <同名>.dat + <同名>.hdr 成对投递；IMG (Erdas HFA) 自带 CRS。
+ALLOWED_BASEMAP_EXTENSIONS = {".tif", ".tiff", ".img", ".jpg", ".jpeg", ".png", ".dat"}
+_BASEMAP_FORMAT_HINT = "TIF/TIFF、IMG、JPG/PNG（需同名世界文件+.prj）或 ENVI(.dat+.hdr)"
+
+# 世界文件/头文件等辅助文件：登记时展示、拷贝时随源文件同行
+_BASEMAP_SIDECAR_SUFFIXES = (".jgw", ".pgw", ".gfw", ".wld", ".hdr")
+
 
 def _is_incomplete_copy_name(name):
     segments = str(name).casefold().replace(" ", "").split(".")
@@ -517,8 +529,8 @@ def _candidate_relative_path(candidate):
     value = Path(str(candidate or ""))
     if value.is_absolute() or not value.parts or value.parts[0].casefold() != "incoming":
         raise ValueError("底图必须来自 project_storage/incoming 目录")
-    if value.suffix.lower() not in {".tif", ".tiff"}:
-        raise ValueError("底图仅支持 TIF/TIFF")
+    if value.suffix.lower() not in ALLOWED_BASEMAP_EXTENSIONS:
+        raise ValueError(f"底图仅支持 {_BASEMAP_FORMAT_HINT}")
     if _is_incomplete_copy_name(value.name):
         raise ValueError("底图文件仍在复制中（.staging/.part），请等待复制完成后再登记")
     return value
@@ -534,6 +546,7 @@ def _sidecar_paths(path):
         Path(f"{path}.aux.xml"),
         path.with_suffix(".aux.xml"),
     ]
+    names.extend(path.with_suffix(suffix) for suffix in _BASEMAP_SIDECAR_SUFFIXES)
     return sorted({item.name for item in names if item.is_file()})
 
 
@@ -620,7 +633,7 @@ def list_basemap_candidates(project_id):
     mine_bounds = _active_mine_bounds(project_id)
     items = []
     for path in sorted((root / "incoming").rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in {".tif", ".tiff"}:
+        if not path.is_file() or path.suffix.lower() not in ALLOWED_BASEMAP_EXTENSIONS:
             continue
         # 复制中的半文件（.staging/.part 命名约定）不出现在候选列表
         if _is_incomplete_copy_name(path.name):

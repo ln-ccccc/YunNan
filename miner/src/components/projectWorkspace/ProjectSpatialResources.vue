@@ -53,7 +53,7 @@
           <button class="secondary-btn" type="button" :disabled="busy || !canConfigure" @click="$emit('load-basemap-candidates')">
             刷新导入目录
           </button>
-          <span class="muted-text">请先将 TIF/TIFF 及同名辅助文件准备到项目离线导入目录。</span>
+          <span class="muted-text">支持 TIF/TIFF、IMG、JPG/PNG（需同名世界文件+.prj）、ENVI(.dat+.hdr)，请连同同名辅助文件放入项目离线导入目录。</span>
         </div>
 
         <article v-if="latestTerminalJob" class="job-item">

@@ -156,6 +156,10 @@ def _copy_source_to_project(resource, storage_root):
             Path(f"{source}.aux.xml"),
             source.with_suffix(".aux.xml"),
         ]
+        # 新增格式的地理参考辅助文件随源文件同行（JPG/PNG 世界文件、ENVI .hdr）
+        possible_sidecars.extend(
+            source.with_suffix(suffix) for suffix in (".jgw", ".pgw", ".gfw", ".wld", ".hdr")
+        )
         for sidecar in possible_sidecars:
             if not sidecar.is_file():
                 continue
