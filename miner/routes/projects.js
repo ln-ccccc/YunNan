@@ -179,6 +179,8 @@ export function createProjectRoutes({
     }
   });
   router.get('/:projectId/classification-results', relay('GET', () => '/classification-results'));
+  // 成果质量复核（优化建议三.3）：阈值 query 透传，后端计算质检统计与细碎线索
+  router.get('/:projectId/classification-results/:resultId/quality-review', relay('GET', (req) => `/classification-results/${encodeURIComponent(req.params.resultId)}/quality-review`, { query: true }));
   router.get('/:projectId/mines/parcel-summary', relay('GET', () => '/mines/parcel-summary', { query: true }));
   router.get('/:projectId/mines/:fid/traceability', relay('GET', (req) => `/mines/${encodeURIComponent(req.params.fid)}/traceability`));
 

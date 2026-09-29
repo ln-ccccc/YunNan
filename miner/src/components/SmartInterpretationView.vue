@@ -46,6 +46,13 @@
             v-if="editorTargets.get(`${row.data?.fid}:${row.data?.year ?? ''}`)?.editable"
             class="edit-btn"
             type="button"
+            title="自动筛查细碎图斑等疑似误判线索"
+            @click="openReview(row)"
+          >智能复核</button>
+          <button
+            v-if="editorTargets.get(`${row.data?.fid}:${row.data?.year ?? ''}`)?.editable"
+            class="edit-btn"
+            type="button"
             title="在 GeoView 编辑器中打开"
             @click="openEditor(row)"
           >编辑矢量</button>
@@ -71,6 +78,17 @@
       @load-imagery="loadImageryAssets"
       @submit="handleInferenceSubmit"
     />
+
+    <QualityReviewModal
+      :visible="Boolean(reviewTarget)"
+      :project-id="selectedProjectId"
+      :result-id="reviewTarget?.resultId"
+      :result-label="reviewTarget ? `${reviewTarget.fid} · ${reviewTarget.year}` : ''"
+      :vector-status-label="reviewTarget?.vectorStatus || ''"
+      :editable="Boolean(reviewTarget?.editable)"
+      @close="reviewTarget = null"
+      @open-editor="openEditorTarget(reviewTarget)"
+    />
   </div>
 </template>
 
@@ -79,6 +97,7 @@ import axios from 'axios';
 import { computed, ref } from 'vue';
 
 import InferenceModal from './InferenceModal.vue';
+import QualityReviewModal from './QualityReviewModal.vue';
 import { useProjectInference } from '../composables/useProjectInference.js';
 import { buildGeoViewEditorUrl } from '../navigation/geoviewNavigation.js';
 import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
@@ -119,6 +138,7 @@ const loadEditorTargets = async () => {
       map.set(`${item.mine_fid}:${item.year ?? ''}`, {
         resultId: item.result_id,
         editable: EDITABLE_STATUS.has(item.vector_status),
+        vectorStatus: item.vector_status || '',
       });
     }
     editorTargets.value = map;
@@ -132,6 +152,27 @@ const openEditor = (row) => {
   const year = row.data?.year ?? '';
   const target = editorTargets.value.get(`${fid}:${year}`);
   if (!target?.editable) return;
+  openEditorTarget({ fid, year, resultId: target.resultId });
+};
+
+// 智能复核（优化建议三.3）：细碎图斑线索筛查 + 一键转编辑器修订
+const reviewTarget = ref(null);
+const openReview = (row) => {
+  const fid = row.data?.fid;
+  const year = row.data?.year ?? '';
+  const target = editorTargets.value.get(`${fid}:${year}`);
+  if (!target) return;
+  reviewTarget.value = {
+    fid,
+    year,
+    resultId: target.resultId,
+    editable: Boolean(target.editable),
+    vectorStatus: target.vectorStatus || '',
+  };
+};
+
+const openEditorTarget = (target) => {
+  if (!target?.resultId || !selectedProjectId.value) return;
   const url = buildGeoViewEditorUrl(
     import.meta.env.VITE_GEOVIEW_URL || `${window.location.protocol}//${window.location.hostname}:3000`,
     window.location,

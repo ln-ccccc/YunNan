@@ -534,3 +534,30 @@ test('backup manifest relay passes upstream status through', async () => {
   assert.equal(res.status, 404);
   assert.equal(await res.text(), '{"msg":"不存在"}');
 });
+
+// 智能复核（优化建议三.3）：质检端点 relay——路径参数转发 + 阈值 query 透传
+test('quality review relay forwards result id and threshold query', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async request(method, path, options) {
+        calls.push({ method, path, options });
+        return {
+          status: 200,
+          body: { success: true, code: 0, data: { result_id: 27, feature_count: 3 } },
+        };
+      },
+    },
+  });
+
+  const res = await withServer(router, '/5/classification-results/27/quality-review?small_area_threshold_m2=200');
+  const body = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(body.data.feature_count, 3);
+  // express query 为 null-prototype 对象，字段级断言而非 deepEqual 整体比较
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[0].path, '/api/projects/5/classification-results/27/quality-review');
+  assert.equal(calls[0].options.cookie, '');
+  assert.equal(calls[0].options.query.small_area_threshold_m2, '200');
+});
