@@ -221,6 +221,53 @@ class TestProjectInferenceResults(unittest.TestCase):
         ).all()
         self.assertEqual(len(rows), 1)
 
+    def test_publish_appends_inference_result_published_activity(self):
+        """推理成果审计事件（此前已知缺口：推理链路无活动记录）。"""
+        from applications.models.project import ProjectActivityLog
+
+        project_id = self._create_project()
+        self._publish(project_id, 101, 2024)
+
+        rows = ProjectActivityLog.query.filter_by(
+            project_id=project_id, event_type="inference_result_published"
+        ).all()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].actor, "inference_worker")
+        payload = json.loads(rows[0].payload_json)
+        self.assertEqual(payload["mine_fids"], [101])
+        self.assertEqual(payload["year"], 2024)
+        self.assertNotIn("output_root", payload)  # 服务器路径不入审计载荷
+
+    def test_record_inference_failure_writes_audit_event(self):
+        from applications.models.project import ProjectActivityLog
+        from applications.project_hub.service import record_inference_failure
+
+        project_id = self._create_project()
+        outcome = record_inference_failure(
+            project_id,
+            payload={
+                "inference_job_id": "job-1",
+                "mine_fids": [101],
+                "year": 2024,
+                "error_code": "INFERENCE_FAILED",
+                "error_message": "boom",
+            },
+        )
+        self.assertTrue(outcome)
+        row = ProjectActivityLog.query.filter_by(
+            project_id=project_id, event_type="inference_failed"
+        ).one()
+        self.assertEqual(row.actor, "inference_worker")
+        payload = json.loads(row.payload_json)
+        self.assertEqual(payload["error_code"], "INFERENCE_FAILED")
+        self.assertEqual(payload["result"], "failure")
+
+        # 项目不存在：静默跳过（快推理等无项目上下文任务不产生噪声）
+        self.assertIsNone(record_inference_failure(999999, payload={"error_code": "X"}))
+        self.assertEqual(
+            ProjectActivityLog.query.filter_by(event_type="inference_failed").count(), 1
+        )
+
     def test_project_publication_creates_vector_baseline_without_changing_png_success(self):
         from applications.project_hub.inference_results import publish_project_inference_result
 

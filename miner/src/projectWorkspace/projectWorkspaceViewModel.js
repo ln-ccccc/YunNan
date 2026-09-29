@@ -13,6 +13,8 @@ export const ACTIVITY_LABELS = {
   EXPORT_CREATED: '生成导出成果',
   SNAPSHOT_CREATED: '生成项目配置快照',
   SNAPSHOT_RESTORED: '恢复项目配置快照',
+  INFERENCE_RESULT_PUBLISHED: '发布解译成果',
+  INFERENCE_FAILED: '解译任务失败',
   // service.py ACTION_CODE_BY_EVENT_TYPE 之外的回退码（timeline 上屏 PROJECT_IMPORTED）
   PROJECT_IMPORTED: '导入快照',
 };

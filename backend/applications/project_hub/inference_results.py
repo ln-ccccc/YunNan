@@ -332,6 +332,32 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
                     )
         synced_fids.append(fid)
 
+    # 推理成果审计事件（此前已知缺口：推理链路无活动记录）：发布成功后按
+    # 任务粒度记一条；写失败只告警不回滚成果
+    try:
+        from applications.project_hub.service import _append_activity
+
+        _append_activity(
+            project.id,
+            "inference_result_published",
+            payload={
+                "mine_fids": synced_fids,
+                "year": year,
+                "model_id": request_payload.get("model_id") or "cc-ln/CUGRS",
+                "result_count": len(classification_results),
+                "inference_job_id": str(request_payload.get("inference_job_id") or ""),
+            },
+            actor="inference_worker",
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        LOGGER.warning(
+            "推理成果发布活动记录写入失败（成果不受影响）: project_id=%s",
+            project.id,
+            exc_info=True,
+        )
+
     return {
         "synced_fids": synced_fids,
         "display_results": display_results,

@@ -286,6 +286,31 @@ class InferenceWorker:
         if hasattr(self.job_store, "publish_worker_capability"):
             self.job_store.publish_worker_capability(self.worker_id, self.resolution)
 
+    def _record_project_failure_audit(self, payload, job, error_code, error_message):
+        """项目任务失败的审计事件（走项目域公共服务函数；审计故障不影响失败终态）。"""
+        project_id = payload.get("project_id")
+        if project_id in (None, ""):
+            return
+        try:
+            from applications.project_hub.service import record_inference_failure
+
+            record_inference_failure(
+                project_id,
+                payload={
+                    "inference_job_id": str(job.id),
+                    "mine_fids": payload.get("mine_fids") or [],
+                    "year": payload.get("year"),
+                    "error_code": error_code,
+                    "error_message": str(error_message or "")[:200],
+                },
+            )
+        except Exception:
+            logger.warning(
+                "推理失败审计事件写入失败（不影响任务终态）: job=%s",
+                job.id,
+                exc_info=True,
+            )
+
     def _run_pipeline(self, payload, work_dir):
         is_project_job = payload.get("project_id") not in (None, "")
         return self.pipeline_runner(
@@ -447,24 +472,25 @@ class InferenceWorker:
                     fallback_reason=self.resolution.fallback_reason,
                     warnings=self.resolution.warnings,
                 )
-            if str(error) == "INFERENCE_TIMEOUT":
-                return self.job_store.finish_job(
-                    job,
-                    status="failed",
-                    effective_device=self.resolution.effective,
-                    fallback_reason=self.resolution.fallback_reason,
-                    warnings=self.resolution.warnings,
-                    error_code="JOB_TIMEOUT",
-                    error_message=f"推理任务超过 {self._effective_job_timeout_seconds} 秒时限",
-                )
+            error_code = (
+                "JOB_TIMEOUT"
+                if str(error) == "INFERENCE_TIMEOUT"
+                else ("GPU_INFERENCE_FAILED" if self.resolution.effective.startswith("cuda") else "INFERENCE_FAILED")
+            )
+            error_message = (
+                f"推理任务超过 {self._effective_job_timeout_seconds} 秒时限"
+                if str(error) == "INFERENCE_TIMEOUT"
+                else str(error)
+            )
+            self._record_project_failure_audit(payload, job, error_code, error_message)
             return self.job_store.finish_job(
                 job,
                 status="failed",
                 effective_device=self.resolution.effective,
                 fallback_reason=self.resolution.fallback_reason,
                 warnings=self.resolution.warnings,
-                error_code="GPU_INFERENCE_FAILED" if self.resolution.effective.startswith("cuda") else "INFERENCE_FAILED",
-                error_message=str(error),
+                error_code=error_code,
+                error_message=error_message,
             )
         finally:
             if restore_process_device:

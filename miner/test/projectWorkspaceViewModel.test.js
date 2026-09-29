@@ -30,6 +30,8 @@ test('formatActivityAction maps audit action codes without inferring business st
     EXPORT_CREATED: '生成导出成果',
     SNAPSHOT_CREATED: '生成项目配置快照',
     SNAPSHOT_RESTORED: '恢复项目配置快照',
+    INFERENCE_RESULT_PUBLISHED: '发布解译成果',
+    INFERENCE_FAILED: '解译任务失败',
     PROJECT_IMPORTED: '导入快照',
   });
   // 后端 service.py ACTION_CODE_BY_EVENT_TYPE 全集 + 回退码 PROJECT_IMPORTED 必须都有中文文案（审查 F2）
@@ -38,6 +40,7 @@ test('formatActivityAction maps audit action codes without inferring business st
     'PROJECT_ARCHIVED', 'PROJECT_RESTORED', 'SPATIAL_RESOURCE_REMOVED', 'SPATIAL_RESOURCE_ACTIVATED',
     'SPATIAL_JOB_QUEUED', 'SPATIAL_JOB_RETRIED', 'SPATIAL_JOB_CANCEL_REQUESTED',
     'EXPORT_CREATED', 'SNAPSHOT_CREATED', 'SNAPSHOT_RESTORED', 'PROJECT_IMPORTED',
+    'INFERENCE_RESULT_PUBLISHED', 'INFERENCE_FAILED',
   ];
   for (const code of backendCodes) {
     assert.ok(ACTIVITY_LABELS[code], `action_code ${code} 缺少中文文案`);
