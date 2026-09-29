@@ -107,7 +107,7 @@ defineProps({
 
 defineEmits(['create-export', 'create-snapshot', 'restore-snapshot', 'download-export', 'download-snapshot']);
 
-const exportFormats = ['geojson', 'csv', 'shp', 'xlsx'];
+const exportFormats = ['geojson', 'csv', 'shp', 'xlsx', 'dxf'];
 
 function formatRecordStatus(status) {
   return {

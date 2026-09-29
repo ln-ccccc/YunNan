@@ -5,7 +5,7 @@
         <p class="kicker">数据管理</p>
         <h1>数据导出与配置快照</h1>
         <p class="muted-text">
-          按项目导出成果（GeoJSON/CSV/SHP/XLSX）与生成/恢复项目配置快照；
+          按项目导出成果（GeoJSON/CSV/SHP/XLSX/DXF）与生成/恢复项目配置快照；
           快照跨环境导入在项目工作台的档案面板完成。
         </p>
       </div>

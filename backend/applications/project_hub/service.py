@@ -56,7 +56,7 @@ from applications.project_hub.spatial_state import serialize_project_spatial_sta
 
 ALLOWED_PROJECT_STATUSES = {"draft", "active", "completed", "archived"}
 ALLOWED_DATASET_KINDS = {"imagery", "inference_result", "report", "export_package", "mine_indices"}
-ALLOWED_EXPORT_FORMATS = {"geojson", "csv", "shp", "xlsx"}
+ALLOWED_EXPORT_FORMATS = {"geojson", "csv", "shp", "xlsx", "dxf"}
 ACTION_CODE_BY_EVENT_TYPE = {
     "project_created": "PROJECT_CREATED",
     "project_updated": "PROJECT_UPDATED",
@@ -72,6 +72,8 @@ ACTION_CODE_BY_EVENT_TYPE = {
     "export_created": "EXPORT_CREATED",
     "backup_created": "SNAPSHOT_CREATED",
     "backup_restored": "SNAPSHOT_RESTORED",
+    "inference_result_published": "INFERENCE_RESULT_PUBLISHED",
+    "inference_failed": "INFERENCE_FAILED",
 }
 _FORBIDDEN_ACTIVITY_KEYS = {
     "file_path",
@@ -406,6 +408,24 @@ def _get_project_or_404(project_id):
     if not project:
         raise ValueError(f"项目不存在: {project_id}")
     return project
+
+
+def record_inference_failure(project_id, payload=None, actor="inference_worker"):
+    """推理任务失败的审计事件（推理 worker 失败路径经此公共服务函数写入，
+    推理运行时模块自身不直接操作项目域表）。项目不存在时静默跳过。"""
+    try:
+        project = _get_project_or_404(project_id)
+    except ValueError:
+        return None
+    _append_activity(
+        project.id,
+        "inference_failed",
+        payload=payload,
+        actor=actor,
+        result="failure",
+    )
+    db.session.commit()
+    return True
 
 
 def _project_list_features():
@@ -1180,7 +1200,7 @@ def create_export(project_id, payload, actor="system"):
     if export_format not in ALLOWED_EXPORT_FORMATS:
         raise ValueError("导出格式不合法")
     features = payload.get("features")
-    if features is None and export_format in {"geojson", "shp"}:
+    if features is None and export_format in {"geojson", "shp", "dxf"}:
         features = _build_project_export_features(project)
     record = ProjectExportRecord(
         project_id=project.id,
@@ -1204,7 +1224,7 @@ def create_export(project_id, payload, actor="system"):
         )
         raise
 
-    suffix = {"geojson": ".geojson", "csv": ".csv", "shp": ".zip", "xlsx": ".xlsx"}[export_format]
+    suffix = {"geojson": ".geojson", "csv": ".csv", "shp": ".zip", "xlsx": ".xlsx", "dxf": ".dxf"}[export_format]
     artifact_name = f"artifact{suffix}"
     artifact_key = _storage_key("projects", str(project_identifier), "exports", str(record_id), artifact_name)
     export_features = []
@@ -1240,6 +1260,18 @@ def create_export(project_id, payload, actor="system"):
                 target_path,
                 _write_xlsx,
                 project,
+                project_id=project_identifier,
+                record_id=record_id,
+            )
+        elif export_format == "dxf":
+            from applications.project_hub.export_dxf import write_dxf
+
+            geojson_payload = _make_geojson_payload(project, features or [])
+            export_features = geojson_payload["features"]
+            _write_artifact_atomic(
+                target_path,
+                write_dxf,
+                export_features,
                 project_id=project_identifier,
                 record_id=record_id,
             )
