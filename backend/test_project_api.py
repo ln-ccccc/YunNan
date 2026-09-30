@@ -1122,7 +1122,7 @@ class TestProjectAPI(unittest.TestCase):
         project_id = self._create_project("快照清单失败项目")
 
         with patch(
-            "applications.project_hub.service.write_json_atomic",
+            "applications.project_hub.snapshots.write_json_atomic",
             side_effect=RuntimeError("模拟 snapshot manifest 写入失败"),
         ):
             response = self.client.post(
