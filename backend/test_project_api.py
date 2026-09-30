@@ -1075,7 +1075,7 @@ class TestProjectAPI(unittest.TestCase):
         project_id = self._create_project("导出写入失败项目")
 
         with patch(
-            "applications.project_hub.service._write_csv",
+            "applications.project_hub.exports._write_csv",
             side_effect=RuntimeError("模拟 CSV 写入失败"),
         ):
             response = self.client.post(f"/api/projects/{project_id}/exports", json={"format": "csv"})
@@ -1091,7 +1091,7 @@ class TestProjectAPI(unittest.TestCase):
         private_path = self.storage_root / "private" / "artifact.csv"
 
         with patch(
-            "applications.project_hub.service._write_csv",
+            "applications.project_hub.exports._write_csv",
             side_effect=PermissionError(f"无法写入 {private_path}"),
         ):
             response = self.client.post(f"/api/projects/{project_id}/exports", json={"format": "csv"})
@@ -1107,7 +1107,7 @@ class TestProjectAPI(unittest.TestCase):
         project_id = self._create_project("导出清单失败项目")
 
         with patch(
-            "applications.project_hub.service.write_json_atomic",
+            "applications.project_hub.exports.write_json_atomic",
             side_effect=RuntimeError("模拟 manifest 写入失败"),
         ):
             response = self.client.post(f"/api/projects/{project_id}/exports", json={"format": "csv"})
