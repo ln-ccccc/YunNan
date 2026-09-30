@@ -68,3 +68,4 @@ HOST_SHA256SUMS
 frontend/.env
 miner/.env
 docker-compose.local.yml
+tmp-e2e/

@@ -339,3 +339,24 @@ MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sh \
 3. 数据归属不依赖页面显示，直接查 DB/上游实锤（本项目实例：project_backup_record.project_id 定位错绑）。
 
 **为什么好**：v-show 保活是主控台架构的既定选择，它让"文档里有但用户看不见"的可交互元素成为常态；幽灵按钮对真人无害（无命中区域），只咬自动化。本项目实例：数据管理页快照错绑项目 4（410c9d8 后的 GUI 验收中发现并排除）。
+
+### 19 WebGL 地图交互（maplibre/MapboxDraw）的 GUI 验证姿势（2026-09-30 P0 定位定型）✅
+
+**解决什么问题**：IAB 工具链无法合成 Shift+点击（修饰键）且容器重建后点击管道劣化，地图编辑器的
+点选/多选/合并这类 WebGL 交互长期"无法自动化、只能人工"，掩盖了点选功能自入库即失效的 P0。
+
+**标准姿势**（真实浏览器，事件与真人等价）：
+1. 全局 `npx playwright --version` 可用但无全局包——在独立目录 `npm i playwright`（浏览器缓存
+   `~/AppData/Local/ms-playwright` 已有则免下载），脚本 `chromium.launch({ headless: false })`（headed，
+   GPU 渲染与用户环境一致；无头下 WebGL 拾取可能有差异，结论以 headed 为准）。
+2. **控件按钮被 canvas 拦截 pointer events 时**（Playwright 报 subtree intercepts）：改 `page.evaluate`
+   里 DOM `btn.click()` 激活工具；**画布顶点/选择必须走 `page.mouse.*` 真实事件**（maplibre 不认合成事件）。
+3. **事件探针定位法**：`canvas.addEventListener` 打原生事件（证明事件到达）+ `page.on('pageerror')`/
+   console 捕获渲染层错误（本项目即靠 `line-dasharray 裸数组被当表达式解析` 的 style 校验错误锁定根因）。
+4. 画多边形：polygon 工具激活 → 三点 `mouse.click` → 末点 `mouse.dblclick` 闭合；双面合并的测试序：
+   画两面 → **先点空白清掉绘制遗留的自动选中** → 单击面 → Shift+click 加选 → 断言 `.selection-count`
+   文案（"已选择 N 个面"）。
+5. **零污染纪律**：全程不点保存，结束 `page.reload()` 断言回到已保存态。
+
+**本项目实例（2026-09-30）**：编辑器点选 P0 的完整定位链与修复后全链验证（单选/Shift 加选/合并/
+锯齿/撤销/重载），见 `docs/feature-iteration-20260929.md` 第四批记录与提交 `36537c4`。
