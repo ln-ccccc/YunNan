@@ -117,7 +117,7 @@ def _feature_centroid(geometry):
     return None
 
 
-def _validate_threshold(raw_value):
+def validate_threshold(raw_value):
     if raw_value in (None, ""):
         return DEFAULT_SMALL_AREA_THRESHOLD_M2
     try:
@@ -131,13 +131,26 @@ def _validate_threshold(raw_value):
 
 def build_result_quality_review(project_id, result_id, small_area_threshold_m2=None):
     """单条成果的质量复核报告：地类构成统计 + 细碎图斑（疑似误判）线索清单。"""
-    threshold = _validate_threshold(small_area_threshold_m2)
+    threshold = validate_threshold(small_area_threshold_m2)
 
-    from applications.project_hub.classification_results import get_classification_result
+    from applications.project_hub.classification_results import (
+        _result_for_project,
+        _serialize_feature_collection,
+    )
 
-    summary = get_classification_result(project_id, result_id)
-    current = summary.get("current_feature_collection")
-    auto = summary.get("auto_feature_collection")
+    # 轻量直查：质检只读矢量集合，不走 get_classification_result——后者连带
+    # 组装 map_manifest（读矿山 geojson + 扫瓦片目录），565 矿山大项目下每次
+    # 弹窗/重筛都是无关 IO
+    result = _result_for_project(project_id, result_id)
+    summary = {
+        "result_id": result.id,
+        "project_id": result.project_id,
+        "mine_fid": result.mine_fid,
+        "year": result.year,
+        "vector_status": result.vector_status,
+    }
+    current = _serialize_feature_collection(result.current_feature_collection_json)
+    auto = _serialize_feature_collection(result.auto_feature_collection_json)
     current_usable = isinstance(current, dict) and bool(current.get("features"))
     auto_usable = isinstance(auto, dict) and bool(auto.get("features"))
     collection = current if current_usable else (auto if auto_usable else None)

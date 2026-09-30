@@ -441,23 +441,18 @@ def classification_revision_list_api(project_id, result_id):
 @login_required
 def classification_result_quality_review_api(project_id, result_id):
     """成果质量复核（优化建议三.3）：质检统计+细碎图斑疑似线索，只读。"""
-    threshold_raw = request.args.get("small_area_threshold_m2")
-    if threshold_raw not in (None, ""):
-        try:
-            threshold = float(threshold_raw)
-        except (TypeError, ValueError):
-            return fail_api("small_area_threshold_m2 必须是数字", status=400)
-    else:
-        threshold = None
-    try:
-        from applications.project_hub.quality_review import build_result_quality_review
+    from applications.project_hub.quality_review import (
+        build_result_quality_review,
+        validate_threshold,
+    )
 
-        return success_api(data=build_result_quality_review(project_id, result_id, threshold))
+    # 阈值校验前置完整化（数字+范围），异常分型不依赖消息字符串匹配
+    try:
+        threshold = validate_threshold(request.args.get("small_area_threshold_m2"))
     except ValueError as error:
-        # 阈值非法属参数错误（400），成果不存在才是 404
-        if "small_area_threshold_m2" in str(error):
-            return fail_api(str(error), status=400)
-        return _classification_error_response(error)
+        return fail_api(str(error), status=400)
+    try:
+        return success_api(data=build_result_quality_review(project_id, result_id, threshold))
     except Exception as error:
         return _classification_error_response(error)
 
