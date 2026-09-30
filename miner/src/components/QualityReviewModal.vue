@@ -126,20 +126,32 @@ const error = ref('');
 const report = ref(null);
 const threshold = ref(100);
 
+// 竞态门控：快速切换成果时旧响应不得落地（同 SmartInterpretationView.loadHistory 惯例）
+let reviewSeq = 0;
+
 const loadReview = async () => {
   if (!props.projectId || !props.resultId) return;
+  // 阈值边界：负数/0/非数字不透传（后端会 400/吞默认，前端先给出明确提示）
+  const thresholdValue = Number(threshold.value);
+  if (!Number.isFinite(thresholdValue) || thresholdValue < 1) {
+    error.value = '细碎阈值需为不小于 1 的数字（m²）';
+    return;
+  }
+  const seq = (reviewSeq += 1);
   loading.value = true;
   error.value = '';
   try {
     const res = await axios.get(
       `${MINER_API_BASE_URL}/api/projects/${props.projectId}/classification-results/${props.resultId}/quality-review`,
-      { params: { small_area_threshold_m2: threshold.value || undefined } },
+      { params: { small_area_threshold_m2: thresholdValue } },
     );
+    if (seq !== reviewSeq) return;
     report.value = res.data?.data || null;
   } catch (e) {
+    if (seq !== reviewSeq) return;
     error.value = e?.response?.data?.msg || '质检数据读取失败';
   } finally {
-    loading.value = false;
+    if (seq === reviewSeq) loading.value = false;
   }
 };
 

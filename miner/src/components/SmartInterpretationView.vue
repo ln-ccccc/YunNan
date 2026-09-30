@@ -130,8 +130,12 @@ const loadEditorTargets = async () => {
     editorTargets.value = new Map();
     return;
   }
+  // 竞态门控：快速切换项目时旧项目的成果映射不得覆盖新项目（同 loadHistory 惯例）
+  const seq = (requestSeq += 1);
+  const projectIdAtRequest = selectedProjectId.value;
   try {
-    const res = await axios.get(`${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/classification-results`);
+    const res = await axios.get(`${MINER_API_BASE_URL}/api/projects/${projectIdAtRequest}/classification-results`);
+    if (seq !== requestSeq || projectIdAtRequest !== selectedProjectId.value) return;
     const items = res.data?.data?.items || res.data?.data || [];
     const map = new Map();
     for (const item of Array.isArray(items) ? items : []) {
@@ -144,6 +148,7 @@ const loadEditorTargets = async () => {
     }
     editorTargets.value = map;
   } catch (_) {
+    if (seq !== requestSeq) return;
     editorTargets.value = new Map();
   }
 };

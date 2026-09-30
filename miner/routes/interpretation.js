@@ -32,7 +32,6 @@ export function createInterpretationRoutes({
         `/api/analysis/kml_roi_history?${query.toString()}`,
         { cookie: requestCookie(req) },
       );
-      // 展示排序：年份降序、同年份按矿山 ID 升序、未知年份沉底
       // 展示排序已移前端消费方（M3 塑形收口：BFF 不做展示决策）
       relayJson(res, upstream);
     } catch (error) {

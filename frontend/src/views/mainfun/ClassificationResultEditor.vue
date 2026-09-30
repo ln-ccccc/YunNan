@@ -150,7 +150,7 @@ function drawStyles() {
       type: 'fill',
       filter: ['all', ['==', '$type', 'Polygon']],
       paint: {
-        'fill-color': ['case', ['==', ['get', 'user_active'], true], '#f59e0b', classColorExpression()],
+        'fill-color': ['case', ['==', ['get', 'active'], 'true'], '#f59e0b', classColorExpression()],
         'fill-opacity': 0.32,
       },
     },
@@ -160,11 +160,11 @@ function drawStyles() {
       filter: ['any', ['==', '$type', 'LineString'], ['==', '$type', 'Polygon']],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
-        'line-color': ['case', ['==', ['get', 'user_active'], true], '#f59e0b', classColorExpression()],
-        // dasharray 数组字面量必须用 literal 包裹：裸数组会被 style-spec 当表达式解析，
-        // maplibre 6 严格校验下加层同步抛错并中断整个 draw 渲染流程——面不渲染、
-        // queryRenderedFeatures 恒空，点选自上线起失效（2026-09-30 GUI 实测定位）
-        'line-dasharray': ['case', ['==', ['get', 'user_active'], true], ['literal', [0.2, 2]], ['literal', [2, 0]]],
+        'line-color': ['case', ['==', ['get', 'active'], 'true'], '#f59e0b', classColorExpression()],
+        // mapbox-gl-draw 的 active 是字符串 'true'/'false'（constants.activeStates），
+        // 官方 theme 即 ['==',['get','active'],'true']；dasharray 数组字面量必须
+        // literal 包裹（裸数组被 style-spec 当表达式解析，加层抛错中断渲染）
+        'line-dasharray': ['case', ['==', ['get', 'active'], 'true'], ['literal', [0.2, 2]], ['literal', [2, 0]]],
         'line-width': 2,
       },
     },
@@ -464,6 +464,8 @@ export default {
       this.recordMutation('properties');
     },
     handleDrawCreate(event) {
+      // 防御位：mapbox-gl-draw 1.5.1 默认 suppressAPIEvents:true，编程式 set/add/delete
+      // 本就不触发事件；此标志为未来升级关闭该默认时的防护
       if (this.suppressDrawEvents) return;
       event.features.forEach((feature) => {
         this.draw.setFeatureProperty(feature.id, 'class_code', this.activeClassCode);
@@ -513,13 +515,14 @@ export default {
         const classCode = selected[0].properties?.class_code ?? this.activeClassCode;
         this.suppressDrawEvents = true;
         try {
-          this.draw.delete(selected.map((feature) => feature.id));
+          // 先 add 后 delete：add 失败（无效几何）时原图不被破坏，catch 提示与实际一致
           this.draw.add({
             type: 'Feature',
             id: createClientFeatureId(),
             properties: { class_code: classCode, feature_id: createClientFeatureId() },
             geometry,
           });
+          this.draw.delete(selected.map((feature) => feature.id));
         } finally {
           this.suppressDrawEvents = false;
         }
@@ -535,33 +538,41 @@ export default {
       // 容差 ≈1.1m（0.00001°）：消除栅格掩膜边缘锯齿而不明显改变地物形状
       const tolerance = 0.00001;
       let simplifiedCount = 0;
+      let skippedCount = 0;
       const ids = [...this.selectedDrawIds];
       this.suppressDrawEvents = true;
       try {
         ids.forEach((id) => {
-          let feature;
           try {
-            feature = this.draw.get(id);
+            const feature = this.draw.get(id);
+            if (!feature || !['Polygon', 'MultiPolygon'].includes(feature.geometry?.type)) return;
+            const simplified = simplify(
+              { type: 'Feature', properties: {}, geometry: feature.geometry },
+              { tolerance, highQuality: false },
+            );
+            // turf 输出 geometry 键序与 draw.get 不同，整对象 stringify 恒不等——按坐标比较
+            if (
+              JSON.stringify(simplified.geometry.coordinates) ===
+              JSON.stringify(feature.geometry.coordinates)
+            ) return;
+            // 先 add 后 delete（同 merge 原子化策略）；单面退化（环点数不足等）跳过不中断整批
+            this.draw.add({
+              type: 'Feature',
+              id: createClientFeatureId(),
+              properties: feature.properties,
+              geometry: simplified.geometry,
+            });
+            this.draw.delete(id);
+            simplifiedCount += 1;
           } catch (_) {
-            return;
+            skippedCount += 1;
           }
-          if (!feature || !['Polygon', 'MultiPolygon'].includes(feature.geometry?.type)) return;
-          const simplified = simplify(
-            { type: 'Feature', properties: {}, geometry: feature.geometry },
-            { tolerance, highQuality: false },
-          );
-          if (JSON.stringify(simplified.geometry) === JSON.stringify(feature.geometry)) return;
-          this.draw.delete(id);
-          this.draw.add({
-            type: 'Feature',
-            id,
-            properties: feature.properties,
-            geometry: simplified.geometry,
-          });
-          simplifiedCount += 1;
         });
       } finally {
         this.suppressDrawEvents = false;
+      }
+      if (skippedCount) {
+        this.$message.warning(`${skippedCount} 个面无法简化（几何退化），已跳过`);
       }
       if (simplifiedCount) {
         this.selectedDrawIds = [];
