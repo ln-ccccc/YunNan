@@ -211,7 +211,12 @@ def _utc_timestamp(value):
     return to_utc_z(value)
 
 
-def _serialize_overview_summary(project, readiness):
+def _serialize_overview_summary(project, readiness, assets=None):
+    """overview summary 的空间三键（spatial_status/map_ready/missing_resources）
+    唯一来源是 readiness + 资产读模型（M2 双轨统一）：此前 _serialize_summary 先写
+    A 轨表状态、此处再按 readiness 覆写同名键，判据分裂；现在显式派生——
+    列表接口的三键仍为 A 轨轻量口径（spatial_state 直查表），两者判据同源
+    （资产读模型从空间资源表映射），语义文档见 vector-result/架构契约。"""
     summary = _serialize_summary(project)
     for field_name in ("latest_activity_at", "create_time", "update_time"):
         summary[field_name] = _utc_timestamp(summary.get(field_name))
@@ -235,9 +240,29 @@ def _serialize_overview_summary(project, readiness):
     has_boundary = passed_by_code.get("MINE_BOUNDARY", False)
     has_basemap = passed_by_code.get("ACTIVE_BASEMAP", False)
     summary["map_ready"] = has_boundary and has_basemap
-    if summary.get("spatial_status") in {"processing", "failed"}:
-        return summary
-    if has_boundary and has_basemap:
+    # processing/failed 判定改由资产读模型派生（映射自空间资源表 pending/
+    # processing/failed），不再依赖 A 轨先写入的 spatial_status 幸存值
+    spatial_assets = [
+        asset for asset in (assets or ())
+        if isinstance(asset, dict) and asset.get("asset_type") in ("mine_boundary", "basemap")
+    ]
+    # A 轨语义等价：资源表 pending（资产映射 registered）与 processing 都算处理中
+    has_processing = any(
+        asset.get("status") in ("registered", "processing") for asset in spatial_assets
+    )
+    has_failed_missing = any(
+        asset.get("status") == "failed"
+        and not passed_by_code.get(
+            "MINE_BOUNDARY" if asset.get("asset_type") == "mine_boundary" else "ACTIVE_BASEMAP",
+            False,
+        )
+        for asset in spatial_assets
+    )
+    if has_processing:
+        summary["spatial_status"] = "processing"
+    elif has_failed_missing:
+        summary["spatial_status"] = "failed"
+    elif has_boundary and has_basemap:
         summary["spatial_status"] = "ready"
     elif has_boundary:
         summary["spatial_status"] = "partial"
@@ -660,7 +685,7 @@ def get_project_overview(project_id):
         {
             "project_id": project.id,
             "lifecycle_status": project.status,
-            "summary": _serialize_overview_summary(project, readiness),
+            "summary": _serialize_overview_summary(project, readiness, assets),
             "readiness": readiness,
             "capabilities": build_capabilities(project, assets, readiness),
             "blockers": blockers,

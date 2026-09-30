@@ -731,6 +731,43 @@ class TestProjectReadModels(unittest.TestCase):
         self.assertIsInstance(item["payload"], dict)
         self.assertEqual(item["created_at"], item["timestamp"])
 
+    def test_overview_spatial_keys_derive_from_readiness_and_assets(self):
+        """M2 双轨统一：overview 空间三键唯一来源是 readiness+资产读模型。
+        processing/failed 不再依赖 A 轨表状态幸存值，由资产状态派生。"""
+        self._seed_partial_project()
+        # 底图资源 pending（切片中）：资产映射为 processing → overview 应为 processing
+        db.session.add(
+            ProjectSpatialResource(
+                project_id=self.PROJECT_ID,
+                resource_type="basemap",
+                version=1,
+                status="pending",
+                source_path="incoming/b.tif",
+                normalized_path="incoming/b.tif",
+                source_format="tif",
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(f"/api/projects/{self.PROJECT_ID}/overview")
+        summary = self.json_body(response)["data"]["summary"]
+        self.assertEqual(summary["spatial_status"], "processing")
+        self.assertFalse(summary["map_ready"])
+        self.assertIn("active_basemap", summary["missing_resources"])
+
+        # 底图 failed 且无激活：→ failed
+        ProjectSpatialResource.query.filter_by(
+            project_id=self.PROJECT_ID, resource_type="basemap"
+        ).update({"status": "failed"})
+        db.session.commit()
+        summary = self.json_body(
+            self.client.get(f"/api/projects/{self.PROJECT_ID}/overview")
+        )["data"]["summary"]
+        self.assertEqual(summary["spatial_status"], "failed")
+
+    def _unused_marker_after_m2_tests(self):
+        pass
+
     def test_overview_filters_unsafe_structured_activity_payloads(self):
         self._seed_blocked_project()
         base_event = {
