@@ -920,6 +920,8 @@ class TestProjectAPI(unittest.TestCase):
         header = [cell.value for cell in workbook["推理成果台账"][1]]
         self.assertIn("推理耗时(秒)", header)
         self.assertIn("总耗时(秒)", header)
+        # 台账时间口径：UTC 统一转北京时间并标注列头，与平台页面显示无 8 小时差
+        self.assertIn("生成时间(北京时间)", header)
 
     def test_xlsx_export_tolerates_vector_failed_result_with_null_collection(self):
         """回归：vector_failed 成果的 current_feature_collection_json 为 NULL，

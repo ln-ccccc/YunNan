@@ -232,7 +232,8 @@ class TestProjectInferenceResults(unittest.TestCase):
             project_id=project_id, event_type="inference_result_published"
         ).all()
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].actor, "inference_worker")
+        # actor 与 spatial 机器动作统一为 system（活动页不出现第三种英文 token）
+        self.assertEqual(rows[0].actor, "system")
         payload = json.loads(rows[0].payload_json)
         self.assertEqual(payload["mine_fids"], [101])
         self.assertEqual(payload["year"], 2024)
@@ -257,7 +258,7 @@ class TestProjectInferenceResults(unittest.TestCase):
         row = ProjectActivityLog.query.filter_by(
             project_id=project_id, event_type="inference_failed"
         ).one()
-        self.assertEqual(row.actor, "inference_worker")
+        self.assertEqual(row.actor, "system")
         payload = json.loads(row.payload_json)
         self.assertEqual(payload["error_code"], "INFERENCE_FAILED")
         self.assertEqual(payload["result"], "failure")

@@ -32,9 +32,14 @@ def _job_timings(inference_job_id):
         return empty
 
 
+# 台账是给人看的 Excel：DB 时间为 UTC，输出统一转北京时间（UTC+8）并标注，
+# 避免与平台页面显示（formatDateTime 按 Z 换算）出现 8 小时口径差
+_LEDGER_TZ_OFFSET = datetime.timedelta(hours=8)
+
+
 def _format_time(value):
     if isinstance(value, datetime.datetime):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
+        return (value + _LEDGER_TZ_OFFSET).strftime("%Y-%m-%d %H:%M:%S")
     return value
 
 
@@ -62,7 +67,7 @@ def build_project_ledger_workbook(project):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "推理成果台账"
-    sheet.append(["成果ID", "矿山FID", "年份", "矢量化状态", "模型", "推理任务ID", "生成时间", "推理耗时(秒)", "总耗时(秒)"])
+    sheet.append(["成果ID", "矿山FID", "年份", "矢量化状态", "模型", "推理任务ID", "生成时间(北京时间)", "推理耗时(秒)", "总耗时(秒)"])
 
     class_sheet = workbook.create_sheet("地类图斑统计")
     class_sheet.append(["成果ID", "矿山FID", "年份", "类别代码", "类别名称", "图斑数量"])

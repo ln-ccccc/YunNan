@@ -347,7 +347,7 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
                 "result_count": len(classification_results),
                 "inference_job_id": str(request_payload.get("inference_job_id") or ""),
             },
-            actor="inference_worker",
+            actor="system",
         )
         db.session.commit()
     except Exception:

@@ -156,9 +156,11 @@ def _copy_source_to_project(resource, storage_root):
             Path(f"{source}.aux.xml"),
             source.with_suffix(".aux.xml"),
         ]
-        # 新增格式的地理参考辅助文件随源文件同行（JPG/PNG 世界文件、ENVI .hdr）
+        # 新增格式的地理参考辅助文件随源文件同行（JPG/PNG 世界文件、ENVI .hdr、
+        # Erdas IMG 大文件的 .ige 外部影像数据与 .rrd 金字塔——缺 .ige 切片必失败）
         possible_sidecars.extend(
-            source.with_suffix(suffix) for suffix in (".jgw", ".pgw", ".gfw", ".wld", ".hdr")
+            source.with_suffix(suffix)
+            for suffix in (".jgw", ".pgw", ".gfw", ".wld", ".hdr", ".ige", ".rrd")
         )
         for sidecar in possible_sidecars:
             if not sidecar.is_file():

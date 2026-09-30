@@ -410,7 +410,7 @@ def _get_project_or_404(project_id):
     return project
 
 
-def record_inference_failure(project_id, payload=None, actor="inference_worker"):
+def record_inference_failure(project_id, payload=None, actor="system"):
     """推理任务失败的审计事件（推理 worker 失败路径经此公共服务函数写入，
     推理运行时模块自身不直接操作项目域表）。项目不存在时静默跳过。"""
     try:

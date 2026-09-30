@@ -73,6 +73,9 @@ class TestParcelSummary(ParcelSummaryBase):
         self.assertEqual(by_fid[11]["feature_count"], 7)  # 2024 取 5 + 2023 取 2
         self.assertEqual(by_fid[11]["latest_year"], 2024)
         self.assertEqual(by_fid[11]["result_count"], 2)
+        # 时间口径（gui-audit #1 第七处收口）：naive UTC 必须带 Z，
+        # 否则前端 new Date() 按本地解析，图斑清单"最近解译"慢 8 小时
+        self.assertTrue(str(by_fid[11]["latest_analyzed_at"]).endswith("Z"))
         self.assertEqual(by_fid[22]["feature_count"], 3)
         self.assertEqual(by_fid[33]["feature_count"], 0)
         self.assertIsNone(by_fid[33]["latest_year"])

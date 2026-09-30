@@ -516,8 +516,10 @@ _INCOMPLETE_COPY_MARKERS = ("staging", "part", "tmp", "crdownload")
 ALLOWED_BASEMAP_EXTENSIONS = {".tif", ".tiff", ".img", ".jpg", ".jpeg", ".png", ".dat"}
 _BASEMAP_FORMAT_HINT = "TIF/TIFF、IMG、JPG/PNG（需同名世界文件+.prj）或 ENVI(.dat+.hdr)"
 
-# 世界文件/头文件等辅助文件：登记时展示、拷贝时随源文件同行
-_BASEMAP_SIDECAR_SUFFIXES = (".jgw", ".pgw", ".gfw", ".wld", ".hdr")
+# 世界文件/头文件等辅助文件：登记时展示、拷贝时随源文件同行；
+# .ige/.rrd 是 Erdas IMG 大文件的外部影像数据/金字塔（Erdas/ArcGIS 处理过的
+# 真实交付常带，缺 .ige 时拷贝后的 .img 数据不完整、切片必然失败）
+_BASEMAP_SIDECAR_SUFFIXES = (".jgw", ".pgw", ".gfw", ".wld", ".hdr", ".ige", ".rrd")
 
 
 def _is_incomplete_copy_name(name):

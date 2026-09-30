@@ -958,6 +958,13 @@ class TestBasemapFormatExtension(unittest.TestCase):
                 self.assertIn("mine.jgw", by_name["mine.jpg"]["sidecars"])
                 self.assertIn("mine.prj", by_name["mine.jpg"]["sidecars"])
 
+                # Erdas IMG 大文件的外部数据/金字塔也进入 sidecars 展示（拷贝随行）
+                (Path(incoming) / "mine.ige").write_bytes(b"fake-ige")
+                (Path(incoming) / "mine.rrd").write_bytes(b"fake-rrd")
+                refreshed = {Path(item["candidate"]).name: item for item in list_basemap_candidates(project.id)}
+                self.assertIn("mine.ige", refreshed["mine.img"]["sidecars"])
+                self.assertIn("mine.rrd", refreshed["mine.img"]["sidecars"])
+
                 # 各格式均能走完登记（排队切片任务）
                 for candidate in ("incoming/mine.img", "incoming/mine.jpg", "incoming/mine.dat"):
                     result = register_basemap(project.id, candidate, 8, 15)

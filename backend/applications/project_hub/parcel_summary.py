@@ -9,6 +9,7 @@ from pathlib import Path
 
 from sqlalchemy import func
 
+from applications.common.utils.utc_time import to_utc_z
 from applications.extensions import db
 from applications.models.classification_result import ClassificationResult
 from applications.models.project import Project, ProjectMineBinding
@@ -85,7 +86,7 @@ def build_parcel_summary(project_id, page=1, limit=50, fid_filter=None):
             "status": binding.status_snapshot,
             "feature_count": stat["feature_total"],
             "latest_year": stat["latest_year"],
-            "latest_analyzed_at": stat["latest_at"].isoformat() if stat["latest_at"] else None,
+            "latest_analyzed_at": to_utc_z(stat["latest_at"]),
             "result_count": stat["result_count"],
         })
     return {"items": items, "count": total, "page": page, "limit": limit}
