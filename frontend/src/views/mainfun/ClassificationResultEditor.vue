@@ -150,7 +150,7 @@ function drawStyles() {
       type: 'fill',
       filter: ['all', ['==', '$type', 'Polygon']],
       paint: {
-        'fill-color': ['case', ['==', ['get', 'active'], 'true'], '#f59e0b', classColorExpression()],
+        'fill-color': ['case', ['==', ['get', 'user_active'], true], '#f59e0b', classColorExpression()],
         'fill-opacity': 0.32,
       },
     },
@@ -160,8 +160,11 @@ function drawStyles() {
       filter: ['any', ['==', '$type', 'LineString'], ['==', '$type', 'Polygon']],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
-        'line-color': ['case', ['==', ['get', 'active'], 'true'], '#f59e0b', classColorExpression()],
-        'line-dasharray': ['case', ['==', ['get', 'active'], 'true'], [0.2, 2], [2, 0]],
+        'line-color': ['case', ['==', ['get', 'user_active'], true], '#f59e0b', classColorExpression()],
+        // dasharray 数组字面量必须用 literal 包裹：裸数组会被 style-spec 当表达式解析，
+        // maplibre 6 严格校验下加层同步抛错并中断整个 draw 渲染流程——面不渲染、
+        // queryRenderedFeatures 恒空，点选自上线起失效（2026-09-30 GUI 实测定位）
+        'line-dasharray': ['case', ['==', ['get', 'user_active'], true], ['literal', [0.2, 2]], ['literal', [2, 0]]],
         'line-width': 2,
       },
     },
