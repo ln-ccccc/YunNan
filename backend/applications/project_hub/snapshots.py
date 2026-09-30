@@ -4,8 +4,6 @@
 不是完整备份（AGENTS §6 命名约束）。"""
 import json
 import logging
-import os
-import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path, PureWindowsPath

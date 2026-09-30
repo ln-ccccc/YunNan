@@ -4,14 +4,13 @@
 import csv
 import json
 import logging
-import os
 import shutil
 import uuid
 import zipfile
 from pathlib import Path
 
 from applications.extensions import db
-from applications.models.project import Project, ProjectDataset, ProjectExportRecord
+from applications.models.project import ProjectExportRecord
 from applications.project_hub._foundation import (
     ProjectStorageValidationError,
     _append_activity,
@@ -35,7 +34,6 @@ from applications.project_hub.project_storage import (
 )
 from applications.schemas.project import ProjectExportRecordSchema
 from applications.project_hub.spatial_service import sanitize_public_geojson_value
-from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 LOGGER = logging.getLogger(__name__)
 

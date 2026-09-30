@@ -35,8 +35,14 @@ def _polygon_rings(geometry):
 
 
 def _layer_name(class_code):
+    """class_code 白名单：None/空串回退层；bool/整数/整值浮点合法；
+    其余（字符串数字、容器等客户端可控值）抛校验错误而非解释器异常外泄。"""
     if class_code is None or class_code == "":
         return "CLASS_NA"
+    if isinstance(class_code, bool) or not isinstance(class_code, (int, float)):
+        raise ValueError("features[].properties.class_code 必须是数值（DXF 图层名）")
+    if isinstance(class_code, float) and not class_code.is_integer():
+        raise ValueError("features[].properties.class_code 必须是整数（DXF 图层名）")
     return f"CLASS_{int(class_code)}"
 
 

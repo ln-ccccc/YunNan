@@ -922,6 +922,31 @@ class TestProjectAPI(unittest.TestCase):
         self.assertIn("总耗时(秒)", header)
         # 台账时间口径：UTC 统一转北京时间并标注列头，与平台页面显示无 8 小时差
         self.assertIn("生成时间(北京时间)", header)
+        # 值级断言：固定 seed 的 create_time（UTC naive）+8h 后的字符串必须逐字一致
+        from datetime import datetime as _dt
+
+        from applications.models.classification_result import ClassificationResult as _CR
+
+        seeded = _CR(
+            project_id=project_id, mine_fid=313, year=2024,
+            inference_job_id="job-ledger-time", model_id="cc-ln/CUGRS",
+            mine_resource_id=1, current_feature_collection_json=None,
+            vector_status="ready", feature_count=0,
+            create_time=_dt(2026, 9, 1, 0, 30, 0),  # UTC naive
+        )
+        db.session.add(seeded)
+        db.session.commit()
+        self.client.post(f"/api/projects/{project_id}/exports", json={"format": "xlsx"})
+        from openpyxl import load_workbook as _load
+
+        record2 = ProjectExportRecord.query.filter_by(project_id=project_id, format="xlsx").order_by(ProjectExportRecord.id.desc()).first()
+        wb2 = _load(self.storage_root / Path(record2.file_path))
+        times = {
+            row[6]
+            for row in wb2["推理成果台账"].iter_rows(min_row=2, values_only=True)
+            if row[1] == 313
+        }
+        self.assertIn("2026-09-01 08:30:00", times)  # UTC 00:30 → 北京 08:30
 
     def test_xlsx_export_tolerates_vector_failed_result_with_null_collection(self):
         """回归：vector_failed 成果的 current_feature_collection_json 为 NULL，

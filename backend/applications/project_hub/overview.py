@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 """项目概览/摘要序列化域（H3 拆分，2026-10-01）：summary DTO、overview 空间三键
 （M2：readiness+资产单轨派生）、活动时间线安全序列化与看板计数。契约不变。"""
-import json
-import re
 
-from applications.extensions import db
 from applications.models.inference_job import InferenceJob
-from applications.models.project import ProjectActivityLog
 from applications.models.project_spatial import ProjectSpatialJob
 from applications.project_hub._foundation import _json_load, _utc_timestamp
 from applications.project_hub.spatial_state import serialize_project_spatial_state

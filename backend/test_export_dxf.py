@@ -165,6 +165,30 @@ class TestDxfExportApi(TestProjectAPI):
         content = (self.storage_root / Path(record.file_path)).read_text(encoding="utf-8")
         self.assertIn("CLASS_2", content)
 
+    def test_dxf_rejects_invalid_class_code_with_chinese_error(self):
+        """P2（审查）：客户端可控 class_code 非法值不得外泄解释器异常原文。"""
+        self.login_as_admin()
+        project_id = self._create_project("DXF非法类别项目")
+        for bad in ("水田", "1.5", []):
+            feature = {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[100.0, 25.0], [100.1, 25.0], [100.1, 25.1], [100.0, 25.1], [100.0, 25.0]]]},
+                "properties": {"class_code": bad},
+            }
+            response = self.client.post(
+                f"/api/projects/{project_id}/exports",
+                json={"format": "dxf", "features": [feature]},
+            )
+            body = response.get_json()
+            # 本项目 fail_api 默认 HTTP 200 + success=False：断言失败语义而非状态码
+            self.assertFalse(body.get("success"), bad)
+            msg = str(body.get("msg") or "")
+            self.assertIn("class_code", msg, bad)
+            self.assertNotIn("invalid literal", msg, bad)
+            self.assertNotIn("int()", msg, bad)
+            record = ProjectExportRecord.query.filter_by(project_id=project_id, format="dxf").first()
+        self.assertEqual(record.status if record else None, "failed")
+
     def test_dxf_rejects_unsupported_payload_fields(self):
         self.login_as_admin()
         project_id = self._create_project("DXF非法参数项目")
