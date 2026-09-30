@@ -495,3 +495,43 @@ class TestProjectStatsAreaAggregation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAggregateLandTypeList(unittest.TestCase):
+    """M3 塑形收口：地类归类聚合自 BFF dashboardStats 下沉（组合串拆分/同组合
+    去重/未知桶/排序契约），BFF 回归纯转发。"""
+
+    def _agg(self, items):
+        from applications.project_hub.project_map import aggregate_land_type_list
+
+        return aggregate_land_type_list(items)
+
+    def test_splits_combinations_and_dedupes_within(self):
+        rows = self._agg([{"name": "林地,草地", "value": 3}, {"name": "林地，林地", "value": 1}])
+        self.assertEqual(rows, [{"name": "林地", "value": 4}, {"name": "草地", "value": 3}])
+
+    def test_unknown_bucket_merges_and_sinks_to_tail(self):
+        rows = self._agg([
+            {"name": "未标注", "value": 2},
+            {"name": "水体", "value": 5},
+            {"name": "暂无", "value": 1},
+            {"name": "", "value": 4},
+        ])
+        self.assertEqual(rows, [{"name": "水体", "value": 5}, {"name": "未知", "value": 7}])
+
+    def test_sorts_by_value_desc_then_name_asc(self):
+        rows = self._agg([{"name": "草地", "value": 2}, {"name": "水体", "value": 2}, {"name": "林地", "value": 9}])
+        self.assertEqual([r["name"] for r in rows], ["林地", "水体", "草地"])
+
+    def test_skips_non_positive_and_invalid_values(self):
+        rows = self._agg([{"name": "草地", "value": 0}, {"name": "水体", "value": -3},
+                          {"name": "林地", "value": "abc"}, {"name": "裸地", "value": "7"}])
+        self.assertEqual(rows, [{"name": "裸地", "value": 7}])
+
+    def test_handles_empty_and_non_list(self):
+        self.assertEqual(self._agg([]), [])
+        self.assertEqual(self._agg(None), [])
+
+    def test_integer_values_stay_int_in_output(self):
+        rows = self._agg([{"name": "草地", "value": 3}])
+        self.assertIs(rows[0]["value"], int(rows[0]["value"]))

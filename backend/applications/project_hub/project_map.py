@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from applications.models.inference_job import InferenceJob
@@ -138,6 +139,44 @@ def _aggregate_project_indices(project_id, fids):
     }
 
 
+_UNKNOWN_LAND_PATTERN = re.compile(r"未知|未标注|暂无")
+_LAND_SEPARATOR_PATTERN = re.compile(r"[,，、;；/]+|\s+")
+
+
+def aggregate_land_type_list(items):
+    """修复方式看板的地类归类聚合（原 BFF dashboardStats 塑形层下沉）：
+    组合串（如"林地,草地"）拆分后逐一计数（同组合去重），未知/未标注/暂无
+    合并进"未知"桶，按数值降序、名称升序，"未知"垫底。"""
+    class_counts = {}
+    unknown_count = 0
+    for item in items or []:
+        try:
+            value = float(item.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name or _UNKNOWN_LAND_PATTERN.search(name):
+            unknown_count += value
+            continue
+        classes = [part.strip() for part in _LAND_SEPARATOR_PATTERN.split(name) if part.strip()]
+        if not classes:
+            unknown_count += value
+            continue
+        for land_class in dict.fromkeys(classes):  # 同组合去重（如"林地,林地"）
+            class_counts[land_class] = class_counts.get(land_class, 0) + value
+    def _plain(value):
+        # 计数为整数时输出 int，保持与历史 BFF 口径一致的 JSON 形状（5 而非 5.0）
+        return int(value) if float(value).is_integer() else value
+
+    rows = [{"name": key, "value": _plain(value)} for key, value in class_counts.items()]
+    rows.sort(key=lambda row: (-row["value"], row["name"]))
+    if unknown_count > 0:
+        rows.append({"name": "未知", "value": _plain(unknown_count)})
+    return rows
+
+
 def get_project_stats(project_id):
     geojson = get_project_geojson(project_id)
     features = geojson["features"]
@@ -206,7 +245,9 @@ def get_project_stats(project_id):
         "areaStats": {"small": small_mines, "medium": medium_mines, "large": large_mines},
         "miningMethodList": [{"name": key, "value": value} for key, value in mining_methods.items()],
         "restorationMethodList": [{"name": key, "count": value} for key, value in restoration_methods.items()],
-        "landTypeList": [{"name": key, "value": value} for key, value in land_types.items()],
+        "landTypeList": aggregate_land_type_list(
+            [{"name": key, "value": value} for key, value in land_types.items()]
+        ),
         "closingYearList": [],
         **_aggregate_project_indices(project_id, binding_by_fid.keys()),
         "changeAreaStats": {

@@ -1,6 +1,5 @@
 import { Router } from 'express';
 
-import { aggregateLandTypeList } from '../services/dashboardStats.js';
 import { projectApi as defaultProjectApi } from '../services/projectBackend.js';
 
 function relayJson(res, upstream) {
@@ -129,24 +128,9 @@ export function createProjectRoutes({
   router.post('/:projectId/spatial/jobs/:jobId/cancel', relay('POST', (req) => `/spatial/jobs/${encodeURIComponent(req.params.jobId)}/cancel`, { body: true }));
   router.get('/:projectId/map/manifest', relay('GET', () => '/map/manifest'));
   router.get('/:projectId/geojson', relay('GET', () => '/geojson'));
-  // 修复后地类看板：NXFFX 组合串在 BFF 归类聚合后再下发（参照江西 dashboardStats 塑造层），
-  // 其余字段原样透传，后端原始口径不变
-  router.get('/:projectId/stats', async (req, res) => {
-    try {
-      const upstream = await projectApi.request(
-        'GET',
-        `/api/projects/${encodeURIComponent(req.params.projectId)}/stats`,
-        { cookie: requestCookie(req) },
-      );
-      if (upstream.status === 200 && upstream.body?.data && typeof upstream.body.data === 'object') {
-        upstream.body.data.landTypeList = aggregateLandTypeList(upstream.body.data.landTypeList);
-      }
-      relayJson(res, upstream);
-    } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
-    }
-  });
+  // 地类归类聚合已下沉 Flask（project_map.aggregate_land_type_list，M3 塑形收口），
+  // BFF 回归纯转发
+  router.get('/:projectId/stats', relay('GET', () => '/stats'));
   router.get('/:projectId/mines/search', relay('GET', () => '/mines/search', { query: true }));
   router.get('/:projectId/mines/indices', relay('GET', () => '/mines/indices', { query: true }));
   router.get('/:projectId/mines/change-matrix', relay('GET', () => '/mines/change-matrix', { query: true }));

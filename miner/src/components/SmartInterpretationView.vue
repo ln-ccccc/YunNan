@@ -102,6 +102,7 @@ import { useProjectInference } from '../composables/useProjectInference.js';
 import { buildGeoViewEditorUrl } from '../navigation/geoviewNavigation.js';
 import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
 import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
+import { sortInterpretationRecords } from '../utils/interpretationOrdering.js';
 
 defineEmits(['go-map']);
 
@@ -221,7 +222,8 @@ const loadHistory = async () => {
       params: { project_id: selectedProjectId.value, page: page.value, limit },
     });
     if (seq !== requestSeq) return;
-    records.value = res.data?.data || [];
+    // 展示排序原在 BFF，M3 塑形收口移到前端消费方
+    records.value = sortInterpretationRecords(res.data?.data || []);
     total.value = res.data?.count ?? 0;
   } catch (e) {
     if (seq !== requestSeq) return;
