@@ -118,6 +118,7 @@ const loading = ref(false);
 const error = ref('');
 
 let requestSeq = 0;
+let editorTargetsSeq = 0;
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
 
@@ -130,8 +131,10 @@ const loadEditorTargets = async () => {
     editorTargets.value = new Map();
     return;
   }
-  // 竞态门控：快速切换项目时旧项目的成果映射不得覆盖新项目（同 loadHistory 惯例）
-  const seq = (requestSeq += 1);
+  // 竞态门控：快速切换项目时旧项目的成果映射不得覆盖新项目。
+  // 独立计数器——不得复用 requestSeq（loadHistory 与本函数并发触发时，
+  // 共用计数器会让先发请求的响应被后发者作废，记录列表永远卡在加载中）
+  const seq = (editorTargetsSeq = (editorTargetsSeq || 0) + 1);
   const projectIdAtRequest = selectedProjectId.value;
   try {
     const res = await axios.get(`${MINER_API_BASE_URL}/api/projects/${projectIdAtRequest}/classification-results`);
