@@ -8,18 +8,21 @@
   />
   <div v-else class="app-shell" :class="{ 'with-sidebar': showSidebar }">
     <aside v-if="showSidebar" class="side-nav" :class="{ collapsed: navCollapsed }">
-      <div class="brand" :title="navCollapsed ? '矿山监测主控台' : null">
-        <template v-if="!navCollapsed">矿山监测<br />主控台</template>
-        <template v-else>矿</template>
+      <div class="brand" title="矿山监测主控台">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M5 29 16 10l8 14 5-8 7 13M10 29h21M13 16l3 4 3-4" /></svg>
+        <div v-if="!navCollapsed" class="brand-copy">矿山监测<span>生态修复 · 项目工作台</span></div>
       </div>
-      <nav class="nav-list">
+      <nav class="nav-list" aria-label="主导航">
         <button type="button"
           v-for="item in navItems"
           :key="item.key"
           :class="{ active: currentView === item.key || (item.key === 'projects' && currentView === 'map') }"
           :title="navCollapsed ? item.label : null"
+          :aria-label="item.label"
+          :aria-current="currentView === item.key || (item.key === 'projects' && currentView === 'map') ? 'page' : undefined"
           @click="navigateToView(item)"
         >
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path :d="navIconPaths[item.key]" /></svg>
           <span v-if="!navCollapsed" class="nav-label">{{ item.label }}</span>
           <span v-if="!navCollapsed && !item.implemented" class="nav-badge">规划中</span>
           <span v-else-if="navCollapsed && !item.implemented" class="nav-badge-dot" />
@@ -33,8 +36,9 @@
         v-else
         class="logout-btn logout-compact"
         title="退出登录"
+        aria-label="退出登录"
         @click="handleLogout"
-      >⏻</button>
+      ><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9 M6.34 5.66a8 8 0 1 0 11.32 0" /></svg></button>
     </aside>
     <main class="content-area" :class="{ scrollable: currentView !== 'map' }">
       <div v-show="currentView === 'projects' || currentView === 'map'" class="workspace-routed">
@@ -42,8 +46,10 @@
           v-show="currentView === 'projects'"
           :username="sessionState.username"
           @open-map="openMapView"
+          @logout="handleLogout"
         />
         <MapDashboard
+          v-if="selectedProjectId"
           v-show="currentView === 'map'"
           ref="mapDashboardRef"
           :key="selectedProjectId"
@@ -51,6 +57,7 @@
           :username="sessionState.username"
           headerActionLabel="返回项目工作台"
           @back-to-projects="returnToProjectsView"
+          @logout="handleLogout"
         />
       </div>
       <EditingView v-if="currentView === 'editing'" @go-projects="navigateToView(navItems[0])" />
@@ -100,6 +107,15 @@ const authError = ref('');
 const sessionState = ref({ authenticated: false, username: '' });
 
 const navItems = NAV_ITEMS;
+const navIconPaths = {
+  projects: 'M3 7h7l2-3h9v16H3z M3 9h18',
+  imagery: 'M4 4h16v16H4z M4 16l5-5 4 4 3-3 4 4 M8 8h.01',
+  interpretation: 'M12 3v3 M12 18v3 M3 12h3 M18 12h3 M8 8h8v8H8z',
+  editing: 'M14 5l5 5 M4 20l5-1L20 8l-4-4L5 15z',
+  data: 'M4 6c0-4 16-4 16 0s-16 4-16 0 M4 6v12c0 4 16 4 16 0V6 M4 12c0 4 16 4 16 0',
+  search: 'M15 15l6 6 M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0',
+  settings: 'M4 7h16 M4 17h16 M8 4v6 M16 14v6',
+};
 
 // 侧栏自适应：≤1100px 折叠为图标条（恢复旧版 Home.vue 的响应式行为，AppShell 化时曾丢失）
 const navCollapsed = ref(false);

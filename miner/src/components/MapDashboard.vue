@@ -42,18 +42,18 @@
         :leftCollapsed="false"
         :rightCollapsed="false"
         @select-mine="handleSelectMine"
-      />
+      >
+        <div class="map-tools">
+          <button
+            class="map-tool-btn"
+            :class="{ active: graticuleOn }"
+            type="button"
+            title="经纬网辅助线（开关）"
+            @click="toggleGraticule"
+          >#</button>
+        </div>
+      </MapContainer>
       <div v-else class="map-unavailable">{{ dataLoadError || '项目离线地图加载中…' }}</div>
-
-      <div class="map-tools">
-        <button
-          class="map-tool-btn"
-          :class="{ active: graticuleOn }"
-          type="button"
-          title="经纬网辅助线（开关）"
-          @click="toggleGraticule"
-        >#</button>
-      </div>
 
       <RightSidebar
         :treatedCount="treatedCount"
@@ -406,8 +406,7 @@ defineExpose({
 }
 .map-tools {
   position: absolute;
-  /* 避开右侧栏 286px：贴 main 右缘会压住右栏图表轴标签（2026-09-25 实测） */
-  right: calc(286px + 16px);
+  right: 16px;
   bottom: 70px;
   z-index: 900;
   display: flex;

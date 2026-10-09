@@ -24,6 +24,7 @@
 
     <el-menu-item
       index="/segmentation"
+      aria-label="地表覆盖分类"
       @click="goSegmentation"
     >
       <i
@@ -37,6 +38,7 @@
 
     <el-menu-item
       index="/spectralindices"
+      aria-label="光谱指数计算"
       @click="goSpectralIndices"
     >
       <i

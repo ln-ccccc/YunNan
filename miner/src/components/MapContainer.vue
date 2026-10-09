@@ -7,6 +7,7 @@
       <div class="legend-item"><span class="dot untreated"></span> 未治理</div>
       <div class="legend-item"><span class="dot unknown"></span> 未知/其他</div>
     </div>
+    <slot />
   </div>
 </template>
 

@@ -5,12 +5,13 @@
         <h2>项目空间资源</h2>
         <p class="muted-text">矿山边界和离线底图只作用于当前项目。</p>
       </div>
-      <button class="primary-btn" type="button" :disabled="!canConfigure" @click="toggleOpen">
+      <button class="primary-btn" type="button" :aria-expanded="open" :disabled="!canConfigure" @click="toggleOpen">
         {{ open ? '收起空间资源' : '配置空间资源' }}
       </button>
     </div>
 
-    <template v-if="open">
+    <Transition name="panel-reveal">
+    <div v-if="open" class="resource-reveal"><div class="resource-reveal-inner">
       <div class="wizard-steps" aria-label="空间资源配置步骤">
         <span :class="{ active: wizardStep === 1, done: wizardStep > 1 }">1 基本信息</span>
         <span :class="{ active: wizardStep === 2, done: wizardStep > 2 }">2 导入矿山</span>
@@ -122,7 +123,8 @@
       </section>
 
       <p v-if="displayError" class="error-text">{{ displayError }}</p>
-    </template>
+    </div></div>
+    </Transition>
 
     <section class="mine-list-panel">
       <div class="panel-title-row">

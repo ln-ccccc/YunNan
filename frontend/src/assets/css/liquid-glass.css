@@ -127,7 +127,7 @@ body {
 #app .geoview-sidebar .el-menu-item h3 { padding: 0; font-size: 14px; font-weight: 600; }
 #app .geoview-sidebar .el-menu-item h3 .iconfont { margin-right: 10px; }
 #app .geoview-sidebar .el-menu-item ::after { content: none; }
-#app .geoview-sidebar.el-menu--collapse .el-menu-item { justify-content: center; padding: 0; }
+#app .geoview-sidebar.el-menu--collapse .el-menu-item { justify-content: center; padding: 0 !important; }
 #app .geoview-sidebar .sidebar-panels { padding: 12px 0 4px; gap: 10px; }
 #app .geoview-sidebar .glass-card { border-radius: 16px; box-shadow: none; backdrop-filter: none; background: rgba(255, 255, 255, 0.72); }
 #app .geoview-sidebar .card-title { color: var(--text-primary); letter-spacing: 0; }
@@ -279,8 +279,10 @@ body {
 
 @media (max-width: 760px) {
   #app .geoview-shell { padding: 8px; gap: 8px; }
-  #app .geoview-shell > .el-aside { border-radius: 18px; }
-  #app .geoview-shell.is-nav-expanded > .el-aside { position: fixed; top: 82px; bottom: 8px; left: 8px; width: 220px; z-index: 30; animation: geoview-content-in var(--geoview-motion) var(--geoview-ease); }
+  /* 收起动画期间也固定导航占位，避免菜单旧宽度挤压主内容。 */
+  #app .geoview-shell > .el-aside { width: 54px !important; border-radius: 18px; }
+  #app .geoview-shell.is-nav-expanded > .el-aside { position: fixed; top: 82px; bottom: 8px; left: 8px; width: 220px !important; z-index: 30; animation: geoview-content-in var(--geoview-motion) var(--geoview-ease); }
+  #app .geoview-shell.is-nav-expanded > .el-container { margin-left: 62px; }
   #app .geoview-sidebar.el-menu--collapse { width: 52px; padding: 6px; }
   #app .geoview-sidebar .platform { height: 46px; }
   #app .geoview-sidebar .el-menu-item { height: 44px; border-radius: 11px; }
@@ -332,7 +334,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #app *, #app *::before, #app *::after, .el-overlay *, .el-message-box *, .el-notification *, .el-message * {
+  #app *, #app *::before, #app *::after, .el-overlay, .el-overlay *, .el-message-box, .el-message-box *, .el-notification, .el-notification *, .el-message, .el-message *, .el-image-viewer__wrapper, .el-image-viewer__wrapper * {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
