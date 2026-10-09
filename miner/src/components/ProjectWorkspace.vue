@@ -133,6 +133,8 @@
             @create-export="createExport"
             @create-snapshot="createSnapshot"
             @restore-snapshot="restoreSnapshot"
+            @download-export="downloadExport"
+            @download-snapshot="downloadSnapshot"
           />
 
           <ProjectArchivePanel
@@ -188,8 +190,9 @@ import { setSelectedProjectId } from '../services/projectSelectionStore.js';
 defineProps({ username: { type: String, default: '' } });
 const emit = defineEmits(['open-map', 'logout']);
 const rawMinerApiBase = import.meta.env.VITE_MINER_API_BASE_URL;
+const minerApiBase = rawMinerApiBase ? String(rawMinerApiBase).replace(/\/$/, '') : '';
 const api = createProjectWorkspaceApi({
-  baseUrl: rawMinerApiBase ? String(rawMinerApiBase).replace(/\/$/, '') : '',
+  baseUrl: minerApiBase,
 });
 const selectionGate = createSelectionGate();
 const listGate = createSelectionGate();
@@ -738,6 +741,47 @@ async function createSnapshot() {
   } finally {
     if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
   }
+}
+
+async function downloadFile(path, filename, sliceName) {
+  const operation = startProjectOperation();
+  if (!operation) return;
+  slices[sliceName].error = '';
+  try {
+    const response = await axios.get(`${minerApiBase}${path}`, { responseType: 'blob' });
+    const objectUrl = URL.createObjectURL(response.data);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+  } catch (error) {
+    if (isCurrentProjectOperation(operation)) {
+      slices[sliceName].error = messageFrom(error, '下载失败，请稍后重试');
+    }
+  } finally {
+    if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
+  }
+}
+
+function downloadExport(item) {
+  if (!currentProjectId.value || !item?.id) return;
+  return downloadFile(
+    `/api/projects/${currentProjectId.value}/exports/${item.id}/artifact`,
+    item.artifact_name || `export-${item.id}`,
+    'exports',
+  );
+}
+
+function downloadSnapshot(item) {
+  if (!currentProjectId.value || !item?.id) return;
+  return downloadFile(
+    `/api/projects/${currentProjectId.value}/backups/${item.id}/manifest`,
+    `snapshot-${item.id}-manifest.json`,
+    'snapshots',
+  );
 }
 
 async function restoreSnapshot(snapshotId) {

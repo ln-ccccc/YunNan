@@ -20,7 +20,7 @@
         <button class="primary-btn" type="button" :disabled="!selectedProjectId" @click="showInferenceModal = true">
           发起新解译
         </button>
-        <button class="link-btn" type="button" @click="$emit('go-map')">打开地图工作台</button>
+        <button class="link-btn" type="button" :disabled="!selectedProjectId" @click="$emit('go-map', selectedProjectId)">打开地图工作台</button>
       </div>
       <p class="hint-text">
         发起前请在「影像管理」登记并就绪影像；推理按 KML ROI 逐矿山执行，完成后记录自动出现在下方。
@@ -138,7 +138,7 @@ const loadEditorTargets = async () => {
   const projectIdAtRequest = selectedProjectId.value;
   try {
     const res = await axios.get(`${MINER_API_BASE_URL}/api/projects/${projectIdAtRequest}/classification-results`);
-    if (seq !== requestSeq || projectIdAtRequest !== selectedProjectId.value) return;
+    if (seq !== editorTargetsSeq || projectIdAtRequest !== selectedProjectId.value) return;
     const items = res.data?.data?.items || res.data?.data || [];
     const map = new Map();
     for (const item of Array.isArray(items) ? items : []) {
@@ -151,7 +151,7 @@ const loadEditorTargets = async () => {
     }
     editorTargets.value = map;
   } catch (_) {
-    if (seq !== requestSeq) return;
+    if (seq !== editorTargetsSeq || projectIdAtRequest !== selectedProjectId.value) return;
     editorTargets.value = new Map();
   }
 };
