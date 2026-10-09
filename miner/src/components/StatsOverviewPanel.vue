@@ -19,7 +19,7 @@
         </div>
         <div class="stat-card" :class="{ alert: (overview.suspect_mine_count || 0) > 0 }">
           <span class="stat-label">新增修复面积</span>
-          <span class="stat-value">{{ formatArea(overview.restored_area_m2) }}</span>
+          <span class="stat-value">{{ formatAreaKm2(overview.restored_area_m2) }}</span>
         </div>
         <div class="stat-card" :class="{ alert: (overview.suspect_mine_count || 0) > 0 }">
           <span class="stat-label">疑似异常图斑</span>
@@ -46,6 +46,7 @@
 <script setup>
 import axios from 'axios';
 import { computed, onMounted, ref } from 'vue';
+import { formatAreaKm2 } from '../utils/areaDisplay.js';
 
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
 
@@ -68,13 +69,6 @@ const classShareRows = computed(() => {
 });
 
 const hasClassArea = computed(() => (overview.value?.class_area?.total_area_m2 || 0) > 0);
-
-const formatArea = (m2) => {
-  const value = Number(m2) || 0;
-  if (value >= 1e6) return `${(value / 1e6).toFixed(2)} km²`;
-  if (value >= 1e3) return `${(value / 1e3).toFixed(1)} 万m²`.replace('万m²', '千m²');
-  return `${value.toFixed(0)} m²`;
-};
 
 const fetchOverview = async () => {
   loading.value = true;

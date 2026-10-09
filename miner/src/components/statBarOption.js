@@ -1,18 +1,21 @@
 import * as echarts from 'echarts';
 
-// 江西同款横向条形图配置：统一渐变配色 + 长类目名换行不截断 + tooltip confine。
+// 横向条形图：长类目名换行不截断，tooltip 限制在面板内。
 // 右栏（修复后地类/开采方式统计）与左栏（修复方式 TOP5）共用，保证柱状图风格一致。
 export function makeStatBarOption({ names, values, unit = '个' }) {
   return {
     backgroundColor: 'transparent',
+    animation: !globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
+    animationDuration: 240,
+    animationDurationUpdate: 180,
     tooltip: {
       trigger: 'axis',
       confine: true,
-      backgroundColor: 'rgba(9, 23, 34, 0.96)',
-      borderColor: 'rgba(112, 160, 151, 0.3)',
+      backgroundColor: 'rgba(252, 253, 253, 0.98)',
+      borderColor: '#dbe5e2',
       borderWidth: 1,
       padding: [8, 10],
-      textStyle: { color: '#d3e1dd', fontSize: 11 },
+      textStyle: { color: '#16383c', fontSize: 11 },
       axisPointer: {
         type: 'shadow',
         shadowStyle: { color: 'rgba(91, 151, 142, 0.08)' },
@@ -32,7 +35,7 @@ export function makeStatBarOption({ names, values, unit = '个' }) {
         show: true,
         lineStyle: { color: 'rgba(136, 169, 162, 0.12)', type: 'dashed' },
       },
-      axisLabel: { color: '#78918f', fontSize: 10, margin: 8, hideOverlap: true },
+      axisLabel: { color: '#61767b', fontSize: 10, margin: 8, hideOverlap: true },
     },
     yAxis: {
       type: 'category',
@@ -42,7 +45,7 @@ export function makeStatBarOption({ names, values, unit = '个' }) {
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: {
-        color: '#a2b8b3',
+        color: '#4b6569',
         fontSize: 11,
         margin: 10,
         width: 96,
@@ -59,9 +62,8 @@ export function makeStatBarOption({ names, values, unit = '个' }) {
         barWidth: 16,
         itemStyle: {
           color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [
-            { offset: 0, color: '#7fd8a6' },
-            { offset: 0.62, color: '#54997a' },
-            { offset: 1, color: '#e2c285' },
+            { offset: 0, color: '#408471' },
+            { offset: 1, color: '#80ad9f' },
           ]),
         },
       },

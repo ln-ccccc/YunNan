@@ -28,8 +28,7 @@
         </div>
         <div class="metric-card">
           <div class="metric-label">监测面积</div>
-          <div class="metric-value text-blue">{{ (overviewArea / 10000).toFixed(2) }}</div>
-          <div class="metric-unit">公顷</div>
+          <div class="metric-value text-blue">{{ formatAreaKm2(overviewArea) }}</div>
         </div>
         <div class="metric-card">
           <div class="metric-label">已治理</div>
@@ -112,6 +111,7 @@
 import { defineProps, defineEmits, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import * as echarts from 'echarts';
 import { makeStatBarOption } from './statBarOption.js';
+import { formatAreaKm2 } from '../utils/areaDisplay.js';
 
 const props = defineProps({
   mineTotal: Number,

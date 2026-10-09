@@ -9,7 +9,7 @@
         <div class="modal-body">
           <div class="info-grid">
             <div class="info-item"><span class="label">矿山ID:</span> <span class="val">{{ mineData.mine_id }}</span></div>
-            <div class="info-item"><span class="label">面积:</span> <span class="val">{{ mineData.area ? Number(mineData.area).toFixed(2) : '暂无' }} m²</span></div>
+            <div class="info-item"><span class="label">面积:</span> <span class="val">{{ formatAreaKm2(mineData.area) }}</span></div>
             <div class="info-item"><span class="label">状态:</span>
               <span class="status-tag" :class="mineData.status_normalized">
                 {{ mineData.status_raw || '未知' }}
@@ -185,6 +185,7 @@
 <script setup>
 import { computed, defineProps, defineEmits, ref, watch, nextTick, onUnmounted } from 'vue';
 import * as echarts from 'echarts';
+import { formatAreaKm2 } from '../utils/areaDisplay.js';
 import {
   buildClassificationItems,
   buildMatrixYearLabels,
@@ -269,15 +270,18 @@ const renderTrendChart = () => {
   const years = data.map(d => d.year);
   const values = data.map(d => d.value);
 
-  const colorMap = { ndvi: '#00b894', ndbi: '#fdcb6e', ndwi: '#0984e3', ndsi: '#e17055' };
-  const color = colorMap[key] || '#00b894';
+  const colorMap = { ndvi: '#246c59', ndbi: '#96611b', ndwi: '#286b9a', ndsi: '#a34e3e' };
+  const color = colorMap[key] || '#246c59';
 
   trendChartInst.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis' },
+    animation: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    animationDuration: 240,
+    animationDurationUpdate: 180,
+    tooltip: { trigger: 'axis', confine: true, backgroundColor: '#fcfdfd', borderColor: '#dbe5e2', textStyle: { color: '#16383c' } },
     grid: { top: 30, bottom: 20, left: 40, right: 20 },
-    xAxis: { type: 'category', data: years, axisLine: { lineStyle: { color: '#666' } } },
-    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } }, axisLine: { lineStyle: { color: '#666' } } },
+    xAxis: { type: 'category', data: years, axisLabel: { color: '#61767b' }, axisLine: { lineStyle: { color: '#cadbd5' } } },
+    yAxis: { type: 'value', axisLabel: { color: '#61767b' }, splitLine: { lineStyle: { color: '#e3ece7' } }, axisLine: { lineStyle: { color: '#cadbd5' } } },
     series: [{
       data: values,
       type: 'line',

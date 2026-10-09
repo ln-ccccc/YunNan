@@ -125,7 +125,6 @@ const goToGeoView = () => {
 
 .secondary-btn:hover,
 .system-btn:hover {
-  transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(9, 132, 227, 0.25);
 }
 </style>

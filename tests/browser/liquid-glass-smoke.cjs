@@ -63,6 +63,18 @@ async function main() {
     const url = new URL(request.url());
     const endpoint = url.pathname;
     requests.push({ method: request.method(), endpoint });
+    if (url.port === '9500') {
+      const headers = { 'Access-Control-Allow-Origin': 'http://127.0.0.1:4502', 'Access-Control-Allow-Credentials': 'true' };
+      if (endpoint === '/api/auth/session') {
+        await route.fulfill({ headers, json: { code: 0, success: true, data: { authenticated: true, username: '视觉测试管理员' } } });
+      } else if (endpoint.includes('history')) {
+        await route.fulfill({ headers, json: { code: 0, success: true, data: [], count: 0 } });
+      } else {
+        missing.push(endpoint);
+        await route.fulfill({ status: 404, headers, json: { success: false, msg: '未提供测试 fixture' } });
+      }
+      return;
+    }
     let data;
     if (endpoint === '/api/auth/logout') { authenticated = false; data = {}; }
     else if (endpoint === '/api/auth/login') { authenticated = true; data = { authenticated, username: '视觉测试管理员' }; }
@@ -72,7 +84,7 @@ async function main() {
     else if (endpoint.endsWith('/overview')) data = { ...overview.data, project_id: Number(endpoint.split('/')[3]) };
     else if (endpoint.endsWith('/assets')) data = assets.data;
     else if (endpoint.endsWith('/spatial')) data = { resources: [], jobs: [], map_ready: false };
-    else if (endpoint === '/api/projects/42/geojson') data = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { FID_1: 1, mine_name: '合成测试矿山', SHI: '昆明市', KCFS: '露天开采', status_normalized: 'treated' }, geometry: { type: 'Polygon', coordinates: [[[102.70,25.05],[102.72,25.05],[102.72,25.07],[102.70,25.07],[102.70,25.05]]] } }] };
+    else if (endpoint === '/api/projects/42/geojson') data = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { FID_1: 1, mine_name: '合成测试矿山', SHI: '昆明市', KCFS: '露天开采', status_normalized: 'treated', HFZLQK: '已治理', area: 245000 }, geometry: { type: 'Polygon', coordinates: [[[102.70,25.05],[102.72,25.05],[102.72,25.07],[102.70,25.07],[102.70,25.05]]] } }] };
     else if (endpoint.endsWith('/geojson')) data = { type: 'FeatureCollection', features: [] };
     else if (endpoint === '/api/projects/42/map/manifest') data = { tile_url: `${baseUrl}/visual-audit/tiles/{z}/{x}/{y}.svg`, min_zoom: 0, max_zoom: 15 };
     else if (endpoint.endsWith('/map/manifest')) {
@@ -84,7 +96,12 @@ async function main() {
     else if (endpoint.endsWith('/classification-results')) data = { items: [{ result_id: 100 + Number(endpoint.split('/')[3]), mine_fid: 1, year: 2024, vector_status: 'ready', current_revision_no: 0 }] };
     else if (endpoint.includes('kml-roi-history')) {
       await route.fulfill({ json: { success: true, code: 0, count: 21, data: [{ record_id: 'visual-1', type: '地物分类', before_img: thumb, after_img: thumb, data: { fid: 1, year: 2024, file: '视觉测试成果', mode: 'project' } }] } }); return;
-    } else if (endpoint.endsWith('/stats')) data = { mineTotal: 1, mineAreaTotal: 12.5, treatedCount: 1, untreatedCount: 0 };
+    } else if (endpoint.endsWith('/stats')) data = { mineTotal: 1, mineAreaTotal: 245000, treatedCount: 1, untreatedCount: 0, restorationMethodList: [{ name: '生态复绿', count: 1 }], miningMethodList: [{ name: '露天开采', value: 1 }], landTypeList: [{ name: '林地', value: 1 }, { name: '草地', value: 1 }], ndviStats: { mean: 0.462, trend: 0.031, available_mine_count: 1 } };
+    else if (endpoint.endsWith('/mines/indices')) data = Object.fromEntries(['ndvi', 'ndbi', 'ndwi', 'ndsi'].map(key => [key, { available: true, mean: 0.462, trend: 0.031, mk_trend: '上升', data: [{ year: 2022, value: 0.41 }, { year: 2023, value: 0.462 }, { year: 2024, value: 0.503 }] }]));
+    else if (endpoint.endsWith('/mines/change-matrix')) data = { has_change_matrix: true, data_source: 'project_inference', old_year: 2022, new_year: 2024, headers: ['forest', 'grassland', 'bareground'], matrix: [{ label: 'forest', values: [95, 5, 0] }, { label: 'grassland', values: [40, 60, 0] }, { label: 'bareground', values: [25, 20, 55] }], images: { old: null, new: null } };
+    else if (endpoint.endsWith('/mines/original-imagery')) data = { fid: 1, items: [] };
+    else if (endpoint.endsWith('/traceability')) data = { fid: 1, years: [] };
+    else if (endpoint.endsWith('/mines/trend-report')) data = { mine_total: 1, coverage: { matrix_ready_count: 1, matrix_missing_count: 0 }, class_trends: { selected_class: { upward_count: 0, downward_count: 1, stable_count: 0 } }, tables: { selected_class_rows: [{ fid: 1, mine_name: '合成测试矿山', start_year: 2022, end_year: 2024, start_percent: 60, end_percent: 33, delta_percent: -27, mine_area_m2: 245000 }] } };
     else if (/\/(timeline|parcel-summary|basemap-candidates|retained|candidates)$/.test(endpoint)) data = { items: [], total: 0 };
     else { missing.push(endpoint); await route.fulfill({ status: 404, json: { success: false, msg: `未提供测试 fixture: ${endpoint}` } }); return; }
     await route.fulfill({ json: { success: true, code: 0, data } });
@@ -124,15 +141,18 @@ async function main() {
     await screenshot('miner-after-1024.png');
     await page.setViewportSize({ width: 1440, height: 1000 });
     await screenshot('miner-after-1440.png');
+    assert.match(await page.locator('.stats-panel').innerText(), /0\.245 km²/);
+    assert.doesNotMatch(await page.locator('.stats-panel').innerText(), /千m/);
 
     const create = page.locator('.workspace-header').getByRole('button', { name: '新建项目', exact: true });
+    await page.bringToFront();
     await create.hover();
     const box = await create.boundingBox();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await page.waitForTimeout(130);
     const pressed = await create.evaluate(node => ({ active: node.matches(':active'), hover: node.matches(':hover'), transform: getComputedStyle(node).transform, rect: node.getBoundingClientRect().toJSON(), reduced: matchMedia('(prefers-reduced-motion: reduce)').matches }));
-    assert.notEqual(pressed.transform, 'none', '按压应有视觉反馈');
+    assert.notEqual(pressed.transform, 'none', `按压应有视觉反馈: ${JSON.stringify(pressed)}`);
     await page.mouse.up();
     await page.locator('.project-form-panel').waitFor();
     await page.locator('.project-form-panel').getByRole('button', { name: '取消', exact: true }).click();
@@ -169,6 +189,10 @@ async function main() {
     assert.equal(await page.locator('.workspace-page:visible').count(), 1);
     checks.push('42 次连续导航切换：唯一激活项、正确终态、无运行时异常');
 
+    await nav().getByRole('button', { name: '数据管理', exact: true }).click();
+    await page.locator('.data-manager-view .export-snapshot-panel').waitFor();
+    await screenshot('miner-data-manager.png');
+
     await nav().getByRole('button', { name: '智能解译', exact: true }).click();
     await page.locator('.interpretation-view .record-row').waitFor();
     await page.getByRole('button', { name: '下一页', exact: true }).click();
@@ -189,10 +213,60 @@ async function main() {
       await page.waitForTimeout(70);
     }
     await screenshot('miner-map-1440.png');
+    assert.match(await page.locator('.left-sidebar').innerText(), /0\.245 km²/);
+    assert.equal(await page.locator('.left-sidebar').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(248, 251, 250)');
+    await page.locator('.search-box input').fill('1');
+    await page.locator('.search-box button').click();
+    await page.locator('.modal-content .chart-container canvas').waitFor();
+    await screenshot('miner-mine-detail.png');
+    assert.match(await page.locator('.info-grid').innerText(), /0\.245 km²/);
+    const detail = page.locator('.dashboard .modal-content');
+    for (const name of ['变化矩阵', '地物分类', '原始影像', 'NDVI', 'NDBI', 'NDWI', 'NDSI']) {
+      await detail.getByRole('button', { name, exact: true }).click();
+      await page.waitForTimeout(70);
+    }
+    await detail.getByRole('button', { name: '变化矩阵', exact: true }).click();
+    await detail.locator('.matrix-container').waitFor();
+    await screenshot('miner-change-matrix.png');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await screenshot('miner-change-matrix-390.png');
+    const modalBox = await detail.boundingBox();
+    assert.ok(modalBox.x >= 0 && modalBox.x + modalBox.width <= 390 && modalBox.height <= 844, '移动端详情弹窗应保持在视口内');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await settle();
+    await detail.locator('.close-btn').click();
+    await page.locator('.dashboard .modal-overlay').waitFor({ state: 'detached' });
+    await page.getByRole('button', { name: '趋势统计与导出', exact: false }).click();
+    await page.locator('.data-table tbody tr').first().waitFor();
+    await screenshot('miner-trend-report.png');
+    const report = page.locator('.dashboard .modal-content');
+    const reportDownload = page.waitForEvent('download');
+    await report.getByRole('button', { name: '导出 CSV', exact: true }).click();
+    assert.match((await reportDownload).suggestedFilename(), /trend_report_.*\.csv/);
+    await report.locator('.close-btn').click();
+    await page.locator('.dashboard .modal-overlay').waitFor({ state: 'detached' });
+    checks.push('概览/地图/详情面积正确换算 km²；浅色统计图、7类详情快速切换、变化矩阵、趋势表与 CSV 下载');
     const mapBox = await page.locator('.map-container').boundingBox();
     for (const selector of ['.map-legend', '.map-tool-btn']) {
       const control = await page.locator(selector).boundingBox();
       assert.ok(control.x >= mapBox.x && control.x + control.width <= mapBox.x + mapBox.width + 1, '地图控件应定位于地图区域');
+    }
+    if (process.env.GUI_PLATFORM_HANDOFF === '1') {
+      const handoff = page.locator('.dashboard .system-btn');
+      await handoff.hover();
+      const handoffBox = await handoff.boundingBox();
+      await page.mouse.move(handoffBox.x + handoffBox.width / 2, handoffBox.y + handoffBox.height / 2);
+      await page.mouse.down();
+      await page.waitForTimeout(130);
+      assert.notEqual(await handoff.evaluate(node => getComputedStyle(node).transform), 'none', '地图页解译入口按压反馈应与工作台一致');
+      await page.mouse.up();
+      await page.waitForURL('http://127.0.0.1:4502/segmentation?project_id=42');
+      await page.locator('.tiff-upload-card').waitFor();
+      assert.equal(await page.locator('#loader-wrapper').count(), 0);
+      await screenshot('miner-to-geoview.png');
+      await page.goBack();
+      await page.locator('.leaflet-tile-loaded').first().waitFor();
+      checks.push('真实点击 Miner 解译平台入口 → GeoView（项目42）→ 浏览器后退回地图');
     }
     await page.setViewportSize({ width: 390, height: 844 });
     await settle();
@@ -221,6 +295,17 @@ async function main() {
     for (const label of labels) await nav().getByRole('button', { name: label, exact: true }).click();
     const reduced = await page.locator('.workspace-page').evaluate(node => ({ animation: getComputedStyle(node).animationName, transition: getComputedStyle(node.querySelector('button')).transitionDuration }));
     assert.equal(reduced.animation, 'none'); assert.equal(reduced.transition, '0s');
+    const reducedCreate = page.locator('.workspace-header').getByRole('button', { name: '新建项目', exact: true });
+    await reducedCreate.hover();
+    const reducedBox = await reducedCreate.boundingBox();
+    await page.mouse.move(reducedBox.x + reducedBox.width / 2, reducedBox.y + reducedBox.height / 2);
+    await page.mouse.down();
+    const reducedPress = await reducedCreate.evaluate(node => ({ active: node.matches(':active'), transform: getComputedStyle(node).transform }));
+    await page.mouse.up();
+    await page.locator('.project-form-panel').waitFor();
+    await page.locator('.project-form-panel').getByRole('button', { name: '取消', exact: true }).click();
+    assert.equal(reducedPress.active, true);
+    assert.equal(reducedPress.transform, 'none', '减少动态效果时真实按压不能缩放');
     await screenshot('miner-reduced-motion.png');
     checks.push('减少动态效果：页面无动画、控件无过渡，导航仍可操作');
     await page.emulateMedia({ reducedMotion: 'no-preference' });

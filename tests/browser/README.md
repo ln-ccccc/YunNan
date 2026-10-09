@@ -14,6 +14,7 @@ $env:MINER_UI_URL='http://127.0.0.1:4501'
 $env:GEOVIEW_UI_URL='http://127.0.0.1:4502'
 node tests/browser/liquid-glass-smoke.cjs
 node tests/browser/geoview-glass-smoke.cjs
+node tests/browser/geoview-entry-smoke.cjs
 ```
 
 没有新增仓库依赖。可用 `AUDIT_BROWSER_EXECUTABLE` 指定测试 Chromium。脚本总在 finally 关闭本次浏览器，不启动服务或系统安装。
@@ -23,3 +24,7 @@ Miner `GUI_NAVIGATION_ONLY=1` 仅做相同 fixture/1440×1000/42 次导航的性
 GeoView 分别记录首次切换和已加载页面切换。脚本发现 dirty 编辑重新加载直接丢弃时写入 `knownBugs`；这是存量缺陷证据，不表示数据保护已通过。所有未知 API 返回 404 并使验收失败。
 
 必须结合截图/录像判断渲染与过渡；本机采样不代表客户设备、浏览器组合或真实影像规模。
+
+首帧脚本阻断 JS 下载，再延迟会话响应，分别截图检查脚本加载前、会话等待及就绪画面；旧蓝色启动页必须不存在，背景必须使用平台的浅色。
+
+Miner 完整验收另覆盖 km² 换算、统计图、矿山详情标签连续切换、移动端变化矩阵、趋势 CSV 下载及减少动态效果下的真实按压。可设置 `GUI_PLATFORM_HANDOFF=1` 验收实际点击「解译平台」后浏览器后退：测试 Miner 构建使用既有 `VITE_GEOVIEW_URL=http://127.0.0.1:4502/segmentation`，GeoView 预览使用 `VUE_APP_BACKEND_PORT=9500`、`VUE_APP_MINER_URL=http://127.0.0.1:4501`，只用于隔离预览，不改部署配置。

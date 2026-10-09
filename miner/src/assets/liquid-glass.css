@@ -122,10 +122,49 @@ body {
 #app .login-card { padding: 36px; border-radius: 28px; animation: glass-arrive var(--motion-panel) var(--motion-ease); }
 
 /* 地图侧栏曾出现 GPU 合成伪影：维持实色，玻璃仅用于小面积控件。 */
-#app .dashboard .header { border-radius: 18px 18px 0 0; background: linear-gradient(125deg, #17383e, #1b4650); border-bottom: 1px solid rgba(255,255,255,0.16); }
-#app .dashboard .glass-panel { border-radius: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.07); }
-#app .map-tool-btn { border-radius: 10px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.18); }
+#app .dashboard { --border-color: #dbe5e2; --glass-muted: #586f73; background: #f2f6f7; color: var(--glass-ink); font-family: inherit; }
+#app .dashboard .header { border-radius: 18px 18px 0 0; background: #f8fbfa; border-bottom: 1px solid var(--border-color); }
+#app .dashboard .title { color: var(--glass-ink); background: none; -webkit-background-clip: initial; letter-spacing: -0.5px; }
+#app .dashboard :is(.time-widget, .user-profile) { color: var(--glass-muted); font-size: 12px; }
+#app .dashboard .system-btn { background: var(--glass-accent); color: #fff; border-radius: 12px; }
+#app .dashboard .header :is(.secondary-btn, .system-btn):hover { box-shadow: 0 3px 12px rgba(36,108,89,0.12); }
+#app .dashboard .sidebar { background: #f8fbfa; transition: width var(--motion-panel) var(--motion-ease); }
+#app .dashboard .sidebar-header { border-color: var(--border-color); }
+#app .dashboard :is(.sidebar-header h2, .panel-header h3, .modal-header h3, .table-title) { color: var(--glass-ink); }
+#app .dashboard .panel-header h3 { border-color: var(--glass-accent); }
+#app .dashboard .glass-panel { background: #fff; border: 1px solid var(--border-color); border-radius: 14px; box-shadow: 0 3px 12px rgba(35,70,73,0.035), inset 0 1px 0 #fff; }
+#app .dashboard :is(.metric-card, .summary-item) { background: #eff5f2; border-radius: 12px; }
+#app .dashboard .metric-value { font-size: 22px; font-weight: 650; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+#app .dashboard :is(.metric-label, .metric-unit, .panel-unit, .panel-note, .panel-empty, .filter-group label, .label, .source-badge, .trace-meta, .trace-rev-chip, .imagery-meta, .imagery-status, .tip, .form-group label, .no-data, .empty, .matrix-legend, .corner-old, .corner-new, .row-label, .class-title, .collapse-btn) { color: var(--glass-muted); }
+#app .dashboard :is(.text-cyan, .text-blue, .text-green, .value, .ratio-series-title) { color: var(--glass-accent); }
+#app .dashboard :is(.text-yellow, .fallback-msg) { color: #96611b; }
+#app .dashboard :is(.text-red, .downward, .error-msg) { color: #b6443e; }
+#app .dashboard .upward { color: var(--glass-accent); }
+#app .dashboard .success-msg { color: var(--glass-accent); background: #e0ede6; }
+#app .dashboard :is(.filter-group select, .search-box input, .select, .select option, .form-input) { background: #fff; color: var(--glass-ink); border-color: #cadbd5; border-radius: 8px; }
+#app .dashboard :is(.action-btn, .reset-btn, .btn, .btn-cancel, .imagery-download-btn) { color: var(--glass-accent); border-color: #cadbd5; background: #edf5f1; border-radius: 10px; }
+#app .dashboard :is(.action-btn:hover, .btn.primary, .btn-submit, .search-box button, .imagery-download-btn:hover) { background: var(--glass-accent); color: #fff; border-color: var(--glass-accent); border-radius: 10px; }
+#app .dashboard :is(.map-unavailable, .task-status) { color: var(--glass-muted); }
+#app .dashboard .error-panel { color: #b6443e; background: #fff1ed; border-color: #efcfc6; }
+#app .dashboard .map-container { background: #e8efec; }
+#app .map-tool-btn { color: var(--glass-accent); background: rgba(248,252,250,0.94); border-color: var(--glass-border); border-radius: 10px; box-shadow: 0 3px 12px rgba(35,70,73,0.12), inset 0 1px 0 #fff; }
+#app .map-tool-btn.active { background: var(--glass-accent); color: #fff; }
 #app .dashboard .map-legend { left: 16px; max-width: calc(100% - 32px); flex-wrap: wrap; gap: 12px; color: var(--glass-ink); background: rgba(248,252,250,0.94); border-color: var(--glass-border); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+#app .dashboard .modal-content { background: #fcfdfd; color: var(--glass-ink); padding: 20px; border-color: var(--border-color); max-height: calc(100dvh - 32px); overflow-y: auto; }
+#app .dashboard :is(.modal-header, .info-item, .summary-item, .table-wrap, .data-table th, .data-table td, .confusion-matrix th, .confusion-matrix td, .ratio-table th, .ratio-table td) { border-color: var(--border-color); }
+#app .dashboard .close-btn { color: var(--glass-muted); }
+#app .dashboard :is(.tabs, .info-item, .trace-year-head, .imagery-row) { flex-wrap: wrap; gap: 8px; }
+#app .dashboard .tabs button { flex: 1 0 auto; border-radius: 10px; background: #eff5f2; border-color: var(--border-color); color: var(--glass-muted); }
+#app .dashboard .tabs button.active { background: #e0ede6; color: var(--glass-accent); border-color: #9abbae; }
+#app .dashboard :is(.trend-stats, .matrix-container, .class-image-box, .trace-year-card, .imagery-row, .confusion-matrix th, .corner-cell, .data-table th, .trace-rev-chip) { background: #eff5f2; border-color: var(--border-color); }
+#app .dashboard .corner-cell::before { background: linear-gradient(135deg, transparent 48%, #cadbd5 50%, transparent 52%); }
+#app .dashboard .matrix-cell { color: var(--glass-ink); text-shadow: none; }
+#app .dashboard .trace-ratio-chip { background: #e0ede6; color: var(--glass-accent); }
+#app .dashboard .trace-ratio-chip.zero { background: #eff5f2; color: var(--glass-muted); }
+#app .dashboard :is(.ratio-table th, .ratio-table td) { color: var(--glass-ink); }
+#app .dashboard :is(.confusion-matrix th, .data-table th) { color: var(--glass-muted); }
+#app .dashboard .status-tag.treated { color: var(--glass-accent); background: #e0ede6; }
+#app .dashboard .status-tag.untreated { color: #b6443e; background: #fff1ed; }
 
 @keyframes glass-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes glass-status { from { opacity: 0.35; } to { opacity: 1; } }
@@ -162,6 +201,9 @@ body {
   #app .dashboard .title { font-size: 18px; }
   #app .dashboard :is(.time-widget, .user-profile) { flex-shrink: 0; font-size: 12px; }
   #app .dashboard .header button { flex-shrink: 0; white-space: nowrap; padding: 8px 10px; min-height: 36px; }
+  #app .dashboard .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #app .dashboard .info-grid { grid-template-columns: 1fr; }
+  #app .dashboard .modal-content { padding: 16px; }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   #app :is(.side-nav, .stats-panel, .detail-anchor-nav, .login-card) { background: #f8fbfa; }
@@ -174,7 +216,7 @@ body {
 }
 @media (prefers-reduced-motion: reduce) {
   #app *, #app *::before, #app *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
-  #app button:active { transform: none; }
+  #app button:not(:disabled):active { transform: none; }
 }
 @media (forced-colors: active) {
   #app :is(.side-nav, .stats-panel, .detail-anchor-nav, .login-card, .stat-card) { background: Canvas; border: 1px solid CanvasText; box-shadow: none; backdrop-filter: none; }

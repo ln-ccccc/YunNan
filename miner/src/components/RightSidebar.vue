@@ -112,8 +112,8 @@ const landChartMinHeight = computed(() => {
 const landChartRows = () => (props.landTypeList || []).slice(0, 12);
 
 const getPieData = () => ([
-  { value: props.treatedCount, name: '已治理', itemStyle: { color: '#00b894' } },
-  { value: props.untreatedCount, name: '未治理', itemStyle: { color: '#ff7675' } }
+  { value: props.treatedCount, name: '已治理', itemStyle: { color: '#408471' } },
+  { value: props.untreatedCount, name: '未治理', itemStyle: { color: '#c36a60' } }
 ]);
 
 const initPieChart = () => {
@@ -121,13 +121,16 @@ const initPieChart = () => {
   pieChartInst = echarts.init(pieChartRef.value);
   pieChartInst.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'item' },
+    animation: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    animationDuration: 240,
+    animationDurationUpdate: 180,
+    tooltip: { trigger: 'item', confine: true, backgroundColor: '#fcfdfd', borderColor: '#dbe5e2', textStyle: { color: '#16383c' } },
     legend: {
       bottom: 2,
       left: 'center',
       itemWidth: 14,
       itemHeight: 10,
-      textStyle: { color: '#fff', fontSize: 12 }
+      textStyle: { color: '#4b6569', fontSize: 12 }
     },
     series: [
       {
