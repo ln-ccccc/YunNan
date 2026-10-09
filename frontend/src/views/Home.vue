@@ -1,5 +1,5 @@
 <template>
-  <el-container>
+  <el-container class="geoview-shell" :class="{ 'is-nav-expanded': !isCollapse }">
     <el-aside width="auto">
       <AsideVue
         :is-collapse="isCollapse"
@@ -13,8 +13,11 @@
         <el-header class="platform-header">
           <el-row align="middle" justify="space-between">
             <el-col :span="2">
-              <i
+              <button
                 class="icon-menu"
+                type="button"
+                aria-label="切换分析工具导航"
+                :aria-expanded="!isCollapse"
                 @click="goCollapse"
               />
             </el-col>

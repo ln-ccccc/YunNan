@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="interpretation-page">
     <Tabinfor>
       <template #left>
         <div id="sub-title">

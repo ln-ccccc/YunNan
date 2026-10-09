@@ -1,0 +1,356 @@
+/* 玻璃用于导航和浮层；影像、类别色板与数据内容保留原始颜色。 */
+:root {
+  --geoview-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --geoview-glass: rgba(255, 255, 255, 0.78);
+  --geoview-glass-border: rgba(255, 255, 255, 0.92);
+  --geoview-shadow: 0 12px 36px rgba(22, 56, 60, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  --geoview-blur: blur(18px) saturate(135%);
+  --geoview-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --geoview-press: 120ms;
+  --geoview-motion: 240ms;
+  --primary-color: #246c59;
+  --primary-light: #408471;
+  --primary-dark: #195341;
+  --primary-hover: #eaf3ef;
+  --bg-primary: #f2f6f7;
+  --bg-secondary: var(--geoview-glass);
+  --bg-tertiary: #f8fbfa;
+  --bg-card: #fcfdfd;
+  --bg-hover: #eaf3ef;
+  --text-primary: #16383c;
+  --text-secondary: #4b6569;
+  --text-muted: #637b7f;
+  --border-color: #dbe5e6;
+  --border-light: #e9efef;
+  --border-dark: #8bada3;
+  --success-color: #246c59;
+  --warning-color: #96611b;
+  --error-color: #b6443e;
+  --info-color: #506b70;
+  --el-color-primary: #246c59;
+  --el-color-primary-light-3: #518e7d;
+  --el-color-primary-light-5: #80ad9f;
+  --el-color-primary-light-7: #b4cec4;
+  --el-color-primary-light-8: #cfdfd8;
+  --el-color-primary-light-9: #eaf3ef;
+  --el-color-primary-dark-2: #195341;
+  --el-text-color-primary: #16383c;
+  --el-text-color-regular: #4b6569;
+  --el-text-color-secondary: #637b7f;
+  --el-border-color: #dbe5e6;
+  --el-border-color-light: #e9efef;
+  --el-font-family: var(--geoview-font);
+}
+
+body {
+  background: radial-gradient(ellipse at 12% 0, #ddece7 0, transparent 48%),
+    radial-gradient(ellipse at 90% 85%, #e4eef3 0, transparent 45%), var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--geoview-font);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+#app :where(.geoview-shell, .login-page, .notfound) {
+  box-sizing: border-box;
+}
+
+#app :where(.geoview-shell, .login-page) *:not(.iconfont) {
+  font-family: var(--geoview-font);
+}
+
+#app .geoview-shell {
+  height: 100vh;
+  height: 100dvh;
+  gap: 14px;
+  padding: 14px;
+  background: transparent;
+}
+
+#app .geoview-shell > .el-aside {
+  flex-shrink: 0;
+  overflow-x: hidden;
+  border: 1px solid var(--geoview-glass-border);
+  border-radius: 24px;
+  box-shadow: var(--geoview-shadow);
+  -webkit-backdrop-filter: var(--geoview-blur);
+  backdrop-filter: var(--geoview-blur);
+}
+
+#app .geoview-shell > .el-container {
+  min-width: 0;
+  background: transparent;
+}
+
+#app .main-ctx {
+  height: 100%;
+  min-width: 0;
+  padding: 0 12px 0 0;
+  background: transparent;
+  scroll-padding-top: 88px;
+}
+
+#app .geoview-sidebar {
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  padding: 10px;
+  text-align: left;
+  transition: width var(--geoview-motion) var(--geoview-ease);
+}
+
+#app .geoview-sidebar:not(.el-menu--collapse) { width: 264px; }
+#app .geoview-sidebar.el-menu--collapse { width: 68px; }
+#app .geoview-sidebar .platform { padding: 0 8px; background: transparent; }
+#app .geoview-sidebar .platform-title { font-size: 17px; font-weight: 700; letter-spacing: 0.03em; }
+#app .geoview-sidebar .el-divider { margin: 16px 0; }
+#app .geoview-sidebar .divider-title { color: var(--text-secondary); }
+
+#app .geoview-sidebar .el-menu-item {
+  flex-shrink: 0;
+  height: 48px;
+  margin: 4px 0;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  transition: background-color var(--geoview-motion) var(--geoview-ease), border-color var(--geoview-motion) var(--geoview-ease), box-shadow var(--geoview-motion) var(--geoview-ease);
+}
+
+/* 覆盖旧主题已有的强制背景，避免悬停与选中材质相互覆盖。 */
+#app .geoview-sidebar .el-menu-item.is-active {
+  background: #e3efe9 !important;
+  border-color: #bdd5cb;
+  box-shadow: inset 0 1px 0 #fff, 0 3px 10px rgba(36, 108, 89, 0.05);
+}
+
+#app .geoview-sidebar .el-menu-item:hover { background: #edf4f1 !important; }
+#app .geoview-sidebar .el-menu-item h3 { padding: 0; font-size: 14px; font-weight: 600; }
+#app .geoview-sidebar .el-menu-item h3 .iconfont { margin-right: 10px; }
+#app .geoview-sidebar .el-menu-item ::after { content: none; }
+#app .geoview-sidebar.el-menu--collapse .el-menu-item { justify-content: center; padding: 0; }
+#app .geoview-sidebar .sidebar-panels { padding: 12px 0 4px; gap: 10px; }
+#app .geoview-sidebar .glass-card { border-radius: 16px; box-shadow: none; backdrop-filter: none; background: rgba(255, 255, 255, 0.72); }
+#app .geoview-sidebar .card-title { color: var(--text-primary); letter-spacing: 0; }
+#app .geoview-sidebar .quick-row { grid-template-columns: 1fr; gap: 6px; }
+#app .geoview-sidebar .quick-item { text-align: left; line-height: 1.5; transition: border-color var(--geoview-motion) var(--geoview-ease), background-color var(--geoview-motion) var(--geoview-ease), transform var(--geoview-press) var(--geoview-ease); }
+
+#app .main-ctx .platform-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  min-width: 0;
+  min-height: 64px;
+  height: auto;
+  padding: 0 18px;
+  margin-bottom: 24px;
+  border: 1px solid var(--geoview-glass-border);
+  border-radius: 20px;
+  background: var(--geoview-glass);
+  box-shadow: var(--geoview-shadow);
+  -webkit-backdrop-filter: var(--geoview-blur);
+  backdrop-filter: var(--geoview-blur);
+}
+
+#app .platform-header > .el-row { flex-wrap: nowrap; gap: 12px; }
+#app .platform-header > .el-row > .el-col:first-child { flex: 0 0 32px; max-width: 32px; }
+#app .platform-header > .el-row > .el-col:last-child { flex: 1; max-width: none; }
+#app .platform-header .icon-menu { display: grid; place-items: center; width: 32px; height: 36px; padding: 0; border: 0; border-radius: 10px; background: transparent; }
+#app .platform-header .icon-menu:hover { background: var(--bg-hover); }
+#app .header-content { min-height: 62px; height: auto; gap: 12px; }
+#app .header-right { gap: 8px; }
+#app .header-right .el-button + .el-button { margin-left: 0; }
+#app .header-right .user-pill { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--primary-color); background: #eaf3ef; }
+#app .header-right .miner-btn { background: #eaf3ef !important; border-color: #c9dcd3 !important; box-shadow: none; backdrop-filter: none; }
+
+#app .interpretation-page { padding: 0 6px 20px; }
+#app .interpretation-page #sub-title { margin-top: 14px; font-size: 24px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.35; cursor: default; }
+#app .interpretation-page #sub-title::after { content: none; }
+#app .interpretation-page > .el-row { row-gap: 12px; }
+#app .interpretation-page > .el-divider { margin: 18px 0; }
+#app .interpretation-page > p { color: var(--text-secondary); margin: 0 0 20px; }
+#app .interpretation-page > .el-row > .el-col { min-width: 0; }
+#app .interpretation-page .el-card { border-radius: 22px; background: var(--bg-card); box-shadow: 0 8px 28px rgba(22, 56, 60, 0.045); backdrop-filter: none; }
+
+/* 上传卡旧有行内虚线边框；仅在这个组件上覆盖。 */
+#app .tiff-upload-card { position: relative; border: 1px solid var(--border-color) !important; }
+#app .tiff-upload-card .el-card__body { padding: 24px; }
+#app .tiff-upload-card .clear-queue { position: static; display: flex; justify-content: flex-end; margin-bottom: 12px; }
+#app .tiff-upload-card .upload-dropzone { min-height: 144px; padding: 28px 20px; border: 1px dashed #9dbdb1; border-radius: 16px; background: #f0f7f4; transition: background-color var(--geoview-motion) var(--geoview-ease), border-color var(--geoview-motion) var(--geoview-ease); }
+#app .tiff-upload-card .upload-dropzone:hover { transform: none; border-color: var(--primary-color); background: #e7f1ec; }
+#app .tiff-upload-card .el-upload__text { color: var(--text-primary); }
+#app .tiff-upload-card .el-upload__text em { color: var(--primary-color); font-style: normal; font-weight: 600; }
+#app .tiff-upload-card .el-upload__tip { color: var(--text-secondary); font-size: 12px; }
+#app .tiff-upload-card .selected-files { padding: 14px; border: 1px solid var(--border-color); background: #fff; border-radius: 12px; animation: geoview-content-in var(--geoview-motion) var(--geoview-ease); }
+#app .tiff-upload-card .format-help { --el-collapse-header-bg-color: transparent; --el-collapse-content-bg-color: transparent; }
+#app .tiff-upload-card .format-help .el-collapse-item__header { height: auto; min-height: 36px; color: var(--text-secondary); line-height: 1.5; }
+#app .tiff-upload-card .format-help-body { padding: 12px 14px; border-radius: 12px; color: var(--text-secondary); background: #f3f7f6; }
+#app .tiff-upload-card .prehandle-label { display: inline-block; margin: 0 10px 0 12px; }
+#app .tiff-upload-card .checkmark { border: 1px solid #8aa79f; border-radius: 5px; background: #fff; }
+#app .tiff-upload-card input:focus-visible + .checkmark { outline: 3px solid #408471; outline-offset: 3px; }
+#app .tiff-upload-card .option-row .el-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; width: 100%; }
+#app .tiff-upload-card .option-row .el-form-item { min-width: 0; margin: 0; }
+#app .tiff-upload-card .option-row .el-form-item__content { min-width: 0; }
+#app .tiff-upload-card .option-row :where(.el-select, .el-input) { max-width: 100%; }
+#app .tiff-upload-card .option-row .el-input-number { width: 100%; max-width: 180px; }
+#app .tiff-upload-card .handle-button { margin-top: 22px; }
+#app .btn-animate, #app .btn-animate2 { height: 40px; min-width: 110px; width: auto; padding: 0 22px; border-radius: 12px; line-height: normal; }
+#app .btn-animate { color: #fff; background: var(--primary-color); box-shadow: 0 4px 12px rgba(36, 108, 89, 0.16); }
+#app .btn-animate__shiny::before, #app .btn-animate__surround::before, #app .btn-animate__surround::after, #app .btn-animate__surround > span::before, #app .btn-animate__surround > span::after { content: none; }
+
+#app .img-display-item { gap: 18px; padding: 14px 0; }
+#app .img-display-item > div { min-width: 0; max-width: 100%; }
+#app .img-display-item > div > div > div { flex-wrap: wrap; gap: 16px; }
+#app .img-display-item > div > div > div > div { min-width: 0; max-width: 100%; }
+#app .img-display-item .img-display { max-width: 100%; height: auto; aspect-ratio: 1; border: 1px solid var(--border-color); border-radius: 14px; }
+#app .img-display-item .img-display:hover { transform: none; }
+#app .img-display-item .spectral-stat { max-width: 100%; font-variant-numeric: tabular-nums; font-size: 14px; }
+#app .img-display-item .img-infor { margin-top: 10px; font-size: 14px; color: var(--text-secondary); }
+#app .img-display-item .index-number { font-size: 22px; font-style: normal; color: var(--primary-color); font-variant-numeric: tabular-nums; }
+#app .img-display-item .delete-item { color: #a6423d; }
+#app .history-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+#app .history-tools .icon-shuaxin { padding-right: 0 !important; }
+#app .interpretation-page > .el-header:last-child { min-width: 0; left: 0; width: 100%; margin: 24px 0 0; padding: 0 16px; border-radius: 16px; box-shadow: none; background: transparent; }
+#app .interpretation-page > .el-header:last-child a { color: var(--primary-color); }
+
+#app .classification-editor { padding: 6px 0 28px; }
+#app .classification-editor h1 { font-size: clamp(24px, 2.8vw, 32px); letter-spacing: -0.025em; }
+#app .classification-editor .editor-header { align-items: flex-start; }
+#app .classification-editor .editor-toolbar { flex-wrap: wrap; gap: 14px; padding: 14px 16px; border-color: var(--geoview-glass-border); border-radius: 18px; background: var(--geoview-glass); box-shadow: var(--geoview-shadow); -webkit-backdrop-filter: var(--geoview-blur); backdrop-filter: var(--geoview-blur); }
+#app .classification-editor .toolbar-state { flex-wrap: wrap; line-height: 1.5; }
+#app .classification-editor .toolbar-actions, #app .classification-editor .header-actions { gap: 8px; }
+#app .classification-editor .el-button + .el-button { margin-left: 0; }
+#app .classification-editor .editor-workspace { grid-template-columns: 190px minmax(0, 1fr) 210px; gap: 12px; }
+#app .classification-editor .editor-panel { background: #fcfdfd; box-shadow: none; border-radius: 18px; }
+#app .classification-editor .map-card { border-radius: 20px; box-shadow: 0 8px 24px rgba(22, 56, 60, 0.06); }
+#app .classification-editor .class-option { transition: background-color var(--geoview-motion) var(--geoview-ease), border-color var(--geoview-motion) var(--geoview-ease); }
+#app .classification-editor .class-option:hover, #app .classification-editor .class-option.active { border-color: #9cbfb0; background: #eaf3ef; }
+#app .classification-editor .panel-note, #app .classification-editor .panel-heading small, #app .classification-editor .revision-list small { color: var(--text-secondary); }
+#app .classification-editor .revision-list strong { font-variant-numeric: tabular-nums; }
+#app .classification-editor .state-dot { flex-shrink: 0; transition: background-color var(--geoview-motion) var(--geoview-ease); }
+#app .classification-editor .editor-alert { border-radius: 14px; animation: geoview-content-in var(--geoview-motion) var(--geoview-ease); }
+#app .classification-editor .maplibregl-ctrl-group { border: 1px solid var(--geoview-glass-border); border-radius: 12px; background: rgba(255, 255, 255, 0.93); box-shadow: var(--geoview-shadow); }
+
+#app .login-page { min-height: 100vh; min-height: 100dvh; background: transparent; padding: 28px; }
+#app .login-card { box-sizing: border-box; width: min(440px, 100%); padding: 36px; border: 1px solid var(--geoview-glass-border); border-radius: 28px; background: var(--geoview-glass); box-shadow: var(--geoview-shadow); -webkit-backdrop-filter: var(--geoview-blur); backdrop-filter: var(--geoview-blur); }
+#app .login-title { color: var(--text-primary); letter-spacing: -0.035em; font-size: 30px; }
+#app .login-subtitle { color: var(--text-secondary); font-size: 14px; }
+#app .login-page .submit-btn { height: 44px; }
+
+#app .el-button, .el-dialog .el-button { border-radius: 11px; transition: background-color var(--geoview-motion) var(--geoview-ease), border-color var(--geoview-motion) var(--geoview-ease), box-shadow var(--geoview-motion) var(--geoview-ease), transform var(--geoview-press) var(--geoview-ease); }
+#app .el-button:not(.is-disabled):not(.is-loading):active, #app .quick-item:active { transform: translateY(1px) scale(0.98); }
+#app .el-button--primary:not(.is-plain):not(.btn-animate2) { --el-button-bg-color: var(--primary-color); --el-button-text-color: #fff; --el-button-border-color: var(--primary-color); --el-button-hover-bg-color: #195341; --el-button-hover-text-color: #fff; --el-button-hover-border-color: #195341; --el-button-disabled-bg-color: #d4e3dc; --el-button-disabled-text-color: #607970; --el-button-disabled-border-color: #d4e3dc; background-color: var(--el-button-bg-color); border-color: var(--el-button-border-color); color: var(--el-button-text-color); }
+#app .el-button--primary:not(.is-plain):not(.btn-animate2):hover { background-color: var(--el-button-hover-bg-color); border-color: var(--el-button-hover-border-color); color: var(--el-button-hover-text-color); }
+#app .el-button--primary:not(.is-plain):not(.btn-animate2).is-disabled { background-color: var(--el-button-disabled-bg-color); border-color: var(--el-button-disabled-border-color); color: var(--el-button-disabled-text-color); }
+#app .el-input__wrapper, #app .el-textarea__inner { background: #fff; border-radius: 10px; }
+#app .el-table { --el-table-bg-color: #fcfdfd; --el-table-tr-bg-color: #fcfdfd; --el-table-header-bg-color: #f1f6f4; font-variant-numeric: tabular-nums; }
+
+.el-overlay-dialog .el-dialog { max-width: calc(100vw - 32px); border: 1px solid var(--geoview-glass-border); border-radius: 24px; background: rgba(252, 253, 253, 0.95); box-shadow: var(--geoview-shadow), 0 26px 80px rgba(22, 56, 60, 0.12); -webkit-backdrop-filter: var(--geoview-blur); backdrop-filter: var(--geoview-blur); }
+.el-overlay-dialog .el-dialog__header { margin-right: 0; padding: 22px 24px 18px; background: transparent; border-radius: 24px 24px 0 0; }
+.el-overlay-dialog .el-dialog__body { padding: 22px 24px; background: #fcfdfd; border-radius: 0 0 24px 24px; }
+.el-overlay-dialog .cropper-content { min-width: 0; }
+.el-overlay-dialog .cropper-content .cropper { width: 100%; height: min(65vh, 650px); }
+.el-overlay-dialog .el-dialog .cropper > .el-row > .el-col { min-width: 0; }
+.el-overlay-dialog .el-dialog__title { color: var(--text-primary); font-family: var(--geoview-font); font-weight: 600; }
+.el-message-box { max-width: calc(100vw - 32px); border-radius: 20px; font-family: var(--geoview-font); }
+.el-notification { border-radius: 16px; }
+.el-message { border-radius: 14px; }
+.el-popper.is-light { border-radius: 12px; background: #fcfdfd; }
+
+#app :where(button, a, input, select, textarea, [tabindex]):focus-visible,
+.el-overlay-dialog :where(button, input, [tabindex]):focus-visible,
+.el-message-box :where(button, input):focus-visible { outline: 3px solid #408471; outline-offset: 3px; }
+
+#app .fade-enter-active, #app .fade-leave-active { transition: opacity var(--geoview-motion) var(--geoview-ease), transform var(--geoview-motion) var(--geoview-ease); }
+#app .fade-enter-from, #app .fade-leave-to { opacity: 0; transform: translateY(6px); }
+.dialog-fade-enter-active .el-dialog { animation: geoview-content-in var(--geoview-motion) var(--geoview-ease); }
+.dialog-fade-leave-active .el-dialog { animation: geoview-content-in 160ms var(--geoview-ease) reverse; }
+#app .el-collapse-transition { transition-duration: var(--geoview-motion); transition-timing-function: var(--geoview-ease); }
+
+@keyframes geoview-content-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 1200px) {
+  #app .tiff-upload-card .option-row .el-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #app .classification-editor .editor-workspace { grid-template-columns: 180px minmax(0, 1fr); }
+  #app .classification-editor .revision-panel { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+  #app .geoview-shell { padding: 8px; gap: 8px; }
+  #app .geoview-shell > .el-aside { border-radius: 18px; }
+  #app .geoview-shell.is-nav-expanded > .el-aside { position: fixed; top: 82px; bottom: 8px; left: 8px; width: 220px; z-index: 30; animation: geoview-content-in var(--geoview-motion) var(--geoview-ease); }
+  #app .geoview-sidebar.el-menu--collapse { width: 52px; padding: 6px; }
+  #app .geoview-sidebar .platform { height: 46px; }
+  #app .geoview-sidebar .el-menu-item { height: 44px; border-radius: 11px; }
+  #app .geoview-sidebar:not(.el-menu--collapse) { width: 220px; }
+  #app .main-ctx { padding-right: 0; }
+  #app .main-ctx .platform-header { padding: 0 10px; min-height: 58px; margin-bottom: 20px; border-radius: 16px; }
+  #app .platform-header > .el-row { gap: 6px; }
+  #app .header-content { min-height: 56px; }
+  #app .header-left { display: none; }
+  #app .header-right { margin-left: auto; gap: 6px; }
+  #app .header-right .user-pill { max-width: 60px; padding: 0 8px; font-size: 12px; }
+  #app .header-right .el-button { height: 32px; padding: 0 9px; font-size: 12px; }
+  #app .interpretation-page { padding: 0 2px 16px; }
+  #app .interpretation-page #sub-title { font-size: 21px; }
+  #app .interpretation-page > .el-row > .el-col { flex: 0 0 100%; max-width: 100%; }
+  #app .interpretation-page > .el-row > .el-col:empty { display: none; }
+  #app .tiff-upload-card .el-card__body { padding: 16px; }
+  #app .tiff-upload-card .upload-dropzone { padding: 20px 12px; }
+  #app .tiff-upload-card .upload-dropzone .el-upload__text { font-size: 14px; }
+  #app .tiff-upload-card .option-row .el-form { grid-template-columns: 1fr; gap: 12px; }
+  #app .tiff-upload-card .prehandle-label { margin: 0 8px; }
+  #app .history-tools { justify-content: flex-start; }
+  #app .img-display-item { gap: 8px; }
+  #app .img-display-item .img-divider .el-divider__text { white-space: normal; }
+  #app .img-display-item > div { width: 100%; }
+  #app .img-display-item .img-display { width: 100%; }
+  #app .img-display-item .spectral-stat { width: 100%; }
+  #app .classification-editor .editor-header, #app .classification-editor .editor-toolbar { flex-direction: column; align-items: stretch; gap: 12px; }
+  #app .classification-editor .header-actions, #app .classification-editor .toolbar-actions { justify-content: flex-start; }
+  #app .classification-editor .editor-workspace { grid-template-columns: minmax(0, 1fr); }
+  #app .classification-editor .class-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #app .classification-editor .map-card, #app .classification-editor .classification-map { min-height: 460px; }
+  #app .classification-editor .map-notice { max-width: calc(100% - 48px); }
+  #app .login-page { padding: 20px; }
+  #app .login-card { padding: 28px 24px; border-radius: 24px; }
+  .el-overlay-dialog .el-dialog { width: calc(100vw - 24px) !important; max-width: none; }
+  .el-overlay-dialog .el-dialog__body { padding: 16px; }
+  .el-overlay-dialog .el-dialog .cropper > .el-row > .el-col { flex: 0 0 100%; max-width: 100%; }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root { --geoview-glass: #fbfdfc; }
+  .el-overlay-dialog .el-dialog { background: #fcfdfd; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root { --geoview-glass: #fbfdfc; --geoview-blur: none; }
+  #app .geoview-sidebar .glass-card, .el-overlay-dialog .el-dialog { background: #fcfdfd; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app *, #app *::before, #app *::after, .el-overlay *, .el-message-box *, .el-notification *, .el-message * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  #app .fade-enter-from, #app .fade-leave-to, #app .el-button:hover, #app .el-button:active, #app .quick-item:hover, #app .quick-item:active, #app .el-image:hover, #app .icon-wenjianshangchuan:hover { transform: none; }
+}
+
+@media (forced-colors: active) {
+  #app .geoview-shell > .el-aside, #app .main-ctx .platform-header, #app .classification-editor .editor-toolbar,
+  #app .login-card, #app .el-card, #app .classification-editor .editor-panel, .el-overlay-dialog .el-dialog {
+    background: Canvas;
+    color: CanvasText;
+    border: 1px solid CanvasText;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+  #app .classification-editor .class-swatch { forced-color-adjust: none; }
+  #app .classification-editor .class-option.active { outline: 2px solid Highlight; }
+  #app .geoview-sidebar .el-menu-item.is-active { outline: 2px solid Highlight; }
+}

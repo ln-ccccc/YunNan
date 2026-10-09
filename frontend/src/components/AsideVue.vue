@@ -59,8 +59,8 @@
       <div class="glass-card">
         <div class="card-title">快捷入口</div>
         <div class="quick-row">
-          <div class="quick-item" @click="goSegmentation">地表覆盖分类</div>
-          <div class="quick-item" @click="goSpectralIndices">光谱指数计算</div>
+          <button type="button" class="quick-item" @click="goSegmentation">地表覆盖分类</button>
+          <button type="button" class="quick-item" @click="goSpectralIndices">光谱指数计算</button>
         </div>
       </div>
       <div class="glass-card">

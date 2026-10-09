@@ -11,6 +11,7 @@ import '@/assets/css/icons-new.css'
 import '@/assets/css/font.css'
 import 'element-plus/theme-chalk/display.css'
 import 'animate.css';
+import '@/assets/css/liquid-glass.css'
 
 import JSZIP from "jszip"
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
