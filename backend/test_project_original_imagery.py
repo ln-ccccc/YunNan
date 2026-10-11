@@ -18,7 +18,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 from applications import create_app
 from applications.extensions import db
 from applications.models.inference_job import InferenceJob
-from applications.models.project import ProjectMineBinding
+from applications.models.project import ProjectDataset, ProjectMineBinding
 
 
 def _make_job(project_id, payload, status="succeeded", created=None):
@@ -112,6 +112,100 @@ class TestProjectOriginalImagery(unittest.TestCase):
             f"/api/projects/{project_id or self.project_id}/mines/original-imagery",
             query_string={"fid": fid},
         )
+
+    def _registered_source(self, storage_key, project_id=None, dataset_kind="imagery"):
+        path = self.storage_root / storage_key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.tif_path.read_bytes())
+        dataset = ProjectDataset(
+            project_id=project_id or self.project_id,
+            dataset_kind=dataset_kind,
+            display_name="已登记测试影像",
+            file_path=storage_key,
+            source_format="tif",
+            year_start=2024,
+            year_end=2024,
+        )
+        db.session.add(dataset)
+        db.session.commit()
+        return dataset, path
+
+    def _assert_job_not_accessible(self, job):
+        db.session.commit()
+        self.assertNotIn(job.id, [item["job_id"] for item in self._json(self._list())["data"]["items"]])
+        response = self.client.get(
+            f"/api/projects/{self.project_id}/mines/original-imagery/{job.id}/download"
+        )
+        self.assertEqual(404, response.status_code)
+
+    def test_registered_incoming_and_derived_sources_are_listed_and_downloaded(self):
+        for key in ("incoming/registered.tif", f"projects/{self.project_id}/inputs/imagery/derived.tif"):
+            with self.subTest(storage_key=key):
+                dataset, path = self._registered_source(key)
+                job = _make_job(self.project_id, {
+                    "dataset_id": dataset.id, "new_tif_path": str(path),
+                    "year": "2024", "mine_fids": [713],
+                })
+                db.session.commit()
+                body = self._json(self._list())
+                item = next((row for row in body["data"]["items"] if row["job_id"] == job.id), None)
+                self.assertIsNotNone(item)
+                self.assertEqual(path.name, item["filename"])
+                self.assertTrue(item["file_exists"])
+                self.assertNotIn(str(self.storage_root), json.dumps(body))
+                response = self.client.get(
+                    f"/api/projects/{self.project_id}/mines/original-imagery/{job.id}/download"
+                )
+                self.addCleanup(response.close)
+                self.assertEqual(200, response.status_code)
+                self.assertEqual(path.read_bytes(), response.data)
+
+    def test_missing_registered_source_is_listed_but_not_downloadable(self):
+        dataset, path = self._registered_source("incoming/missing-registered.tif")
+        path.unlink()
+        job = _make_job(self.project_id, {
+            "dataset_id": dataset.id, "new_tif_path": str(path), "year": "2024", "mine_fids": [713],
+        })
+        db.session.commit()
+        items = self._json(self._list())["data"]["items"]
+        self.assertEqual(1, len(items))
+        self.assertFalse(items[0]["file_exists"])
+        response = self.client.get(f"/api/projects/{self.project_id}/mines/original-imagery/{job.id}/download")
+        self.assertEqual(404, response.status_code)
+
+    def test_incoming_source_without_recorded_dataset_is_rejected(self):
+        _, path = self._registered_source("incoming/unlinked.tif")
+        job = _make_job(self.project_id, {"new_tif_path": str(path), "mine_fids": [713]})
+        self._assert_job_not_accessible(job)
+
+    def test_registered_task_path_must_match_dataset_source(self):
+        dataset, _ = self._registered_source("incoming/expected.tif")
+        for path in (self.tif_path, self.storage_root / "incoming" / "other.tif"):
+            with self.subTest(input_path=str(path)):
+                path.write_bytes(self.tif_path.read_bytes())
+                job = _make_job(self.project_id, {
+                    "dataset_id": dataset.id, "new_tif_path": str(path), "mine_fids": [713],
+                })
+                self._assert_job_not_accessible(job)
+
+    def test_dataset_of_another_project_cannot_authorize_source_download(self):
+        other = self._create_project("其他登记项目")
+        dataset, path = self._registered_source("incoming/other-project.tif", project_id=other)
+        for candidate in (path, self.tif_path):
+            with self.subTest(input_path=str(candidate)):
+                job = _make_job(self.project_id, {
+                    "dataset_id": dataset.id, "new_tif_path": str(candidate), "mine_fids": [713],
+                })
+                self._assert_job_not_accessible(job)
+
+    def test_invalid_or_non_imagery_dataset_cannot_fall_back_to_legacy_inputs(self):
+        dataset, _ = self._registered_source("incoming/report.tif", dataset_kind="report")
+        for dataset_id in (dataset.id, True, 1.5, "invalid", 999999):
+            with self.subTest(dataset_id=dataset_id):
+                job = _make_job(self.project_id, {
+                    "dataset_id": dataset_id, "new_tif_path": str(self.tif_path), "mine_fids": [713],
+                })
+                self._assert_job_not_accessible(job)
 
     def test_lists_inputs_for_matching_mine_with_metadata_and_no_paths(self):
         _make_job(self.project_id, {
