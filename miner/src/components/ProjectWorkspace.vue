@@ -700,10 +700,7 @@ async function reactivateBasemap(resourceId) {
   const operation = startProjectOperation();
   if (!operation) return;
   try {
-    await axios.post(
-      `/api/projects/${currentProjectId.value}/spatial/basemaps/${resourceId}/reactivate`,
-      {},
-    );
+    await api.reactivateBasemap(operation.projectId, resourceId);
     if (!isCurrentProjectOperation(operation)) return;
     await Promise.all([
       loadRetainedBasemaps(),

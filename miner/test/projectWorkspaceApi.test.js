@@ -76,3 +76,19 @@ test('project workspace api turns failed envelopes into errors', async () => {
 
   await assert.rejects(() => api.loadOverview(404), /项目不存在/);
 });
+
+test('historical basemap activation preserves the legacy envelope and exposes business failures', async () => {
+  const calls = [];
+  let result = { success: false, code: 1, msg: '该底图未完成切片，请重试原任务' };
+  const api = createProjectWorkspaceApi({ http: { post: async (url, body) => {
+    calls.push({ url, body });
+    return { status: 200, data: result };
+  } } });
+  await assert.rejects(() => api.reactivateBasemap(24, 35), /未完成切片，请重试原任务/);
+  result = { success: true, code: 0, data: { id: 36, status: 'active' } };
+  assert.deepEqual(await api.reactivateBasemap(24, 36), { id: 36, status: 'active' });
+  assert.deepEqual(calls, [
+    { url: '/api/projects/24/spatial/basemaps/35/reactivate', body: {} },
+    { url: '/api/projects/24/spatial/basemaps/36/reactivate', body: {} },
+  ]);
+});

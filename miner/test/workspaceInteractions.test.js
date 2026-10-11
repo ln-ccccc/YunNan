@@ -63,6 +63,32 @@ function findNode(node, predicate) {
 
 const flushRequests = () => new Promise((resolve) => setImmediate(resolve));
 
+test('workspace shows a rejected historical basemap reason and keeps its current spatial data', async () => {
+  const requests = [];
+  const axios = {
+    get: async (url) => {
+      requests.push(url);
+      return { data: { success: true, data: { items: [], features: [], jobs: [] } } };
+    },
+    post: async () => ({ status: 200, data: { success: false, code: 1, msg: '该底图未完成切片，请重试原任务' } }),
+  };
+  const { bindings } = setupComponent('ProjectWorkspace.vue', axios, {
+    createProjectWorkspaceApi: (options) => createProjectWorkspaceApi({ ...options, http: axios }),
+    window: { confirm: () => true },
+  });
+  bindings.currentProjectId.value = 24;
+  await Vue.nextTick();
+  await flushRequests();
+  const spatial = { map_ready: true, resources: [{ id: 36, status: 'active' }] };
+  bindings.slices.spatial.data = spatial;
+  requests.length = 0;
+  await bindings.reactivateBasemap(35);
+  assert.match(bindings.slices.spatial.error, /未完成切片，请重试原任务/);
+  assert.deepEqual(bindings.slices.spatial.data, spatial);
+  assert.equal(bindings.projectOperationBusy.value, false);
+  assert.deepEqual(requests, []);
+});
+
 test('interpretation keeps editor targets current after paging then switching projects', async () => {
   const axios = { get: async (path) => {
     if (path === '/api/projects') return { data: { data: { items: [] } } };

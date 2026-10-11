@@ -55,6 +55,10 @@ export function createProjectWorkspaceApi({ http = axios, baseUrl = '' } = {}) {
       url(`/api/projects/${projectId}/spatial/jobs/${jobId}/cancel`),
       {},
     )),
+    reactivateBasemap: (projectId, resourceId) => data(http.post(
+      url(`/api/projects/${projectId}/spatial/basemaps/${resourceId}/reactivate`),
+      {},
+    )),
     createExport: (projectId, payload) => data(http.post(
       url(`/api/projects/${projectId}/exports`),
       rejectUnsafePathField(payload, 'output_dir'),
