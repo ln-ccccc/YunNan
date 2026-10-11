@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
+from shapely.geometry import shape
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
@@ -261,6 +262,110 @@ class TestClassificationResultAPI(unittest.TestCase):
             data["map_manifest"]["api_tile_url"],
             f"/api/projects/{self.project_id}/map-resources/{self.basemap_resource.id}/tiles/{{z}}/{{x}}/{{y}}.png",
         )
+
+    def _set_legacy_rounded_baseline_roi(self):
+        roi = copy.deepcopy(self.ROI)
+        for position in roi["coordinates"][0]:
+            if position[1] == 16.0:
+                position[1] -= 1e-11
+        self.result.roi_geometry_json = json.dumps(roi)
+        db.session.commit()
+
+    def test_unchanged_legacy_auto_geometry_can_be_reclassified_without_rewriting_baseline(self):
+        self._set_legacy_rounded_baseline_roi()
+        original_auto = self.result.auto_feature_collection_json
+        original_snapshot = Path(os.environ["PROJECT_STORAGE_ROOT"]) / self.result.auto_geojson_path
+        original_bytes = original_snapshot.read_bytes()
+        original_revision = ClassificationRevision.query.filter_by(result_id=self.result.id, revision_no=0).one().feature_collection_json
+        original_geometry = self._editable_feature_collection()["features"][0]["geometry"]
+        for revision_no, class_code in enumerate([1, 2]):
+            collection = self._editable_feature_collection()
+            collection["features"][0]["properties"]["class_code"] = class_code
+            response = self.client.post(self._result_url("/revisions"), json={
+                "base_revision_no": revision_no,
+                "feature_collection": collection,
+            })
+            self.assertEqual(response.status_code, 200)
+            saved = response.get_json()["data"]["feature_collection"]["features"][0]
+            self.assertEqual(saved["properties"]["class_code"], class_code)
+            self.assertEqual(saved["properties"]["source"], "manual")
+            self.assertEqual(saved["geometry"], original_geometry)
+            db.session.refresh(self.result)
+        self.assertEqual(self.result.auto_feature_collection_json, original_auto)
+        self.assertEqual(original_snapshot.read_bytes(), original_bytes)
+        self.assertEqual(ClassificationRevision.query.filter_by(result_id=self.result.id, revision_no=0).one().feature_collection_json, original_revision)
+
+    def test_legacy_geometry_exception_does_not_allow_movement_new_or_foreign_ids(self):
+        self._set_legacy_rounded_baseline_roi()
+        original = self._editable_feature_collection()
+        moved = copy.deepcopy(original)
+        moved["features"][0]["geometry"]["coordinates"][0][0][1] += 1e-10
+        moved["features"][0]["geometry"]["coordinates"][0][-1] = copy.deepcopy(moved["features"][0]["geometry"]["coordinates"][0][0])
+        no_id = copy.deepcopy(original)
+        no_id["features"][0]["properties"].pop("feature_id")
+        new_id = copy.deepcopy(original)
+        new_id["features"][0]["properties"]["feature_id"] = "client-copy"
+        foreign_id = copy.deepcopy(original)
+        foreign_id["features"][0]["properties"]["feature_id"] = "auto-999-0-0001"
+        for name, collection in [("moved", moved), ("no-id", no_id), ("new-id", new_id), ("foreign-id", foreign_id)]:
+            with self.subTest(name=name):
+                self._assert_rejected_without_writes(
+                    {"base_revision_no": 0, "feature_collection": collection},
+                    expected_reason="几何必须完全位于成果 ROI 内",
+                )
+
+    def test_empty_difference_accepts_rounded_intersection_without_roi_tolerance(self):
+        roi = {
+            "type": "Polygon",
+            "coordinates": [[
+                [102.400123456789, 24.7985123456789],
+                [102.401543212345, 24.7987123456789],
+                [102.4014123456789, 24.799887654321],
+                [102.400087654321, 24.799732112345],
+                [102.400123456789, 24.7985123456789],
+            ]],
+        }
+        geometry = {
+            "type": "Polygon",
+            "coordinates": [[
+                [102.40099174946708, 24.799838268956254],
+                [102.40099174946708, 24.79920749896931],
+                [102.40081021482206, 24.79920749896931],
+                [102.40081021482206, 24.799816953608172],
+                [102.40099174946708, 24.799838268956254],
+            ]],
+        }
+        self.assertFalse(shape(roi).covers(shape(geometry)))
+        self.assertTrue(shape(geometry).difference(shape(roi)).is_empty)
+        self.result.roi_geometry_json = json.dumps(roi)
+        db.session.commit()
+        response = self.client.post(self._result_url("/revisions"), json={
+            "base_revision_no": 0,
+            "feature_collection": {"type": "FeatureCollection", "features": [self._new_feature(geometry)]},
+        })
+        self.assertEqual(response.status_code, 200)
+
+    def test_empty_difference_fallback_rejects_holes_concavity_and_tiny_exterior(self):
+        hole_roi = copy.deepcopy(self.ROI)
+        hole_roi["coordinates"].append([[6.0, 6.0], [10.0, 6.0], [10.0, 10.0], [6.0, 10.0], [6.0, 6.0]])
+        concave_roi = {
+            "type": "Polygon",
+            "coordinates": [[[0, 0], [16, 0], [16, 4], [4, 4], [4, 16], [0, 16], [0, 0]]],
+        }
+        cases = [
+            ("hole", hole_roi, {"type": "Polygon", "coordinates": [[[7, 7], [9, 7], [9, 9], [7, 9], [7, 7]]]}),
+            ("concavity", concave_roi, {"type": "Polygon", "coordinates": [[[2, 2], [12, 2], [2, 12], [2, 2]]]}),
+            ("tiny-exterior", self.ROI, {"type": "Polygon", "coordinates": [[[-1e-11, 1], [1, 1], [1, 2], [-1e-11, 2], [-1e-11, 1]]]}),
+        ]
+        for name, roi, geometry in cases:
+            with self.subTest(name=name):
+                self.result.roi_geometry_json = json.dumps(roi)
+                db.session.commit()
+                self.assertFalse(shape(geometry).difference(shape(roi)).is_empty)
+                self._assert_rejected_without_writes({
+                    "base_revision_no": 0,
+                    "feature_collection": {"type": "FeatureCollection", "features": [self._new_feature(geometry)]},
+                }, expected_reason="几何必须完全位于成果 ROI 内")
 
     def test_revision_save_creates_manual_snapshot_and_stale_base_returns_409(self):
         feature_collection = self._editable_feature_collection()

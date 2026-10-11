@@ -243,7 +243,7 @@ def _validate_geometry(geometry, *, feature_index):
     return parsed, position_count
 
 
-def _base_feature_ids(result, base_revision_no):
+def _base_feature_geometries(result, base_revision_no):
     revision = ClassificationRevision.query.filter_by(
         result_id=result.id,
         revision_no=base_revision_no,
@@ -258,7 +258,7 @@ def _base_feature_ids(result, base_revision_no):
         )
     payload = json.loads(revision.feature_collection_json)
     return {
-        feature.get("properties", {}).get("feature_id")
+        feature.get("properties", {}).get("feature_id"): feature.get("geometry")
         for feature in payload.get("features") or []
         if feature.get("properties", {}).get("feature_id")
     }
@@ -312,7 +312,11 @@ def _validate_save_payload(result, payload, *, body_size):
                 "current_revision_no": result.current_revision_no,
             },
         )
-    base_ids = _base_feature_ids(result, base_revision_no)
+    base_geometries = _base_feature_geometries(result, base_revision_no)
+    auto_geometries = {
+        feature["properties"]["feature_id"]: feature["geometry"]
+        for feature in json.loads(result.auto_feature_collection_json)["features"]
+    }
     historic_ids = _all_historic_feature_ids(result.id)
     roi = shape(json.loads(result.roi_geometry_json))
     normalized_features = []
@@ -345,7 +349,14 @@ def _validate_save_payload(result, payload, *, body_size):
         total_positions += position_count
         if total_positions > MAX_POSITIONS_TOTAL:
             _validation_error("feature_collection", "总坐标位置不能超过 100000", feature_index)
-        if not roi.covers(parsed_geometry):
+        # 旧自动基线的圆整误差仅可原样携带；任何几何编辑仍须严格在 ROI 内。
+        unchanged_auto_geometry = (
+            submitted_feature_id in base_geometries
+            and submitted_feature_id in auto_geometries
+            and feature["geometry"] == base_geometries[submitted_feature_id]
+            and feature["geometry"] == auto_geometries[submitted_feature_id]
+        )
+        if not unchanged_auto_geometry and not roi.covers(parsed_geometry) and not parsed_geometry.difference(roi).is_empty:
             _validation_error("geometry", "几何必须完全位于成果 ROI 内", feature_index)
         feature_id = submitted_feature_id
         if feature_id is None:
@@ -356,7 +367,7 @@ def _validate_save_payload(result, payload, *, body_size):
                 "新要素必须省略 feature_id 或使用 client- 前缀 ID",
                 feature_index,
             )
-        elif feature_id not in base_ids:
+        elif feature_id not in base_geometries:
             if not feature_id.startswith("client-"):
                 _validation_error("feature.properties.feature_id", "既有 ID 不属于基准版本", feature_index)
             feature_id = _new_manual_feature_id(result.id, historic_ids | seen_ids)

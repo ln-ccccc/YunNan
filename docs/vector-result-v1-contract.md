@@ -54,7 +54,7 @@
 - 自动矢量化只处理 `0`–`5`，跳过 `255`。
 - 对每个类别，必须按 Rasterio 的 **4 邻域**连通规则识别 label 像元分量；对角接触不构成同一分量。
 - 自动成果中小于 **16 个有效 label 像元** 的 4 邻域连通碎斑必须丢弃。该阈值按标签栅格像元数计算，不可替换为 EPSG:4326 的度面积；恰好 16 像元的碎斑保留。
-- 每个保留分量必须单独矢量化，面再按矿山 ROI 裁切、清理空几何并重投影到 EPSG:4326；几何可为 `Polygon` 或 `MultiPolygon`。
+- 每个保留分量必须单独矢量化，面再按矿山 ROI 裁切、清理空几何并重投影到 EPSG:4326；不主动圆整坐标，最终输出必须再与原始精确 EPSG:4326 ROI 裁切。IEEE 浮点交点的保存校验见第 7 节。几何可为 `Polygon` 或 `MultiPolygon`，不得扩大 ROI 或修改 label 来满足此规则。
 - 自动 `feature_id` 必须可复现：同一 `result_id` 下，先按 `class_code` 分组，再将该类别的 4 邻域分量按其最小 `(row, column)` 的 row-major 顺序排序，并从 1 开始编号，格式固定为 `auto-{result_id}-{class_code}-{ordinal:04d}`。例如结果 `101` 的第一个草地分量是 `auto-101-0-0001`。实现不得依赖数据库自增 ID、文件名或不稳定的几何文本顺序。
 - 此 16 像元规则仅约束自动矢量化，不能在人工保存时静默删除合法人工几何。
 
@@ -189,7 +189,9 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 保存前必须完整校验受限 FeatureCollection，且任一失败均为全量失败：
 
 - FeatureCollection 与每个 Feature 的结构必须有效；每个几何必须是非空、有效的 `Polygon` 或 `MultiPolygon`。
-- 每个 position 必须是恰有两个有限数值元素的数组 `[longitude, latitude]`；经纬度必须为 EPSG:4326 的经度 `[-180, 180]`、纬度 `[-90, 90]`，拒绝 Z 值及其他额外维度。每个几何必须完全被该 `{result_id}` 对应 ROI 的 `covers` 包含，不允许 buffer、容差或“相交即可”的宽松判断。
+- 每个 position 必须是恰有两个有限数值元素的数组 `[longitude, latitude]`；经纬度必须为 EPSG:4326 的经度 `[-180, 180]`、纬度 `[-90, 90]`，拒绝 Z 值及其他额外维度。新建或修改的几何必须完全被该 `{result_id}` 对应 ROI 的 `covers` 包含，不允许 buffer、容差或“相交即可”的宽松判断。
+- 历史自动基线可能已有坐标圆整造成的微小 ROI 外面。仅当提交的既有 `feature_id` 属于同一成果的基准版本，且几何的 `type` 和全部坐标值同时与该基准版本及不可变自动基线完全相同，才允许保留该几何并修改类别。此兼容例外不接受新/临时/跨成果 ID，不接受任何顶点变化，也不覆盖历史 Revision 0、`auto.geojson` 或 label；后续人工版本继续携带时仍须满足上述完全一致条件。
+- IEEE 浮点交点可能使 `covers` 返回 false。新建或修改的几何仅可在 `geometry.difference(roi).is_empty` 时通过等价集合检查；差集非空（即使面积很小或仅为线/点）仍拒绝，不使用面积阈值、buffer 或坐标容差。
 - 每个既有 `feature_id` 必须属于提交的 `base_revision_no` 且属于当前 `{result_id}`；新要素只可省略 ID 或使用临时 `client-` 前缀 ID；一个请求内所有非空 ID 必须统一唯一。客户端不得提交或覆盖 `class_name`、`source`、`result_id`、`revision_no` 等服务器权威属性。
 - 单次保存请求的 UTF-8 JSON body 不得超过 **10 MiB**（`10 × 1024 × 1024` bytes）；Feature 总数不得超过 **2,000**；每个 Feature 的全部环中坐标位置总数不得超过 **5,000**；整个 FeatureCollection 的坐标位置总数不得超过 **100,000**。坐标位置按请求中出现的每个 `[longitude, latitude]` 计数，包含闭合环重复的末端位置。
 

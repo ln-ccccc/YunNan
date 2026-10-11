@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
+from rasterio.warp import transform_geom
 from shapely.geometry import shape
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
@@ -34,7 +35,7 @@ class TestClassificationVectorization(unittest.TestCase):
         ],
     }
 
-    def _write_label(self, path, labels):
+    def _write_label(self, path, labels, *, crs="EPSG:4326", transform=None):
         path.parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(
             path,
@@ -45,8 +46,8 @@ class TestClassificationVectorization(unittest.TestCase):
             count=1,
             dtype="uint8",
             nodata=255,
-            crs="EPSG:4326",
-            transform=from_origin(0.0, 16.0, 1.0, 1.0),
+            crs=crs,
+            transform=transform if transform is not None else from_origin(0.0, 16.0, 1.0, 1.0),
         ) as dataset:
             dataset.write(labels, 1)
 
@@ -85,6 +86,49 @@ class TestClassificationVectorization(unittest.TestCase):
         self.assertTrue(all(item["properties"]["revision_no"] == 0 for item in features))
         roi = shape(self.ROI)
         self.assertTrue(all(roi.covers(shape(item["geometry"])) for item in features))
+
+    def test_vectorization_preserves_exact_roi_after_decimal_and_projected_clipping(self):
+        decimal_roi = {
+            "type": "Polygon",
+            "coordinates": [[
+                [102.400123456789, 24.7985123456789],
+                [102.401543212345, 24.7985123456789],
+                [102.401543212345, 24.799887654321],
+                [102.400123456789, 24.799887654321],
+                [102.400123456789, 24.7985123456789],
+            ]],
+        }
+        projected_roi = transform_geom("EPSG:32647", "EPSG:4326", {
+            "type": "Polygon",
+            "coordinates": [[
+                [847625.123456, 2746485.234567],
+                [847775.234567, 2746495.123456],
+                [847765.345678, 2746634.456789],
+                [847624.678912, 2746614.567891],
+                [847625.123456, 2746485.234567],
+            ]],
+        })
+        min_x, min_y, max_x, max_y = shape(projected_roi).bounds
+        projected_roi = {
+            "type": "Polygon",
+            "coordinates": [[[min_x, min_y], [max_x, min_y], [max_x, max_y], [min_x, max_y], [min_x, min_y]]],
+        }
+        cases = [
+            ("decimal-wgs84", "EPSG:4326", from_origin(102.4, 24.8, 0.0001, 0.0001), decimal_roi),
+            ("projected-utm", "EPSG:32647", from_origin(847620, 2746640, 10, 10), projected_roi),
+        ]
+        labels = np.zeros((16, 16), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name, crs, transform, roi_geometry in cases:
+                with self.subTest(name=name):
+                    label_path = Path(temp_dir) / f"{name}.tif"
+                    self._write_label(label_path, labels, crs=crs, transform=transform)
+                    original_bytes = label_path.read_bytes()
+                    collection = vectorize_label_geotiff(label_path, roi_geometry, result_id=102)
+                    self.assertEqual(len(collection["features"]), 1)
+                    roi = shape(roi_geometry)
+                    self.assertTrue(all(roi.covers(shape(feature["geometry"])) for feature in collection["features"]))
+                    self.assertEqual(label_path.read_bytes(), original_bytes)
 
 
 class TestClassificationResultPublishing(unittest.TestCase):

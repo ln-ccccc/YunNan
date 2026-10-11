@@ -109,10 +109,11 @@ def vectorize_label_geotiff(label_path, roi_geometry_4326: Dict, *, result_id: i
             labels.shape,
         )
         roi_in_label_crs = _polygonal_geometry(
-            shape(transform_geom(WGS84, dataset.crs, roi_geometry_4326, precision=10))
+            shape(transform_geom(WGS84, dataset.crs, roi_geometry_4326))
         )
         if roi_in_label_crs is None:
             raise ValueError("矿山 ROI 不是有效面几何")
+        roi_4326 = shape(roi_geometry_4326)
 
         features: List[Dict] = []
         for class_code in sorted(CLASS_DEFINITIONS):
@@ -134,7 +135,7 @@ def vectorize_label_geotiff(label_path, roi_geometry_4326: Dict, *, result_id: i
             valid_polygons = []
             for _, polygon in sorted(components, key=lambda item: item[0]):
                 geometry_4326 = _polygonal_geometry(
-                    shape(transform_geom(dataset.crs, WGS84, mapping(polygon), precision=10))
+                    shape(transform_geom(dataset.crs, WGS84, mapping(polygon))).intersection(roi_4326)
                 )
                 if geometry_4326 is not None:
                     valid_polygons.append(geometry_4326)
