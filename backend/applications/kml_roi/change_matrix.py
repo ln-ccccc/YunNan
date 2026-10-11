@@ -78,10 +78,12 @@ def write_available_change_matrix(old_mask, new_mask, out_dir):
         return write_change_matrix_csv(old_mask, new_mask, out_dir)
     except (ValueError, RasterioError) as error:
         LOGGER.warning("无法生成空间变化矩阵: %s", error)
+        reason = ("分类标签不可读，请检查文件并重新生成地理参考标签"
+                  if isinstance(error, RasterioError) else str(error))
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "change_matrix_alignment.json").write_text(json.dumps({
             "mode": "unavailable", "spatial_alignment_verified": False,
-            "reason": str(error), "compared_pixels": 0,
+            "reason": reason, "compared_pixels": 0,
         }, ensure_ascii=False), encoding="utf-8")
         return False
 
