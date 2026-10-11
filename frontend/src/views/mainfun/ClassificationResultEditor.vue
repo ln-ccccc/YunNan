@@ -892,6 +892,20 @@ h1 {
   min-height: 650px;
 }
 
+/* Draw 的模式光标样式使用 Mapbox 容器类，补齐 MapLibre 的相同反馈。 */
+.classification-map.mouse-add :deep(.maplibregl-canvas-container.maplibregl-interactive) {
+  cursor: crosshair;
+}
+.classification-map.mouse-pointer :deep(.maplibregl-canvas-container.maplibregl-interactive) {
+  cursor: pointer;
+}
+.classification-map.mouse-move :deep(.maplibregl-canvas-container.maplibregl-interactive) {
+  cursor: move;
+}
+.classification-map.mode-direct_select.feature-midpoint.mouse-pointer :deep(.maplibregl-canvas-container.maplibregl-interactive) {
+  cursor: cell;
+}
+
 .map-saving {
   position: absolute;
   inset: 0;
