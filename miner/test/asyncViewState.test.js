@@ -4,6 +4,7 @@ import test from 'node:test';
 import { parse, compileScript, compileTemplate } from '@vue/compiler-sfc';
 import * as Vue from 'vue';
 import { renderToString } from '@vue/server-renderer';
+import { parse as parseJavaScript } from '@babel/parser';
 import { buildGeoViewUrl, buildGeoViewEditorUrl } from '../src/navigation/geoviewNavigation.js';
 import { createProjectWorkspaceApi } from '../src/projectWorkspace/projectWorkspaceApi.js';
 import { createTileFallbackState, noteTileError, noteTileLoad } from '../src/map/tileFallbackPolicy.js';
@@ -334,4 +335,48 @@ test('卸载地图会取消 wheel 防抖及已进行的 Leaflet zoom 结束回�
   await new Promise((resolve) => setTimeout(resolve, 280));
   clearTimeout(transition);
   assert.deepEqual(errors, []);
+});
+
+test('Canvas 同步重绘后卸载仍取消先前排队的 RAF，不访问已删除的 ctx', () => {
+  const pending = new Map();
+  let nextId = 0;
+  let rendered = 0;
+  const Util = {
+    requestAnimFrame(callback, context) { const id = ++nextId; pending.set(id, () => callback.call(context)); return id; },
+    cancelAnimFrame(id) { pending.delete(id); },
+  };
+  const source = fs.readFileSync(new URL('../node_modules/leaflet/src/layer/vector/Canvas.js', import.meta.url), 'utf8');
+  const ast = parseJavaScript(source, { sourceType: 'module' });
+  const canvas = ast.program.body.find((node) => node.declaration?.declarations?.[0]?.id?.name === 'Canvas');
+  const methods = canvas.declaration.declarations[0].init.arguments[0].properties;
+  const renderer = {
+    _map: {}, _layers: {}, _container: { width: 256, height: 256 },
+    _ctx: { save() { rendered++; }, setTransform() {}, clearRect() {}, restore() {} },
+    _extendRedrawBounds() {},
+  };
+  for (const name of ['_requestRedraw', '_updatePaths', '_redraw', '_clear', '_draw', '_destroyContainer']) {
+    const fn = methods.find((method) => method.key.name === name).value;
+    renderer[name] = new Function('Util', 'DomUtil', 'DomEvent', `return (${source.slice(fn.start, fn.end)});`)(Util, { remove() {} }, { off() {} });
+  }
+  const layer = { addTo() { return this; } };
+  const fakeMap = {
+    stop() {}, off() {},
+    remove() { renderer._destroyContainer(); renderer._map = null; },
+  };
+  const view = component('MapContainer.vue', {}, {
+    L: { Util, canvas: () => renderer, geoJSON: () => layer }, props: { minesData: [] },
+  });
+  view.state.map.value = fakeMap;
+  view.state.renderMapMarkers();
+  renderer._requestRedraw({});
+  assert.equal(pending.size, 1, '先按 Leaflet 正常路径排队绘制');
+  renderer._updatePaths();
+  assert.ok(rendered > 0, '同步重绘仍执行实际 Canvas 绘图流程');
+  view.dispose();
+  const errors = [];
+  for (const callback of pending.values()) {
+    try { callback(); } catch (error) { errors.push(error.message); }
+  }
+  assert.deepEqual(errors, []);
+  assert.equal(pending.size, 0, '同步重绘及卸载不应遗留绘图 RAF');
 });

@@ -293,7 +293,17 @@ const renderMapMarkers = () => {
   // SVG 精确命中几乎点不中；tolerance 给点击/悬停各方向 10px 的判定外扩。
   // 渲染器必须单例复用：Leaflet 对自定义 renderer 隐式 addLayer，图层移除不回收
   // renderer，每次新建会在 overlay pane 累积空 canvas（数 MB 位图/张，审查 P2-1）。
-  if (!mineRenderer) mineRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
+  if (!mineRenderer) {
+    mineRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
+    if (mineRenderer) {
+      const redraw = mineRenderer._redraw;
+      // 同步 _updatePaths 会让 _redraw 丢失已排队 RAF 的 ID；先取消，避免卸载后读 ctx。
+      mineRenderer._redraw = function () {
+        L.Util.cancelAnimFrame(this._redrawRequest);
+        return redraw.call(this);
+      };
+    }
+  }
 
   mineLayer.value = L.geoJSON(geoJsonData, {
     renderer: mineRenderer,
