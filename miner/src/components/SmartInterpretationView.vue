@@ -23,7 +23,7 @@
         <button class="link-btn" type="button" :disabled="!selectedProjectId" @click="$emit('go-map', selectedProjectId)">打开地图工作台</button>
       </div>
       <p class="hint-text">
-        发起前请在「影像管理」登记并就绪影像；推理按 KML ROI 逐矿山执行，完成后记录自动出现在下方。
+        可选择已就绪的登记影像，或当前激活底图的原影像；推理按 KML ROI 逐矿山执行，完成后记录自动出现在下方。
       </p>
 
       <p v-if="loading" class="empty-block">解译记录加载中…</p>
