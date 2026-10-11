@@ -50,7 +50,7 @@
           <button
             class="primary-btn"
             type="button"
-            :disabled="busy || !canConfigure || !mineFileContent || !mineFieldMapping.fid || (mineFieldMapping.area && !mineAreaUnit)"
+            :disabled="busy || !canConfigure || !mineFileContent || !mineFieldMapping.fid || Boolean(mineFieldMapping.area && !mineAreaUnit)"
             @click="importMine"
           >
             {{ busy ? '导入中…' : '确认导入全部矿山' }}
