@@ -1,0 +1,7 @@
+{
+  "success": {"mode":"georeferenced", "spatial_alignment_verified":true, "resampling":"nearest", "target_grid":{"crs":"EPSG:32647","transform":[10,0,847620,0,-10,2746640],"width":4,"height":4}, "compared_pixels":12},
+  "no_common_coverage": {"matrix_available":false,"compared_pixels":0},
+  "legacy": {"mode":"legacy_png","spatial_alignment_verified":false,"target_grid":null,"resampling":null,"compared_pixels":16},
+  "missing_metadata": {"error":"两期变化矩阵均须具有地理参考标签，不能仅使用一期标签"},
+  "failure": {"error":"无地理参考的两期 PNG 尺寸不同，无法计算空间变化矩阵"}
+}

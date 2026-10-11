@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from applications.kml_roi.change_matrix import write_change_matrix_csv, write_class_ratio_json
+from applications.kml_roi.change_matrix import write_available_change_matrix, write_class_ratio_json
 from applications.kml_roi.raster_ops import (
     UI_SEGMENT_SIZE,
     border_connected_bg_mask,
@@ -177,6 +177,7 @@ def _cleanup_keep_set(fid: str, fid_dir: Path, keep_last_years: int = 3) -> set:
             {
                 "change_matrix_pixels.csv",
                 "change_matrix_percent_rownorm.csv",
+                "change_matrix_alignment.json",
                 "class_ratio_percent.json",
             }
         )
@@ -191,6 +192,7 @@ def _cleanup_keep_set(fid: str, fid_dir: Path, keep_last_years: int = 3) -> set:
                 f"{fid}_new_label.tif",
                 "change_matrix_pixels.csv",
                 "change_matrix_percent_rownorm.csv",
+                "change_matrix_alignment.json",
                 "class_ratio_percent.json",
             }
         )
@@ -364,7 +366,7 @@ def distribute_outputs(
             old_y, _, old_mask = year_masks[-2]
             new_y, _, new_mask = year_masks[-1]
             if old_y != new_y:
-                write_change_matrix_csv(old_mask, new_mask, fid_dir)
+                write_available_change_matrix(old_mask, new_mask, fid_dir)
 
         if year_masks:
             write_class_ratio_json(fid=fid, year_masks=year_masks, out_dir=fid_dir)

@@ -65,3 +65,11 @@ queued ──► running ──► succeeded
 2. `succeeded*` 项目的成果资产在资产读模型中呈 `ready`（相对 storage key 解析；见 2026-09-20 审计修复）。
 3. 标签 GeoTIFF 可被 GDAL 打开且 CRS/变换与源影像一致；ROI 外像元为 255。
 4. 自动矢量发布后原始自动快照不可变；人工修订形成新 revision（`base_revision_no` 乐观锁，409 冲突不覆盖）——细则以 [矢量成果契约](vector-result-v1-contract.md) 为准。
+
+## 7. 空间变化矩阵
+
+新成果使用两期 `_label.tif` 的 CRS、仿射变换与 NoData 对齐，旧期通过最近邻映射到新期标签网格。只累计两期共同有效的类别像元；标签不得用双线性插值。像素数指新期目标网格像元数，不等于旧期源像元数或固定面积。源标签与原影像不修改。
+
+同目录 `change_matrix_alignment.json` 记录 `mode`、`spatial_alignment_verified`、目标 `crs/transform/width/height`、`resampling` 和 `compared_pixels`；项目变化统计 JSON 增加可选 `alignment` 对象，现有 headers/matrix 兼容。清理历史成果时与变化矩阵 CSV 一起保留。成功、无共同覆盖、缺元数据和失败样例见 `tests/fixtures/project-hub-v1/change-matrix-alignment.json`。
+
+无共同有效覆盖返回无变化矩阵，清除旧矩阵以免误读。只有一期标签、标签缺 CRS/有效变换或无地理参考且 PNG 尺寸不同，拒绝生成变化矩阵并说明原因。历史两期都只有同尺寸 PNG 时保留兼容统计，明确标为 `legacy_png`、`spatial_alignment_verified=false`；这不构成空间配准验收。

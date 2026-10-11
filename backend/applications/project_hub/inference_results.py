@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from applications.extensions import db
-from applications.kml_roi.change_matrix import write_change_matrix_csv, write_class_ratio_json
+from applications.kml_roi.change_matrix import write_available_change_matrix, write_class_ratio_json
 from applications.kml_roi.tiles import scan_year_masks
 from applications.models.project import Project, ProjectDataset
 from applications.project_hub._foundation import _append_activity, _get_project_or_404
@@ -186,7 +186,7 @@ def _prepare_fid_publication(project_id, fid, stage_dir, target_dir):
     if len(year_masks) >= 2:
         _, _, old_mask = year_masks[-2]
         _, _, new_mask = year_masks[-1]
-        write_change_matrix_csv(old_mask, new_mask, publication_dir)
+        write_available_change_matrix(old_mask, new_mask, publication_dir)
     if year_masks:
         write_class_ratio_json(fid=str(fid), year_masks=year_masks, out_dir=publication_dir)
     return publication_dir, year_masks, copied
@@ -255,6 +255,9 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
             "has_change_matrix": bool(previous and headers and matrix),
             "data_source": "project_inference",
         }
+        alignment_path = publication_dir / "change_matrix_alignment.json"
+        if previous and alignment_path.is_file():
+            summary_payload["alignment"] = json.loads(alignment_path.read_text(encoding="utf-8"))
         summary_temp = _write_json_temporary(summary_root, summary_payload)
         summary_target = summary_root / f"{fid}.json"
         directory_backup = final_root / f".{fid}.backup-{uuid.uuid4().hex}"
