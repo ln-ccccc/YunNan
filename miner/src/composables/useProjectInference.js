@@ -21,14 +21,14 @@ export function useProjectInference(resolveProjectId) {
   const imageryAssetsLoading = ref(false);
   const imageryAssetsError = ref('');
 
-  // 推理轮询取消位：组件销毁后若不取消，旧轮询会以固定间隔无限打后端
-  let inferencePollCancelled = false;
+  // 切换项目或卸载时停止旧视图等待，后台任务仍继续运行。
+  let inferenceRequestSeq = 0;
   let disposed = false;
   let imageryRequestSeq = 0;
   onScopeDispose(() => {
     disposed = true;
     ++imageryRequestSeq;
-    inferencePollCancelled = true;
+    ++inferenceRequestSeq;
   });
 
   const projectApi = createProjectWorkspaceApi({
@@ -56,24 +56,38 @@ export function useProjectInference(resolveProjectId) {
 
   watch(getProjectId, () => {
     ++imageryRequestSeq;
+    ++inferenceRequestSeq;
     imageryAssets.value = [];
     imageryAssetsError.value = '';
     imageryAssetsLoading.value = false;
+    inferenceRunning.value = false;
+    inferenceResult.value = null;
+    inferenceError.value = '';
   }, { flush: 'sync' });
 
   const runProjectInference = async ({ datasetId, year = '', device = 'auto' } = {}) => {
+    const projectId = getProjectId();
+    const seq = ++inferenceRequestSeq;
+    const isCurrent = () => !disposed && seq === inferenceRequestSeq && projectId === getProjectId();
+    const ensureCurrent = () => {
+      if (isCurrent()) return;
+      const error = new Error('推理视图已切换，停止等待旧任务');
+      error.cancelled = true;
+      throw error;
+    };
+    ensureCurrent();
     inferenceRunning.value = true;
     inferenceError.value = '';
     inferenceResult.value = null;
-    inferencePollCancelled = false;
     try {
       const payload = {
-        project_id: getProjectId(),
+        project_id: projectId,
         dataset_id: Number(datasetId),
         device,
       };
       if (year) payload.year = year;
       const res = await axios.post(apiUrl('/api/inference/jobs'), payload);
+      ensureCurrent();
       const createdJob = res?.data?.data;
       if (!createdJob?.id) throw new Error('推理任务创建后未返回任务编号');
       inferenceResult.value = createdJob;
@@ -81,26 +95,28 @@ export function useProjectInference(resolveProjectId) {
         jobId: createdJob.id,
         getJob: async (jobId) => {
           const jobRes = await axios.get(apiUrl(`/api/inference/jobs/${encodeURIComponent(jobId)}`));
+          ensureCurrent();
           return jobRes?.data?.data;
         },
         onUpdate: (job) => {
-          inferenceResult.value = job;
+          if (isCurrent()) inferenceResult.value = job;
         },
-        isCancelled: () => inferencePollCancelled,
+        isCancelled: () => !isCurrent(),
       });
+      ensureCurrent();
       if (terminalJob.status === 'failed' || terminalJob.status === 'cancelled') {
         throw new Error(terminalJob?.error?.message || `推理任务${terminalJob.status === 'cancelled' ? '已取消' : '失败'}`);
       }
       return terminalJob;
     } catch (e) {
+      ensureCurrent();
       if (e?.cancelled) {
-        // 组件已销毁：不再写状态，静默退出轮询链
         throw e;
       }
       inferenceError.value = e?.response?.data?.msg || e?.response?.data?.error || e?.message || '推理任务执行失败';
       throw e;
     } finally {
-      if (!inferencePollCancelled) {
+      if (isCurrent()) {
         inferenceRunning.value = false;
       }
     }

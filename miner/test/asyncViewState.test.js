@@ -8,6 +8,7 @@ import { parse as parseJavaScript } from '@babel/parser';
 import { buildGeoViewUrl, buildGeoViewEditorUrl } from '../src/navigation/geoviewNavigation.js';
 import { createProjectWorkspaceApi } from '../src/projectWorkspace/projectWorkspaceApi.js';
 import { createTileFallbackState, noteTileError, noteTileLoad } from '../src/map/tileFallbackPolicy.js';
+import { pollInferenceJob } from '../src/services/inferencePolling.js';
 
 const deferred = () => {
   let resolve;
@@ -239,7 +240,7 @@ function inference(http, projectId) {
   const script = fs.readFileSync(new URL('../src/composables/useProjectInference.js', import.meta.url), 'utf8').replace(/^import[\s\S]*?;\s*/gm, '').replaceAll('import.meta.env', 'auditEnv').replace('export function useProjectInference', 'function useProjectInference');
   const scope = Vue.effectScope();
   const api = scope.run(() => new Function('dependencies', `with (dependencies) { ${script}; return useProjectInference; }`)({
-    ...Vue, auditEnv: {}, axios: http, pollInferenceJob() {},
+    ...Vue, auditEnv: {}, axios: http, pollInferenceJob,
     createProjectWorkspaceApi: (options) => createProjectWorkspaceApi({ ...options, http }),
   })(() => projectId.value));
   return { ...api, dispose: () => scope.stop() };
@@ -270,6 +271,107 @@ test('推理视图卸载后旧影像请求不继续写状态', async () => {
   pending.resolve(response({ items: [{ name: '卸载后影像' }] }));
   await request;
   assert.deepEqual(state.imageryAssets.value, []);
+});
+
+test('推理创建回包晚于项目切换时停止等待，不显示旧任务或取消服务端任务', async () => {
+  const created = deferred();
+  const calls = [];
+  let queries = 0;
+  const projectId = Vue.ref(1);
+  const state = inference({
+    post: (url, body) => { calls.push({ url, body }); return created.promise; },
+    get: async () => { queries += 1; return response({ id: 'old-job', status: 'succeeded' }); },
+  }, projectId);
+  const request = state.runProjectInference({ datasetId: 11 });
+  const stopped = assert.rejects(request, (error) => error.cancelled === true);
+  projectId.value = 2;
+  created.resolve(response({ id: 'old-job', status: 'queued' }));
+  await stopped;
+  assert.equal(state.inferenceResult.value, null);
+  assert.equal(state.inferenceError.value, '');
+  assert.equal(state.inferenceRunning.value, false);
+  assert.equal(queries, 0);
+  assert.deepEqual(calls.map(({ url }) => url), ['/api/inference/jobs']);
+  assert.equal(calls[0].body.project_id, 1);
+  state.dispose();
+});
+
+test('旧项目创建失败不写错误，也不关闭新项目正在执行的 loading', async () => {
+  const old = deferred();
+  const fresh = deferred();
+  const projectId = Vue.ref(1);
+  const state = inference({
+    post: (_, body) => (body.project_id === 1 ? old : fresh).promise,
+    get: async () => response({ id: 'fresh-job', status: 'succeeded' }),
+  }, projectId);
+  const first = state.runProjectInference({ datasetId: 11 });
+  const stopped = assert.rejects(first, (error) => error.cancelled === true);
+  projectId.value = 2;
+  const second = state.runProjectInference({ datasetId: 22 });
+  old.reject(new Error('旧项目连接断开'));
+  await stopped;
+  assert.equal(state.inferenceRunning.value, true);
+  assert.equal(state.inferenceError.value, '');
+  fresh.resolve(response({ id: 'fresh-job', status: 'queued' }));
+  const result = await second;
+  assert.equal(result.id, 'fresh-job');
+  assert.equal(state.inferenceResult.value.id, 'fresh-job');
+  assert.equal(state.inferenceRunning.value, false);
+  state.dispose();
+});
+
+test('项目切换时已发出的旧轮询终态不回填、不触发成功回调', async () => {
+  const status = deferred();
+  const queried = deferred();
+  const projectId = Vue.ref(1);
+  const state = inference({
+    post: async () => response({ id: 'old-job', status: 'queued' }),
+    get: () => { queried.resolve(); return status.promise; },
+  }, projectId);
+  let completed = false;
+  const request = state.runProjectInference({ datasetId: 11 }).then((result) => {
+    completed = true;
+    return result;
+  });
+  const stopped = assert.rejects(request, (error) => error.cancelled === true);
+  await queried.promise;
+  projectId.value = 2;
+  status.resolve(response({ id: 'old-job', status: 'succeeded' }));
+  await stopped;
+  assert.equal(completed, false);
+  assert.equal(state.inferenceResult.value, null);
+  assert.equal(state.inferenceRunning.value, false);
+  state.dispose();
+});
+
+test('切换后再回原项目也不会恢复之前的推理上下文', async () => {
+  const created = deferred();
+  const projectId = Vue.ref(1);
+  const state = inference({
+    post: () => created.promise,
+    get: async () => response({ id: 'old-job', status: 'succeeded' }),
+  }, projectId);
+  const request = state.runProjectInference({ datasetId: 11 });
+  const stopped = assert.rejects(request, (error) => error.cancelled === true);
+  projectId.value = 2;
+  projectId.value = 1;
+  created.resolve(response({ id: 'old-job', status: 'queued' }));
+  await stopped;
+  assert.equal(state.inferenceResult.value, null);
+  assert.equal(state.inferenceError.value, '');
+  state.dispose();
+});
+
+test('推理视图卸载后创建回包不会继续写入任务结果', async () => {
+  const created = deferred();
+  const state = inference({ post: () => created.promise }, Vue.ref(1));
+  const request = state.runProjectInference({ datasetId: 11 });
+  const stopped = assert.rejects(request, (error) => error.cancelled === true);
+  state.dispose();
+  created.resolve(response({ id: 'old-job', status: 'queued' }));
+  await stopped;
+  assert.equal(state.inferenceResult.value, null);
+  assert.equal(state.inferenceError.value, '');
 });
 
 test('稀疏项目瓦片初始 404 不移除影像层，后续有效瓦片仍可显示', () => {
