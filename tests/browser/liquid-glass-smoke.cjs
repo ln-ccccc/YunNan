@@ -206,6 +206,7 @@ async function main() {
     checks.push('历史翻页后切项目仍有成果入口；地图入口携带项目 ID');
     await page.goto(`${baseUrl}/#/map/42`);
     await page.locator('.leaflet-tile-loaded').first().waitFor();
+    await page.locator('.leaflet-control-zoom-out').click();
     await page.locator('.leaflet-control-zoom-in').click();
     await page.locator('.map-tool-btn').click();
     for (let i = 0; i < 6; i++) {
