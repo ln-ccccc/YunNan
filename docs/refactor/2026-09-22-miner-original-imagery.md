@@ -10,6 +10,8 @@ Miner 矿山详情弹窗中，与"地物分类"同级新增"原始影像"标签�
 - **BFF**（`miner/routes/projects.js` + `services/projectBackend.js`）：列表走通用 relay；下载成功走流式 pipeline，保留类型、长度及附件名。30 秒只限制连接和响应头，收到头后清除 timer；下游取消会取消上游，断流只结束本次下载。非 200 错误体限 64 KiB 并透传状态/类型，超过上限返回受控 502。jobId 沿用 UUID 校验，不整读成功影像。
 - **UI**（`MineDetailModal.vue` + `useMineData.js` + `mineDetailPresentation.js`）：标签数组追加 `Original`（中文"原始影像"）；与变化矩阵同竞态门控随详情一并拉取；下载经 blob 落盘（上游 JSON 错误体给出提示）。文件缺失的行保留但不可下载（溯源仍可见"用过哪个输入"）。
 
+上游压缩传输由 Node fetch 解码；此时不透传压缩字节数的 Content-Length，下载以解码流的正常结束为准。
+
 ## 验证
 
 - 后端容器全量 **391 passed / 0 failed**（新增 9 例：过滤/去重/缺文件标注/越根路径剔除/fid 归属/下载流+attachment/未知任务/跨项目隔离/鉴权）。

@@ -4,6 +4,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 const job = 'f019cb42-10af-4030-96a4-8a1a20edab89';
 const downloadPath = `/api/projects/1/mines/original-imagery/${job}/download`;
@@ -56,6 +57,17 @@ test('原始影像不存在时透传状态及具体错误', async () => {
     const response = await fetch(url);
     assert.equal(response.status, 404);
     assert.equal((await response.json()).msg, '影像已不存在');
+  });
+});
+
+test('压缩的上游下载按实际解码内容结束，不沿用压缩后的长度', async () => {
+  await withDownload((_req, res) => {
+    const body = gzipSync('TESTTIF');
+    res.writeHead(200, { 'content-type': 'image/tiff', 'content-encoding': 'gzip', 'content-length': body.length });
+    res.end(body);
+  }, async url => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
+    assert.equal(await response.text(), 'TESTTIF');
   });
 });
 

@@ -72,7 +72,9 @@ async function requestBinaryStream(method, path, { cookie, signal, connectTimeou
   const upstream = {
     status: response.status,
     contentType: response.headers.get('content-type') || 'application/octet-stream',
-    contentLength: response.headers.get('content-length'),
+    // fetch 解压 body 后，压缩响应的 Content-Length 不再是转发的字节数。
+    contentLength: response.headers.get('content-encoding') && response.headers.get('content-encoding').toLowerCase() !== 'identity'
+      ? null : response.headers.get('content-length'),
     contentDisposition: response.headers.get('content-disposition') || '',
     stream: response.body,
   };
