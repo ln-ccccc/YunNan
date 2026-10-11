@@ -1,4 +1,5 @@
 const backendBaseUrl = (process.env.GEOVIEW_BACKEND_URL || 'http://localhost:5008').replace(/\/$/, '');
+const pendingProjectLists = new Map();
 
 async function requestJson(method, path, { query, body, cookie, timeoutMs = 15000 } = {}) {
   const url = new URL(`${backendBaseUrl}${path}`);
@@ -8,23 +9,32 @@ async function requestJson(method, path, { query, body, cookie, timeoutMs = 1500
     }
   });
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(cookie ? { cookie } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const text = await response.text();
-  let parsed;
   try {
-    parsed = text ? JSON.parse(text) : {};
-  } catch (_) {
-    parsed = { success: false, code: 1, msg: text || 'Invalid JSON response' };
+    const response = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(cookie ? { cookie } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await response.text();
+    let parsed;
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch (_) {
+      parsed = { success: false, code: 1, msg: text || 'Invalid JSON response' };
+    }
+    return { status: response.status, body: parsed };
+  } finally {
+    // 写入完成后的刷新不能沿用写入前的待返回列表；旧请求仍正常结束。
+    if (!['GET', 'HEAD'].includes(method.toUpperCase())) {
+      for (const [key, pending] of pendingProjectLists) {
+        if (pending.cookie === cookie) pendingProjectLists.delete(key);
+      }
+    }
   }
-  return { status: response.status, body: parsed };
 }
 
 function positiveRouteId(value, fieldName) {
@@ -106,7 +116,19 @@ export const projectApi = {
     return requestJson(method, path, options);
   },
   listProjects(query, cookie) {
-    return requestJson('GET', '/api/projects', { query, cookie });
+    if (!cookie) return requestJson('GET', '/api/projects', { query, cookie });
+    const filters = Object.entries(query || {})
+      .filter(([, value]) => value !== null && value !== undefined && value !== '')
+      .map(([key, value]) => [key, String(value)])
+      .sort(([left], [right]) => left.localeCompare(right));
+    const key = JSON.stringify([cookie, filters]);
+    const existing = pendingProjectLists.get(key);
+    if (existing) return existing.promise;
+    const promise = requestJson('GET', '/api/projects', { query, cookie }).finally(() => {
+      if (pendingProjectLists.get(key)?.promise === promise) pendingProjectLists.delete(key);
+    });
+    pendingProjectLists.set(key, { cookie, promise });
+    return promise;
   },
   createProject(payload, cookie) {
     return requestJson('POST', '/api/projects', { body: payload, cookie });
