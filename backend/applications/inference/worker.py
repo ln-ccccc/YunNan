@@ -292,7 +292,7 @@ class InferenceWorker:
         if project_id in (None, ""):
             return
         try:
-            from applications.project_hub.service import record_inference_failure
+            from applications.project_hub.inference_results import record_inference_failure
 
             record_inference_failure(
                 project_id,

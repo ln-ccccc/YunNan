@@ -9,6 +9,27 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parent
 
+WORKER_AUDIT_IMPORTS = """
+import importlib.abc
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+# 完整 Web 测试环境也必须遵守轻量 Worker 的依赖边界。
+class DenyWebSchemas(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        forbidden = ("applications.schemas", "marshmallow", "flask_marshmallow")
+        if any(fullname == name or fullname.startswith(name + ".") for name in forbidden):
+            raise ModuleNotFoundError("Worker 不应加载 Web schema: " + fullname)
+
+sys.meta_path.insert(0, DenyWebSchemas())
+from applications.inference.app import create_worker_app
+from applications.extensions import db
+from applications.models.project import Project, ProjectActivityLog, ProjectMineBinding
+"""
+
 
 def run_isolated_python(source, env_updates=None, remove_env=()):
     env = os.environ.copy()
@@ -35,6 +56,84 @@ def parse_json_output(process):
 
 
 class TestInferenceWorkerApp(unittest.TestCase):
+    def test_project_publication_records_activity_without_web_schema_dependencies(self):
+        process = run_isolated_python(WORKER_AUDIT_IMPORTS + textwrap.dedent("""
+            import cv2
+            import numpy as np
+            from applications.project_hub.inference_results import publish_project_inference_result
+
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                os.environ["PROJECT_STORAGE_ROOT"] = str(root / "storage")
+                app = create_worker_app("testing")
+                with app.app_context():
+                    project = Project(name="Worker 发布活动测试", status="active")
+                    db.session.add(project)
+                    db.session.flush()
+                    db.session.add(ProjectMineBinding(project_id=project.id, mine_fid=17))
+                    db.session.commit()
+                    staged = root / "staged" / "17"
+                    staged.mkdir(parents=True)
+                    image = np.full((4, 4, 3), 120, dtype=np.uint8)
+                    assert cv2.imwrite(str(staged / "17+2022.png"), image)
+                    assert cv2.imwrite(str(staged / "17+2022_src.png"), image)
+                    assert cv2.imwrite(str(staged / "17+2022_mask.png"), np.zeros((4, 4), dtype=np.uint8))
+                    published = publish_project_inference_result(project.id, {
+                        "year": "2022", "mine_fids": [17],
+                        "inference_job_id": "worker-success",
+                        "output_root": str(root / "storage" / "projects" / str(project.id) / "outputs" / "inference"),
+                    }, {"written_fid_list": [17], "output_root": str(staged.parent)})
+                    db.session.expire_all()
+                    rows = ProjectActivityLog.query.filter_by(project_id=project.id, event_type="inference_result_published").all()
+                    print(json.dumps({
+                        "synced_fids": published["synced_fids"],
+                        "published_file_exists": (root / "storage" / "projects" / str(project.id) / "outputs" / "inference" / "17" / "17+2022.png").is_file(),
+                        "events": [{"actor": row.actor, "payload": json.loads(row.payload_json)} for row in rows],
+                        "web_schema_loaded": any(name.startswith("applications.schemas") for name in sys.modules),
+                    }))
+        """))
+        result = parse_json_output(process)
+        self.assertEqual([17], result["synced_fids"])
+        self.assertTrue(result["published_file_exists"])
+        self.assertFalse(result["web_schema_loaded"])
+        self.assertEqual(1, len(result["events"]))
+        event = result["events"][0]
+        self.assertEqual("system", event["actor"])
+        self.assertEqual("worker-success", event["payload"]["inference_job_id"])
+        self.assertEqual([17], event["payload"]["mine_fids"])
+        self.assertEqual("success", event["payload"]["result"])
+
+    def test_worker_failure_records_activity_without_web_schema_dependencies(self):
+        process = run_isolated_python(WORKER_AUDIT_IMPORTS + textwrap.dedent("""
+            from types import SimpleNamespace
+            from applications.inference.worker import InferenceWorker
+
+            app = create_worker_app("testing")
+            with app.app_context():
+                project = Project(name="Worker 失败活动测试", status="active")
+                db.session.add(project)
+                db.session.commit()
+                worker = InferenceWorker()
+                worker._record_project_failure_audit({
+                    "project_id": project.id, "mine_fids": [17], "year": "2022",
+                }, SimpleNamespace(id="worker-failed"), "INFERENCE_FAILED", "可控测试错误")
+                db.session.expire_all()
+                rows = ProjectActivityLog.query.filter_by(project_id=project.id, event_type="inference_failed").all()
+                print(json.dumps({
+                    "events": [{"actor": row.actor, "payload": json.loads(row.payload_json)} for row in rows],
+                    "web_schema_loaded": any(name.startswith("applications.schemas") for name in sys.modules),
+                }))
+        """))
+        result = parse_json_output(process)
+        self.assertFalse(result["web_schema_loaded"])
+        self.assertEqual(1, len(result["events"]))
+        event = result["events"][0]
+        self.assertEqual("system", event["actor"])
+        self.assertEqual("worker-failed", event["payload"]["inference_job_id"])
+        self.assertEqual("INFERENCE_FAILED", event["payload"]["error_code"])
+        self.assertEqual("可控测试错误", event["payload"]["error_message"])
+        self.assertEqual("failure", event["payload"]["result"])
+
     def test_worker_app_cold_start_creates_project_result_database_dependencies(self):
         process = run_isolated_python(
             """

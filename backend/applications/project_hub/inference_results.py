@@ -12,10 +12,28 @@ from applications.extensions import db
 from applications.kml_roi.change_matrix import write_change_matrix_csv, write_class_ratio_json
 from applications.kml_roi.tiles import scan_year_masks
 from applications.models.project import Project, ProjectDataset
+from applications.project_hub._foundation import _append_activity, _get_project_or_404
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def record_inference_failure(project_id, payload=None, actor="system"):
+    """推理失败审计供 Worker 调用；项目不存在时跳过。"""
+    try:
+        project = _get_project_or_404(project_id)
+    except ValueError:
+        return None
+    _append_activity(
+        project.id,
+        "inference_failed",
+        payload=payload,
+        actor=actor,
+        result="failure",
+    )
+    db.session.commit()
+    return True
 
 
 def _parse_year(value):
@@ -335,8 +353,6 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
     # 推理成果审计事件（此前已知缺口：推理链路无活动记录）：发布成功后按
     # 任务粒度记一条；写失败只告警不回滚成果
     try:
-        from applications.project_hub.service import _append_activity
-
         _append_activity(
             project.id,
             "inference_result_published",
