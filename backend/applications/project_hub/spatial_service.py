@@ -580,8 +580,8 @@ def list_retained_basemaps(project_id):
 def reactivate_basemap(project_id, resource_id, actor="system"):
     """重新激活 retained 历史底图：互斥激活（旧 active 置 retained）。
 
-    前提是瓦片目录与 .active 标记仍在其自身 resource 目录中（激活期只改
-    状态与标记，不复制数据——性能计划遗留项的收敛实现）。
+    前提是切片已经成功且自身瓦片仍在；.active 只标识当前激活资源，
+    正常切换后历史资源不再保留该标记。
     """
     if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
         raise ValueError(f"项目不存在: {project_id}")
@@ -594,13 +594,21 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         raise ValueError("历史底图不存在")
     if target.status == "active":
         raise ValueError("该底图已是激活状态")
+    if target.status != "retained":
+        raise ValueError("仅已保留的历史底图可以重新激活")
 
     storage_root = ensure_storage_layout()
     target_tile_dir = resolve_storage_path(
         storage_root,
         Path("projects") / str(project_id) / "tiles" / str(target.id),
     )
-    if not (target_tile_dir / ".active").is_file():
+    completed_job = ProjectSpatialJob.query.filter_by(
+        project_id=project_id, resource_id=target.id, job_type="basemap_tiles", status="succeeded",
+    ).first()
+    # 兼容旧记录留下的完成标记；取消中的 retained 半成品不能激活。
+    if completed_job is None and not (target_tile_dir / ".active").is_file():
+        raise ValueError("该底图未完成切片，请重试原任务")
+    if not target_tile_dir.is_dir() or not any(path.is_file() for path in target_tile_dir.rglob("*.png")):
         raise ValueError("该底图的瓦片数据已被清理，无法重新激活")
 
     current_active = (
@@ -622,7 +630,7 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
             active_marker.unlink()
         current_active.status = "retained"
 
-    (target_tile_dir / ".active").write_text("1", encoding="utf-8")
+    (target_tile_dir / ".active").write_text(str(target.id), encoding="ascii")
     target.status = "active"
     _activity(
         project_id,

@@ -89,6 +89,8 @@ registered | processing | ready | failed | superseded
 
 对既有空间资源的公开映射固定为：`pending → registered`、`processing → processing`、`active → ready`、`failed → failed`、`retained → superseded`。该映射只影响 `ProjectAssetView.status`，不改变原始空间资源状态或项目生命周期。
 
+`.active` 只标记当前激活底图，切换后历史资源不保留该标记。重新激活要求资源属于当前项目、状态为 `retained`、有成功的 `basemap_tiles` 任务（兼容旧记录仍留有完成标记），且自身瓦片目录尚有 PNG；取消中的半成品和已清理瓦片不得激活。激活互斥，仍仅保留最近两个历史底图，不改变清理策略。已有地图项目可以重新进入底图选择；地图可用提示与新任务进度、取消及失败重试同时展示。
+
 ### 4.4 任务状态
 
 任务状态属于具体 Worker。当前空间任务已使用 `queued`、`running`、`succeeded`、`failed`、`cancelled` 等语义；v1 明确保留该词汇，**不**把它机械改为 `pending`。若未来需要统一展示，由 Read Model 映射展示标签，但原始任务 API 保持兼容。

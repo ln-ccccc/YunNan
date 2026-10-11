@@ -9,6 +9,7 @@ import { buildGeoViewUrl, buildGeoViewEditorUrl } from '../src/navigation/geovie
 import { createProjectWorkspaceApi } from '../src/projectWorkspace/projectWorkspaceApi.js';
 import { createTileFallbackState, noteTileError, noteTileLoad } from '../src/map/tileFallbackPolicy.js';
 import { pollInferenceJob } from '../src/services/inferencePolling.js';
+import { resolveSpatialWizardStep } from '../src/projectWorkspace/projectWorkspaceViewModel.js';
 
 const deferred = () => {
   let resolve;
@@ -18,6 +19,27 @@ const deferred = () => {
 };
 const response = (data) => ({ data: { success: true, data } });
 const location = { href: 'http://127.0.0.1:4000/', protocol: 'http:', hostname: '127.0.0.1' };
+
+test('已激活底图项目可以选择新底图，已有地图不隐藏新切片任务', async () => {
+  const props = {
+    open: true, canConfigure: true, busy: false, error: '',
+    spatial: { map_ready: true, missing_resources: [], jobs: [{ id: 'new-tiles', status: 'running', stage: 'tiling', progress: 37 }] },
+    mineOptions: [], retainedBasemaps: [], basemapCandidates: [],
+  };
+  const view = component('projectWorkspace/ProjectSpatialResources.vue', {}, { props, resolveSpatialWizardStep });
+  view.state.syncWizardStep();
+  const rendered = await view.render();
+  assert.match(rendered, /tiling/);
+  assert.match(rendered, /37\.0%/);
+  assert.match(rendered, /取消任务/);
+  props.spatial.jobs = [];
+  view.state.syncWizardStep();
+  assert.match(await view.render(), /选择新底图/);
+  view.state.chooseNewBasemap();
+  assert.equal(view.state.wizardStep.value, 3);
+  assert.match(await view.render(), /刷新导入目录/);
+  view.dispose();
+});
 
 // 编译并运行真实 setup；仅隔离 HTTP 和浏览器边界，不替换被测视图逻辑。
 function component(filename, http = {}, additions = {}) {
@@ -57,7 +79,7 @@ function component(filename, http = {}, additions = {}) {
       const template = compileTemplate({ source: descriptor.template.content, filename, id: filename });
       const code = template.code.replace(/import \{([^}]+)\} from "vue"/, (_, names) => `const {${names.replaceAll(' as ', ': ')}} = Vue;`).replace('export function render', 'function render');
       const render = new Function('Vue', `${code}; return render;`)(Vue);
-      return renderToString(Vue.createSSRApp({ setup: () => () => render(Vue.proxyRefs(state), []) }));
+      return renderToString(Vue.createSSRApp({ setup: () => () => render(Vue.proxyRefs({ ...additions.props, ...state }), []) }));
     },
   };
 }

@@ -794,6 +794,89 @@ class TestProjectSpatialState(unittest.TestCase):
         self.assertTrue((storage_root / resources[2].tile_path).exists())
         self.assertTrue((storage_root / resources[3].tile_path).exists())
 
+    def test_completed_retained_basemap_reactivates_after_normal_version_switch(self):
+        from applications.models.project_spatial import ProjectSpatialJob
+        from applications.project_hub.spatial_worker import _activate_basemap
+        from applications.project_hub.spatial_service import reactivate_basemap
+
+        with tempfile.TemporaryDirectory(prefix="reactivate-basemap-") as temporary:
+            storage_root = Path(temporary)
+            created = create_project({"name": "底图恢复项目", "region": "洱源"})
+            resources = []
+            jobs = []
+            for version in (1, 2):
+                resource = ProjectSpatialResource(
+                    project_id=created["id"], resource_type="basemap", version=version,
+                    status="active" if version == 1 else "processing",
+                    source_path="incoming/source.tif", source_format="tif",
+                )
+                db.session.add(resource)
+                db.session.flush()
+                resource.tile_path = f"projects/{created['id']}/tiles/{resource.id}"
+                tile_dir = storage_root / resource.tile_path
+                (tile_dir / "8/1").mkdir(parents=True)
+                (tile_dir / "8/1/1.png").write_bytes(b"png")
+                if version == 1:
+                    (tile_dir / ".active").write_text(str(resource.id), encoding="ascii")
+                job = ProjectSpatialJob(
+                    id=f"reactivate-job-{version}", project_id=created["id"], resource_id=resource.id,
+                    job_type="basemap_tiles", status="succeeded" if version == 1 else "running",
+                )
+                db.session.add(job)
+                resources.append(resource)
+                jobs.append(job)
+            db.session.commit()
+            old, current = resources
+            _activate_basemap(jobs[1], current, storage_root)
+            self.assertFalse((storage_root / old.tile_path / ".active").exists())
+            self.assertEqual(old.status, "retained")
+            with patch.dict(os.environ, {"PROJECT_STORAGE_ROOT": str(storage_root)}):
+                result = reactivate_basemap(created["id"], old.id)
+            self.assertEqual(result["status"], "active")
+            self.assertEqual(current.status, "retained")
+            self.assertEqual((storage_root / old.tile_path / ".active").read_text(), str(old.id))
+            self.assertFalse((storage_root / current.tile_path / ".active").exists())
+            self.assertEqual(ProjectSpatialResource.query.filter_by(project_id=created["id"]).count(), 2)
+
+    def test_reactivate_rejects_incomplete_or_non_retained_basemap(self):
+        from applications.models.project_spatial import ProjectSpatialJob
+        from applications.project_hub.spatial_service import reactivate_basemap
+
+        with tempfile.TemporaryDirectory(prefix="reactivate-invalid-") as temporary:
+            storage_root = Path(temporary)
+            created = create_project({"name": "未完成底图项目", "region": "洱源"})
+            resource = ProjectSpatialResource(
+                project_id=created["id"], resource_type="basemap", version=1, status="retained",
+                source_path="incoming/source.tif", source_format="tif",
+            )
+            db.session.add(resource)
+            db.session.flush()
+            resource.tile_path = f"projects/{created['id']}/tiles/{resource.id}"
+            tile_dir = storage_root / resource.tile_path
+            (tile_dir / "8/1").mkdir(parents=True)
+            tile = tile_dir / "8/1/1.png"
+            tile.write_bytes(b"partial")
+            job = ProjectSpatialJob(
+                id="cancelled-basemap", project_id=created["id"], resource_id=resource.id,
+                job_type="basemap_tiles", status="cancelled",
+            )
+            db.session.add(job)
+            db.session.commit()
+            with patch.dict(os.environ, {"PROJECT_STORAGE_ROOT": str(storage_root)}):
+                with self.assertRaises(ValueError):
+                    reactivate_basemap(created["id"], resource.id)
+                job.status = "succeeded"
+                tile.unlink()
+                db.session.commit()
+                with self.assertRaises(ValueError):
+                    reactivate_basemap(created["id"], resource.id)
+                tile.write_bytes(b"png")
+                (tile_dir / ".active").write_text(str(resource.id), encoding="ascii")
+                resource.status = "failed"
+                db.session.commit()
+                with self.assertRaises(ValueError):
+                    reactivate_basemap(created["id"], resource.id)
+
     def test_worker_generates_xyz_tile_and_activates_basemap(self):
         from applications.project_hub.spatial_service import register_basemap
         from applications.project_hub.spatial_worker import claim_next_job, process_job

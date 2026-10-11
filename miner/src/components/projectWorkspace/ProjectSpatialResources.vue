@@ -102,7 +102,14 @@
 
       <section v-else class="wizard-panel">
         <p v-if="spatial?.map_ready" class="success-text">矿山和底图均已激活，项目地图可用。</p>
-        <template v-else-if="spatialJobs.length">
+        <button
+          v-if="spatial?.map_ready && canConfigure"
+          class="secondary-btn"
+          type="button"
+          :disabled="busy || spatialJobs.some(isRunningJob)"
+          @click="chooseNewBasemap"
+        >选择新底图</button>
+        <template v-if="spatialJobs.length">
           <article v-for="job in spatialJobs" :key="job.id" class="job-item">
             <p>阶段：{{ job.stage || '--' }} · 状态：{{ job.status || '--' }}</p>
             <template v-if="isRunningJob(job)">
@@ -128,7 +135,7 @@
             </div>
           </article>
         </template>
-        <p v-else class="muted-text">等待空间处理任务。</p>
+        <p v-else-if="!spatial?.map_ready" class="muted-text">等待空间处理任务。</p>
       </section>
 
       <p v-if="displayError" class="error-text">{{ displayError }}</p>
@@ -318,6 +325,11 @@ function syncWizardStep({ refreshCandidates = false } = {}) {
   if (nextStep === 3 && (refreshCandidates || changedStep)) {
     emit('load-basemap-candidates');
   }
+}
+
+function chooseNewBasemap() {
+  wizardStep.value = 3;
+  emit('load-basemap-candidates');
 }
 
 async function handleMineFile(event) {
