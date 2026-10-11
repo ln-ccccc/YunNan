@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 
 import { buildEditableFeatureCollection, isEditableVectorStatus } from '../src/utils/classificationEditor.mjs';
-import { createEditorHistory } from '../src/utils/classificationEditorHistory.mjs';
+import { createEditorHistory, serializeEditorSnapshot } from '../src/utils/classificationEditorHistory.mjs';
 
 const require = createRequire(import.meta.url);
 const { parse } = require('@vue/compiler-sfc');
@@ -30,7 +30,7 @@ function editor(overrides = {}) {
   const messages = [];
   let drawing = collection();
   const dependencies = {
-    buildEditableFeatureCollection, createEditorHistory, isEditableVectorStatus,
+    buildEditableFeatureCollection, createEditorHistory, serializeEditorSnapshot, isEditableVectorStatus,
     window: { location: { search: '?project_id=1&result_id=10' }, confirm: () => true },
     readClassificationResultContext: () => ({ projectId: 1, resultId: 10 }),
     getClassificationResult: async () => ({ vector_status: 'ready', current_revision_no: 0, current_feature_collection: collection() }),
