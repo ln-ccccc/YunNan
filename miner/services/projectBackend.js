@@ -55,19 +55,48 @@ async function requestBinary(method, path, { cookie, timeoutMs = 30000 } = {}) {
  * 影像在 BFF 驻留 5GB 堆，两路并发即 OOM）。返回 web 流由路由层 pipe 给响应；
  * 超时只约束建立阶段（30s），body 读取无总时限——后端 gunicorn 自带 1800s 兜底。
  */
-async function requestBinaryStream(method, path, { cookie, connectTimeoutMs = 30000 } = {}) {
+async function requestBinaryStream(method, path, { cookie, signal, connectTimeoutMs = 30000 } = {}) {
   const url = new URL(`${backendBaseUrl}${path}`);
-  const response = await fetch(url, {
-    method,
-    headers: cookie ? { cookie } : {},
-    signal: AbortSignal.timeout(connectTimeoutMs),
-  });
-  return {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('下载上游响应头超时')), connectTimeoutMs);
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: cookie ? { cookie } : {},
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  const upstream = {
     status: response.status,
     contentType: response.headers.get('content-type') || 'application/octet-stream',
     contentLength: response.headers.get('content-length'),
+    contentDisposition: response.headers.get('content-disposition') || '',
     stream: response.body,
   };
+  if (response.status === 200) return upstream;
+
+  // 错误通常为短 JSON；限制大小，避免异常上游把大文件整读进 BFF。
+  const chunks = [];
+  let size = 0;
+  const reader = response.body?.getReader();
+  try {
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 64 * 1024) {
+        controller.abort();
+        throw new Error('下载上游错误响应超过 64 KiB');
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader?.releaseLock();
+  }
+  return { ...upstream, stream: null, body: Buffer.concat(chunks) };
 }
 
 export const projectApi = {
@@ -166,7 +195,7 @@ export const projectApi = {
       { cookie },
     );
   },
-  getProjectOriginalImageryDownload(projectId, jobId, cookie) {
+  getProjectOriginalImageryDownload(projectId, jobId, cookie, { signal } = {}) {
     const safeProjectId = positiveRouteId(projectId, '项目');
     const safeJobId = String(jobId ?? '');
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(safeJobId)) {
@@ -176,7 +205,7 @@ export const projectApi = {
     return requestBinaryStream(
       'GET',
       `/api/projects/${safeProjectId}/mines/original-imagery/${safeJobId}/download`,
-      { cookie },
+      { cookie, signal },
     );
   },
   getProjectOverview(projectId, cookie) {

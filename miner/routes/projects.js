@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 import { projectApi as defaultProjectApi } from '../services/projectBackend.js';
 
@@ -169,25 +171,40 @@ export function createProjectRoutes({
   router.get('/:projectId/mines/:fid/traceability', relay('GET', (req) => `/mines/${encodeURIComponent(req.params.fid)}/traceability`));
 
   router.get('/:projectId/mines/original-imagery/:jobId/download', async (req, res) => {
+    const controller = new AbortController();
+    const cancelUpstream = () => {
+      if (!res.writableFinished) controller.abort();
+    };
+    res.once('close', cancelUpstream);
     try {
       const upstream = await projectApi.getProjectOriginalImageryDownload(
         req.params.projectId,
         req.params.jobId,
         requestCookie(req),
+        { signal: controller.signal },
       );
       // GB 级流式转发：不整读进内存，边收边发；出错体（非 200 JSON）走一次性透传
       if (upstream.stream && upstream.status === 200) {
         res.status(200);
         res.set('content-type', upstream.contentType);
         if (upstream.contentLength) res.set('content-length', upstream.contentLength);
-        const { Readable } = await import('node:stream');
-        Readable.fromWeb(upstream.stream).pipe(res);
+        if (upstream.contentDisposition) res.set('content-disposition', upstream.contentDisposition);
+        await pipeline(Readable.fromWeb(upstream.stream), res);
         return;
       }
       relayBinary(res, upstream);
     } catch (error) {
+      if (controller.signal.aborted || res.destroyed) return;
       console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        res.removeHeader('content-length');
+        res.removeHeader('content-disposition');
+        res.status(502).type('json').json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      }
+    } finally {
+      res.off('close', cancelUpstream);
     }
   });
   router.get('/:projectId/mines/trend-report', relay('GET', () => '/mines/trend-report', { query: true }));

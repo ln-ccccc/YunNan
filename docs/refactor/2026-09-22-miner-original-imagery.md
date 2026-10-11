@@ -7,7 +7,7 @@ Miner 矿山详情弹窗中，与"地物分类"同级新增"原始影像"标签�
 ## 实现
 
 - **后端**（`project_map.py` + `api/project.py`）：数据源是 `InferenceJob.request_payload_json`（归一化后的 `new_tif_path` 指向项目 `inputs/interpretation/<year>/` 中的拷贝，建任务时即落盘）。列表按矿山过滤、(输入,年份) 去重、存在性标注，**物理路径不出现在 DTO**；下载按任务记录解析并强制位于本项目 inputs 根内（路径只来自 DB，客户端不可指定）。端点：`GET /api/projects/<id>/mines/original-imagery?fid=` 与 `.../<job_id>/download`。
-- **BFF**（`miner/routes/projects.js` + `services/projectBackend.js`）：列表走通用 relay，下载走 relayBinary（jobId UUID 校验复用既有参数校验器，下载超时 10 分钟覆盖 GB 级文件）。
+- **BFF**（`miner/routes/projects.js` + `services/projectBackend.js`）：列表走通用 relay；下载成功走流式 pipeline，保留类型、长度及附件名。30 秒只限制连接和响应头，收到头后清除 timer；下游取消会取消上游，断流只结束本次下载。非 200 错误体限 64 KiB 并透传状态/类型，超过上限返回受控 502。jobId 沿用 UUID 校验，不整读成功影像。
 - **UI**（`MineDetailModal.vue` + `useMineData.js` + `mineDetailPresentation.js`）：标签数组追加 `Original`（中文"原始影像"）；与变化矩阵同竞态门控随详情一并拉取；下载经 blob 落盘（上游 JSON 错误体给出提示）。文件缺失的行保留但不可下载（溯源仍可见"用过哪个输入"）。
 
 ## 验证
