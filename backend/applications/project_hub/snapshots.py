@@ -48,10 +48,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _serialize_internal_dataset(dataset):
+    try:
+        storage_key = normalize_dataset_storage_key(
+            get_storage_root(), dataset.file_path, dataset.project_id, allow_legacy=True
+        )
+    except ValueError:
+        # 配置快照保留历史索引；无法安全携带的路径不作为可恢复文件引用。
+        storage_key = None
     return {
         "dataset_kind": dataset.dataset_kind,
         "display_name": dataset.display_name,
-        "file_path": normalize_dataset_storage_key(get_storage_root(), dataset.file_path, dataset.project_id, allow_legacy=True),
+        "file_path": storage_key,
         "source_format": dataset.source_format,
         "mine_fid": dataset.mine_fid,
         "year_start": dataset.year_start,
@@ -299,6 +306,8 @@ def import_backup_manifest(project_id, manifest, actor="system"):
                 )
             )
         def _safe_dataset_path(raw):
+            if raw in (None, ""):
+                return ""
             try:
                 return normalize_dataset_storage_key(get_storage_root(), raw, project.id)
             except ValueError:
@@ -401,7 +410,10 @@ def restore_backup(project_id, backup_id, actor="system"):
                     project_id=project.id,
                     dataset_kind=item["dataset_kind"],
                     display_name=item["display_name"],
-                    file_path=normalize_dataset_storage_key(get_storage_root(), item["file_path"], project.id, allow_legacy=True),
+                    file_path=(
+                        normalize_dataset_storage_key(get_storage_root(), item["file_path"], project.id, allow_legacy=True)
+                        if item["file_path"] not in (None, "") else ""
+                    ),
                     source_format=item.get("source_format"),
                     mine_fid=item.get("mine_fid"),
                     year_start=item.get("year_start"),

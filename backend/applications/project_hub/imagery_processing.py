@@ -253,7 +253,7 @@ def clip_imagery(project_id, payload):
         display_name=f"裁剪 {payload.get('display_name') or source_path.name} (+{buffer_meters:g}m)",
         file_path=_storage_key(out_path),
         source_format="tif",
-        mine_fid=source_dataset.mine_fid if source_dataset else mine_fid,
+        mine_fid=mine_fid if mine_fid is not None else (source_dataset.mine_fid if source_dataset else None),
         year_start=source_dataset.year_start if source_dataset else None,
         year_end=source_dataset.year_end if source_dataset else None,
         slice_config_json='{"origin":"clip"}',

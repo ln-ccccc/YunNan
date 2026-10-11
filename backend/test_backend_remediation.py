@@ -16,7 +16,7 @@ from applications.extensions import db
 from applications.models.project import Project, ProjectDataset
 from applications.project_hub import service
 from applications.project_hub.inference_inputs import _resolve_registered_tif
-from applications.project_hub.snapshots import _project_manifest, import_backup_manifest
+from applications.project_hub.snapshots import _project_manifest, import_backup_manifest, restore_backup
 
 
 class TestBackendRemediation(unittest.TestCase):
@@ -207,6 +207,49 @@ class TestBackendRemediation(unittest.TestCase):
         self.assertIsNone(db.session.get(Project, pid).deleted_at)
         self.assertEqual((root / "sentinel.txt").read_text(), "preserve")
         self.assertEqual(list((self.storage_root / "trash").glob(f"{pid}_*")), [])
+
+    def test_legacy_snapshot_preserves_metadata_without_external_paths(self):
+        pid, _, _ = self._source()
+        for kind in ("report", "inference_result"):
+            db.session.add(ProjectDataset(project_id=pid, dataset_kind=kind,
+                display_name=f"历史{kind}", file_path=f"/legacy-private/{kind}/artifact",
+                source_format="legacy", year_start=2020))
+        db.session.add(ProjectDataset(project_id=pid, dataset_kind="imagery",
+            display_name="历史无文件索引", file_path="", source_format="tif"))
+        db.session.commit()
+        created = service.create_backup(pid, {"scope": "metadata_index"})
+        from applications.models.project import ProjectBackupRecord
+        record = db.session.get(ProjectBackupRecord, created["id"])
+        manifest_path = self.storage_root / record.manifest_path
+        manifest = json.loads(manifest_path.read_text())
+        legacy = [x for x in manifest["datasets"] if x["display_name"].startswith("历史")]
+        self.assertEqual(len(legacy), 3)
+        self.assertTrue(all(x["file_path"] is None for x in legacy))
+        self.assertNotIn("/legacy-private", manifest_path.read_text())
+        restore_backup(pid, record.id)
+        restored = ProjectDataset.query.filter_by(project_id=pid).all()
+        self.assertEqual(len(restored), 4)
+        self.assertTrue(all(x.file_path == "" for x in restored if x.display_name.startswith("历史")))
+        import_backup_manifest(pid, manifest)
+        self.assertEqual(ProjectDataset.query.filter_by(project_id=pid).count(), 4)
+
+    def test_clip_requested_mine_fid_overrides_source_metadata(self):
+        pid, did, _ = self._source()
+        from applications.project_hub.imagery_processing import clip_imagery
+        geometry = box(102.441, 24.796, 102.444, 24.799).__geo_interface__
+        for source_fid in (None, 88):
+            db.session.get(ProjectDataset, did).mine_fid = source_fid
+            db.session.commit()
+            with patch("applications.project_hub.imagery_processing._mine_geometry", return_value=geometry):
+                clipped = clip_imagery(pid, {"source": did, "mine_fid": 42})
+            self.assertEqual(db.session.get(ProjectDataset, clipped["dataset_id"]).mine_fid, 42)
+
+    def test_clip_drawn_geometry_preserves_source_mine_fid(self):
+        pid, did, _ = self._source()
+        db.session.get(ProjectDataset, did).mine_fid = 88
+        db.session.commit()
+        clipped = self._clip(pid, did)
+        self.assertEqual(db.session.get(ProjectDataset, clipped["dataset_id"]).mine_fid, 88)
 
 
 if __name__ == "__main__":
