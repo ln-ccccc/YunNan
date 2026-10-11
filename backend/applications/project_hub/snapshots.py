@@ -47,18 +47,19 @@ from applications.project_hub.spatial_storage import get_storage_root, resolve_s
 LOGGER = logging.getLogger(__name__)
 
 
-def _serialize_internal_dataset(dataset):
+def _internal_dataset_storage_key(value, project_id):
     try:
-        storage_key = normalize_dataset_storage_key(
-            get_storage_root(), dataset.file_path, dataset.project_id, allow_legacy=True
-        )
+        return normalize_dataset_storage_key(get_storage_root(), value, project_id, allow_legacy=True)
     except ValueError:
         # 配置快照保留历史索引；无法安全携带的路径不作为可恢复文件引用。
-        storage_key = None
+        return None
+
+
+def _serialize_internal_dataset(dataset):
     return {
         "dataset_kind": dataset.dataset_kind,
         "display_name": dataset.display_name,
-        "file_path": storage_key,
+        "file_path": _internal_dataset_storage_key(dataset.file_path, dataset.project_id),
         "source_format": dataset.source_format,
         "mine_fid": dataset.mine_fid,
         "year_start": dataset.year_start,
@@ -410,10 +411,7 @@ def restore_backup(project_id, backup_id, actor="system"):
                     project_id=project.id,
                     dataset_kind=item["dataset_kind"],
                     display_name=item["display_name"],
-                    file_path=(
-                        normalize_dataset_storage_key(get_storage_root(), item["file_path"], project.id, allow_legacy=True)
-                        if item["file_path"] not in (None, "") else ""
-                    ),
+                    file_path=_internal_dataset_storage_key(item["file_path"], project.id) or "",
                     source_format=item.get("source_format"),
                     mine_fid=item.get("mine_fid"),
                     year_start=item.get("year_start"),

@@ -202,6 +202,8 @@ def clip_imagery(project_id, payload):
         original_bounds = _geom_bounds(geometry)
         if not all(math.isfinite(value) for value in original_bounds):
             raise ImageryProcessingError("裁剪范围坐标不合法")
+        if original_bounds[0] >= original_bounds[2] or original_bounds[1] >= original_bounds[3]:
+            raise ImageryProcessingError("裁剪范围无效（零面积）")
         if buffer_meters:
             lon = (original_bounds[0] + original_bounds[2]) / 2
             lat = (original_bounds[1] + original_bounds[3]) / 2

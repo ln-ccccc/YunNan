@@ -251,6 +251,35 @@ class TestBackendRemediation(unittest.TestCase):
         clipped = self._clip(pid, did)
         self.assertEqual(db.session.get(ProjectDataset, clipped["dataset_id"]).mine_fid, 88)
 
+    def test_buffer_does_not_make_zero_area_polygon_valid(self):
+        pid, did, _ = self._source()
+        response = self.client.post(f"/api/projects/{pid}/imagery/clip", json={
+            "source": did, "buffer_meters": 100,
+            "geometry": {"type": "Polygon", "coordinates": [
+                [[102.442, 24.797], [102.442, 24.797], [102.442, 24.797], [102.442, 24.797]]
+            ]},
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(ProjectDataset.query.filter_by(project_id=pid).count(), 1)
+
+    def test_old_internal_snapshot_restores_external_reference_as_metadata_only(self):
+        pid, _, _ = self._source()
+        created = service.create_backup(pid, {"scope": "metadata_index"})
+        from applications.models.project import ProjectBackupRecord
+        record = db.session.get(ProjectBackupRecord, created["id"])
+        path = self.storage_root / record.manifest_path
+        manifest = json.loads(path.read_text())
+        # 模拟旧版本实际写出的服务端快照；身份与版本字段保持合法。
+        manifest["datasets"][0]["file_path"] = "/legacy-private/old-imagery.tif"
+        path.write_text(json.dumps(manifest))
+        restore_backup(pid, record.id)
+        self.assertEqual(ProjectDataset.query.filter_by(project_id=pid).one().file_path, "")
+        assets = service.get_project_assets(pid)["items"]
+        self.assertEqual(next(x for x in assets if x["asset_type"] == "imagery")["status"], "registered")
+        with self.assertRaisesRegex(ValueError, "本项目"):
+            import_backup_manifest(pid, manifest)
+        self.assertEqual(ProjectDataset.query.filter_by(project_id=pid).one().file_path, "")
+
 
 if __name__ == "__main__":
     unittest.main()
