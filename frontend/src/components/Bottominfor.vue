@@ -21,6 +21,8 @@ export default {
   justify-content: flex-end;
   margin-top: 24px;
   padding: 12px 0;
+  /* 避开固定的返回顶部按钮，并保留链接焦点轮廓的空间。 */
+  padding-inline-end: 64px;
   font-size: 13px;
   line-height: 1.6;
 }
