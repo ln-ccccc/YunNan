@@ -41,6 +41,7 @@ function editor(overrides = {}) {
   const options = new Function('dependencies', `with (dependencies) { ${script} }`)(dependencies);
   const instance = {
     ...options.data(), ...options.methods,
+    loading: false,
     context: { projectId: 1, resultId: 10 },
     result: { vector_status: 'ready', current_revision_no: 0, current_feature_collection: collection() },
     draw: {
@@ -209,5 +210,47 @@ test('a save finishing after unmount is ignored and repeated save clicks create 
   pending.resolve({ current_revision_no: 1, feature_collection: collection(2) });
   await saving;
   assert.equal(instance.result.current_revision_no, 0);
+  assert.deepEqual(messages, []);
+});
+
+test('manual reload during saving keeps the map and does not ask to discard', async () => {
+  const pending = deferred();
+  let confirms = 0;
+  const { instance } = editor({
+    saveClassificationRevision: () => pending.promise,
+    window: { location: { search: '' }, confirm: () => { confirms++; return true; } },
+  });
+  const draw = instance.draw;
+  const saving = instance.saveDrawing();
+  await instance.reloadResult();
+  assert.equal(confirms, 0);
+  assert.equal(instance.draw, draw);
+  assert.equal(instance.saving, true);
+  assert.equal(instance.result.current_revision_no, 0);
+  pending.resolve({ current_revision_no: 1, feature_collection: collection(2) });
+  await saving;
+  assert.equal(instance.result.current_revision_no, 1);
+});
+
+test('a confirmed route switch during saving loads the new context and ignores the old save', async () => {
+  const pending = deferred();
+  let confirms = 0;
+  const { instance, options, messages } = editor({
+    saveClassificationRevision: () => pending.promise,
+    window: { location: { search: '' }, confirm: () => { confirms++; return true; } },
+    readClassificationResultContext: () => ({ projectId: 2, resultId: 20 }),
+    getClassificationResult: async () => ({ vector_status: 'ready', current_revision_no: 4, current_feature_collection: collection(4) }),
+  });
+  const saving = instance.saveDrawing();
+  assert.equal(options.beforeRouteUpdate.call(instance), true);
+  options.watch['$route.fullPath'].call(instance);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(confirms, 1);
+  assert.deepEqual(instance.context, { projectId: 2, resultId: 20 });
+  assert.equal(instance.result.current_revision_no, 4);
+  assert.equal(instance.saving, false);
+  pending.resolve({ current_revision_no: 1, feature_collection: collection(2) });
+  await saving;
+  assert.equal(instance.result.current_revision_no, 4);
   assert.deepEqual(messages, []);
 });

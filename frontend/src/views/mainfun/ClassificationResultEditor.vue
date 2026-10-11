@@ -13,7 +13,7 @@
       </div>
       <div class="header-actions">
         <el-button plain @click="goBack">返回分类结果</el-button>
-        <el-button :loading="loading" plain @click="reloadResult">重新加载</el-button>
+        <el-button :loading="loading" :disabled="saving" plain @click="reloadResult">重新加载</el-button>
       </div>
     </div>
 
@@ -309,7 +309,7 @@ export default {
         && this.context?.resultId === context.resultId;
     },
     async reloadResult({ discardConfirmed = false } = {}) {
-      if (this.destroyed || (!discardConfirmed && !this.confirmDiscardChanges())) return;
+      if (this.destroyed || (!discardConfirmed && (this.saving || !this.confirmDiscardChanges()))) return;
       // 竞态守卫：两次 reload 并发时（前进/后退、重复进入），先发后至的旧响应
       // 会把 A 成果的数据装进 B 成果的 context，保存时即写错对象
       const seq = (this.reloadSeq = (this.reloadSeq || 0) + 1);
