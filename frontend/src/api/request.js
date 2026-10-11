@@ -33,6 +33,12 @@ function isCancelledRequest(error) {
 }
 
 export function request(config) {
+  let loadingActive = false;
+  const releaseLoading = () => {
+    if (!loadingActive) return;
+    loadingActive = false;
+    hideFullScreenLoading();
+  };
   const instance = axios.create({
     baseURL: global.BASEURL,
     withCredentials: true,
@@ -42,13 +48,14 @@ export function request(config) {
     // 轮询/后台请求可携带 silent 标记，避免每次触发全屏锁死 loading
     if (!reqConfig.silent) {
       showFullScreenLoading();
+      loadingActive = true;
     }
     return reqConfig;
   });
 
   instance.interceptors.response.use(
     (response) => {
-      hideFullScreenLoading();
+      releaseLoading();
 
       // silent 轮询/后台请求：失败也不弹 toast——轮询断线自愈期间每秒一条提示会刷屏，
       // 终态/断链由调用方（waitForInferenceJob 等）统一给出结论
@@ -66,7 +73,7 @@ export function request(config) {
       return response;
     },
     (error) => {
-      hideFullScreenLoading();
+      releaseLoading();
 
       // 主动取消（上传 AbortController）：不弹错误提示，由调用方给出友好文案
       if (isCancelledRequest(error)) {
