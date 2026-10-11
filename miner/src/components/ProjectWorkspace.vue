@@ -699,6 +699,8 @@ async function reactivateBasemap(resourceId) {
   if (!currentProjectId.value || !window.confirm('确认重新激活此历史底图吗？当前激活底图将转为 retained。')) return;
   const operation = startProjectOperation();
   if (!operation) return;
+  spatialUi.error = '';
+  slices.spatial.error = '';
   try {
     await api.reactivateBasemap(operation.projectId, resourceId);
     if (!isCurrentProjectOperation(operation)) return;

@@ -72,7 +72,7 @@ test('workspace shows a rejected historical basemap reason and keeps its current
     },
     post: async () => ({ status: 200, data: { success: false, code: 1, msg: '该底图未完成切片，请重试原任务' } }),
   };
-  const { bindings } = setupComponent('ProjectWorkspace.vue', axios, {
+  const { bindings, render } = setupComponent('ProjectWorkspace.vue', axios, {
     createProjectWorkspaceApi: (options) => createProjectWorkspaceApi({ ...options, http: axios }),
     window: { confirm: () => true },
   });
@@ -81,9 +81,13 @@ test('workspace shows a rejected historical basemap reason and keeps its current
   await flushRequests();
   const spatial = { map_ready: true, resources: [{ id: 36, status: 'active' }] };
   bindings.slices.spatial.data = spatial;
+  bindings.spatialUi.error = '前次底图登记失败';
   requests.length = 0;
   await bindings.reactivateBasemap(35);
   assert.match(bindings.slices.spatial.error, /未完成切片，请重试原任务/);
+  const panel = findNode(render(), (node) => node.type === 'ProjectSpatialResources');
+  assert.ok(panel);
+  assert.match(panel.props.error, /未完成切片，请重试原任务/);
   assert.deepEqual(bindings.slices.spatial.data, spatial);
   assert.equal(bindings.projectOperationBusy.value, false);
   assert.deepEqual(requests, []);
