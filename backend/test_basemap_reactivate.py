@@ -2,6 +2,8 @@
 
 import json
 
+from PIL import Image
+
 from applications.extensions import db
 from applications.models.project import ProjectMineBinding
 from applications.models.project_spatial import ProjectSpatialResource
@@ -30,6 +32,7 @@ class TestBasemapReactivate(TestProjectAPI):
             )
             tile_dir.mkdir(parents=True, exist_ok=True)
             (tile_dir / ".active").write_text("1", encoding="utf-8")
+            Image.new("RGB", (1, 1), color=(25, 80, 45)).save(tile_dir / "0.png")
         db.session.commit()
         return resource
 
@@ -92,7 +95,9 @@ class TestBasemapReactivate(TestProjectAPI):
 
     def test_reactivate_rejects_missing_tiles(self):
         project_id = self._seed_project_with_mine()
-        self._add_basemap(project_id, version=1, status="retained", with_tiles=False)
+        retained = self._add_basemap(project_id, version=1, status="retained")
+        tile_dir = self.storage_root / "projects" / str(project_id) / "tiles" / str(retained.id)
+        (tile_dir / "0.png").unlink()
         self._add_basemap(project_id, version=2, status="active")
         retained = ProjectSpatialResource.query.filter_by(
             project_id=project_id, resource_type="basemap", status="retained"
