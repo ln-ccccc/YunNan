@@ -92,6 +92,34 @@ class ImageryProcessingBase(TestProjectAPI):
 
 
 class TestImageryCandidates(ImageryProcessingBase):
+    def test_registered_input_is_not_repeated_as_an_unregistered_candidate(self):
+        dataset = ProjectDataset(
+            project_id=self.project_id, dataset_kind="imagery", display_name="登记影像",
+            file_path=self.source_key, source_format="tif", year_start=2022,
+        )
+        db.session.add(dataset)
+        db.session.commit()
+        data = self._candidates().get_json()["data"]
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["items"][0]["dataset_id"], dataset.id)
+        self.assertEqual(data["items"][0]["display_name"], "登记影像")
+        self.assertEqual(data["items"][0]["year"], 2022)
+
+    def test_distinct_files_with_identical_names_and_pixels_remain_candidates(self):
+        second = _make_raster(self.inputs_dir / "2021" / self.source.name)
+        dataset = ProjectDataset(
+            project_id=self.project_id, dataset_kind="imagery", display_name=self.source.name,
+            file_path=self.source_key, source_format="tif", year_start=2022,
+        )
+        db.session.add(dataset)
+        db.session.commit()
+        data = self._candidates().get_json()["data"]
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(sum(item["dataset_id"] == dataset.id for item in data["items"]), 1)
+        scanned = next(item for item in data["items"] if item["dataset_id"] is None)
+        self.assertEqual(scanned["storage_key"], second.relative_to(self.storage_root).as_posix())
+        self.assertEqual(scanned["year"], 2021)
+
     def test_candidates_include_inputs_dir_rasters_with_summary(self):
         response = self._candidates()
         self.assertEqual(response.status_code, 200)

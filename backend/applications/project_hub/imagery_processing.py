@@ -93,6 +93,7 @@ def _resolve_source(project, source_key):
 def list_imagery_candidates(project_id):
     project = _project_or_404(project_id)
     items = []
+    registered_paths = set()
     for dataset in ProjectDataset.query.filter_by(project_id=project.id, dataset_kind="imagery"):
         try:
             path = resolve_project_imagery_path(
@@ -100,6 +101,8 @@ def list_imagery_candidates(project_id):
             )
         except ValueError:
             path = None
+        if path is not None:
+            registered_paths.add(path)
         summary = _raster_summary(path)
         items.append({
             "dataset_id": dataset.id,
@@ -109,11 +112,11 @@ def list_imagery_candidates(project_id):
         })
     # 项目影像输入目录（裁剪/切片产物与登记影像）：与 interpretation 输入同级
     for sub in ("imagery", "interpretation"):
-        _append_input_candidates(items, project.id, sub)
+        _append_input_candidates(items, project.id, sub, registered_paths)
     return {"items": items, "count": len(items)}
 
 
-def _append_input_candidates(items, project_id, subdir):
+def _append_input_candidates(items, project_id, subdir, registered_paths):
     """扫描 inputs/<subdir>/ 下各年份目录的栅格文件（.hdr 伴生跳过）。
 
     imagery 子目录（裁剪/切片产物）无年份分层，文件直接平铺——两种布局都认。
@@ -128,15 +131,17 @@ def _append_input_candidates(items, project_id, subdir):
     if year_dirs:
         for year_dir in sorted(year_dirs, reverse=True):
             for raster in sorted(year_dir.iterdir()):
-                _append_one_input(items, raster, int(year_dir.name))
+                _append_one_input(items, raster, int(year_dir.name), registered_paths)
         return
     # 布局 B：平铺（imagery 裁剪/切片产物）
     for raster in sorted(inputs_root.iterdir()):
         if raster.is_file():
-            _append_one_input(items, raster, None)
+            _append_one_input(items, raster, None, registered_paths)
 
 
-def _append_one_input(items, raster, year):
+def _append_one_input(items, raster, year, registered_paths):
+    if raster.resolve() in registered_paths:
+        return
     if raster.suffix.lstrip(".").lower() in ("hdr",):
         return
     summary = _raster_summary(raster)
