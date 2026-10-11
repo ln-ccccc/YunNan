@@ -1,0 +1,7 @@
+{
+  "success": {"request": {"prehandle": 2, "denoise": 5}, "order": ["clahe", "gaussian_blur"]},
+  "default": {"request": {}, "prehandle": 0, "denoise": 0, "processed_directory": false},
+  "no_data": {"request": {"prehandle": 4, "denoise": 0}, "status": "no_features", "tiles": []},
+  "parameter_error": {"requests": [{"prehandle": true}, {"denoise": 2}, {"prehandle": "2"}, {"denoise": null}], "http_status": 400},
+  "failed": {"request": {"prehandle": 2, "denoise": 3}, "unreadable_rgb": true, "status": "failed"}
+}

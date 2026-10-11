@@ -7,6 +7,7 @@ from flask import current_app
 
 from applications.inference.jobs import create_job, normalize_job_request
 from applications.inference.routing import resolve_interpretation_scope
+from applications.inference.preprocessing import normalize_preprocessing_options
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 
@@ -76,6 +77,7 @@ def _publish_project_input(project_id, tif_path, year):
 
 def prepare_geoview_interpretation(payload):
     source = dict(payload or {})
+    normalize_preprocessing_options(source)
     tif_path = resolve_uploaded_tiff(source.get("new_tif_path") or source.get("old_tif_path"))
     scope = resolve_interpretation_scope(source.get("project_id"), tif_path)
     if scope["mode"] == "standalone":

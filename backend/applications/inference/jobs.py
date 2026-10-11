@@ -6,6 +6,7 @@ import re
 import uuid
 from pathlib import Path
 from applications.common.utils.utc_time import to_utc_z
+from applications.inference.preprocessing import normalize_preprocessing_options
 
 
 _PUBLIC_REQUEST_FIELDS = (
@@ -20,6 +21,8 @@ _PUBLIC_REQUEST_FIELDS = (
     "new_year",
     "requested_device",
     "limit",
+    "prehandle",
+    "denoise",
 )
 _PRIVATE_PATH_FIELDS = {
     "file_path",
@@ -74,6 +77,7 @@ def _normalize_requested_device(value):
 
 def normalize_job_request(payload, *, allowed_roots, allowed_output_roots=None):
     source = dict(payload or {})
+    preprocessing = normalize_preprocessing_options(source)
     old_tif_path = _resolve_existing_input(source.get("old_tif_path"), allowed_roots, "old_tif_path")
     new_tif_path = _resolve_existing_input(
         source.get("new_tif_path") or old_tif_path,
@@ -81,6 +85,7 @@ def normalize_job_request(payload, *, allowed_roots, allowed_output_roots=None):
         "new_tif_path",
     )
     result = {
+        **preprocessing,
         "old_tif_path": old_tif_path,
         "new_tif_path": new_tif_path,
         "requested_device": _normalize_requested_device(source.get("device") or source.get("requested_device")),

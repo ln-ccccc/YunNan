@@ -27,6 +27,18 @@ export function groupUploadSourcesByTiff(uploadItems = []) {
   return groups;
 }
 
+export function buildRoiInferencePayload(tifPath, year, projectId, options = {}) {
+  return {
+    old_tif_path: tifPath,
+    new_tif_path: tifPath,
+    year,
+    device: 'auto',
+    prehandle: options.prehandle ?? 0,
+    denoise: options.denoise ?? 0,
+    ...(projectId ? { project_id: projectId } : {}),
+  };
+}
+
 function backendAssetUrl(backendBaseUrl, value) {
   if (!value) return null;
   const base = String(backendBaseUrl || '').endsWith('/')

@@ -18,6 +18,7 @@ from applications.interface.analysis import handle, spectral_index_calculation, 
 from applications.inference.paths import resolve_output_file
 from applications.inference.interpretation import prepare_geoview_interpretation, resolve_uploaded_tiff
 from applications.inference.jobs import serialize_job
+from applications.inference.preprocessing import normalize_preprocessing_options
 from applications.inference.routing import resolve_interpretation_scope
 from applications.models.analysis import Analysis
 from applications.models.classification_result import ClassificationResult
@@ -202,10 +203,12 @@ def semantic_segmentation_api():
     if not img_list:
         return fail_api("请上传图片")
 
-    step1_ = req_json.get("prehandle")
-    step2_ = req_json.get("denoise")
-    if step1_ not in (0, fun_type_2, fun_type_4) or step2_ not in (0, fun_type_3, fun_type_5):
-        return fail_api("参数异常")
+    try:
+        options = normalize_preprocessing_options(req_json)
+    except ValueError as error:
+        return fail_api(str(error))
+    step1_ = options.get("prehandle", 0)
+    step2_ = options.get("denoise", 0)
 
     try:
         terrain_classification(model_path, up_dir, generate_dir, img_list, step1_, step2_, type_=3)

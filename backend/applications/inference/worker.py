@@ -312,6 +312,8 @@ class InferenceWorker:
             )
 
     def _run_pipeline(self, payload, work_dir):
+        from applications.inference.preprocessing import normalize_preprocessing_options
+
         is_project_job = payload.get("project_id") not in (None, "")
         return self.pipeline_runner(
             old_tif=Path(payload["old_tif_path"]),
@@ -327,6 +329,7 @@ class InferenceWorker:
             old_year=payload.get("old_year") or None,
             new_year=payload.get("new_year") or None,
             selected_fids=payload.get("mine_fids") or None,
+            **normalize_preprocessing_options(payload),
             tile_runner=self._tile_runner,
         )
 

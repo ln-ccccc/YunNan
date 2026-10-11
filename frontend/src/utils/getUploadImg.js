@@ -14,6 +14,7 @@ import {
 import {
   buildProjectInferenceCards,
   buildInterpretationHistoryCards,
+  buildRoiInferencePayload,
   groupUploadSourcesByTiff
 } from "@/utils/interpretationContext.mjs";
 import { checkUploadLimits, isDisconnectError } from "@/utils/uploadGuards.mjs";
@@ -71,6 +72,10 @@ function upload(type, funUrl) {
   const formData = new FormData();
   const isSegmentation = funUrl === 'semantic_segmentation';
   const roiYear = isSegmentation ? String(this.roiYear || '').trim() : '';
+  const preprocessing = {
+    prehandle: this.uploadSrc.prehandle,
+    denoise: this.uploadSrc.denoise,
+  };
   if (isSegmentation) {
     if (!/^\d{4}$/.test(roiYear)) {
       this.$message.error("请先填写4位年份（YYYY），用于KML ROI结果命名");
@@ -235,13 +240,9 @@ function upload(type, funUrl) {
           for (let index = 0; index < rawTiffPaths.length; index++) {
             const tifPath = rawTiffPaths[index];
             inferProgress.value = `第 ${index + 1}/${total} 张推理中`;
-            const response = await kmlRoiInfer({
-              old_tif_path: tifPath,
-              new_tif_path: tifPath,
-              year: roiYear,
-              device: 'auto',
-              ...(this.projectId ? { project_id: this.projectId } : {})
-            });
+            const response = await kmlRoiInfer(buildRoiInferencePayload(
+              tifPath, roiYear, this.projectId, preprocessing,
+            ));
             const routed = response?.data?.data || {};
             if (routed.mode === 'standalone') {
               standaloneSources.push(...(sourcesByTiff.get(tifPath) || []));
@@ -266,7 +267,7 @@ function upload(type, funUrl) {
         let standaloneHandled = false;
         if (standaloneSources.length > 0) {
           await this.imgUpload(
-            { ...this.uploadSrc, list: standaloneSources },
+            { ...this.uploadSrc, ...preprocessing, list: standaloneSources },
             funUrl
           );
           standaloneHandled = true;

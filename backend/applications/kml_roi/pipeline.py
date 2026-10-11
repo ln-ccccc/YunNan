@@ -11,6 +11,7 @@ from applications.kml_roi.kml import load_vector_features
 from applications.kml_roi.raster_ops import raster_union_bounds_4326
 from applications.kml_roi.spatial_index import filter_features_by_bounds
 from applications.kml_roi.tiles import distribute_outputs, prepare_tiles
+from applications.kml_roi.preprocessing import preprocessing_record, prepare_processed_tiles
 
 
 def run_kml_roi_pipeline(
@@ -28,8 +29,13 @@ def run_kml_roi_pipeline(
     old_year: Optional[str] = None,
     new_year: Optional[str] = None,
     selected_fids: Optional[Iterable] = None,
+    prehandle: int = 0,
+    denoise: int = 0,
     tile_runner=run_mmseg_tiles,
 ) -> Dict:
+    preprocessing = preprocessing_record(prehandle, denoise)
+    if not preprocessing["order"]:
+        preprocessing = None
     tile_dir = work_dir / "tiles"
     mmseg_out_dir = work_dir / "mmseg_out"
 
@@ -56,6 +62,8 @@ def run_kml_roi_pipeline(
     mark("prep_dirs")
 
     def finish(summary):
+        if preprocessing is not None:
+            summary["preprocessing"] = preprocessing
         json.dumps(summary, ensure_ascii=False)
         summary["stage_durations"] = dict(stage_durations)
         summary["total_seconds"] = round(time.monotonic() - run_started, 3)
@@ -95,9 +103,16 @@ def run_kml_roi_pipeline(
             "matched_fids": 0,
         })
 
+    inference_dir = tile_dir
+    if preprocessing is not None:
+        inference_dir, preprocessing = prepare_processed_tiles(
+            tile_dir, work_dir / "preprocessed", file_names,
+            [("old", old_tif), ("new", new_tif)], prehandle=prehandle, denoise=denoise,
+        )
+        mark("preprocessing")
     failed_tiles, tile_errors = tile_runner(
         model_id=model_id,
-        data_path=str(tile_dir),
+        data_path=str(inference_dir),
         out_dir=str(mmseg_out_dir),
         file_names=file_names,
         device=device,

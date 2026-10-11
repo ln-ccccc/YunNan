@@ -168,6 +168,37 @@ class TestInterpretationAPI(unittest.TestCase):
         self.assertIn("尚未激活矿山资源", self._json(response)["msg"])
         self.assertEqual(InferenceJob.query.count(), 0)
 
+    def test_preprocessing_options_are_persisted_and_public(self):
+        project = create_project({"name": "预处理参数", "region": "Dali"})
+        vector_path = Path(os.environ["PROJECT_STORAGE_ROOT"]) / f"projects/{project['id']}/mines.geojson"
+        vector_path.parent.mkdir(parents=True, exist_ok=True)
+        vector_path.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+        with patch("applications.inference.interpretation.resolve_interpretation_scope", return_value={
+            "mode": "project", "project_id": project["id"], "mine_resource_id": 1,
+            "vector_path": str(vector_path), "matched_fids": [101], "warnings": [],
+        }):
+            response = self.client.post("/api/analysis/kml_roi_inference", json={
+                "project_id": project["id"], "new_tif_path": str(self.tif_path), "year": "2024",
+                "prehandle": 2, "denoise": 5,
+            })
+        self.assertEqual(response.status_code, 201)
+        public_request = self._json(response)["data"]["job"]["request"]
+        self.assertEqual(public_request.get("prehandle"), 2)
+        self.assertEqual(public_request.get("denoise"), 5)
+        private = json.loads(InferenceJob.query.one().request_payload_json)
+        self.assertEqual(private.get("prehandle"), 2)
+        self.assertEqual(private.get("denoise"), 5)
+
+    def test_invalid_preprocessing_is_rejected_before_copy_or_standalone_route(self):
+        for options in ({"prehandle": True}, {"denoise": 2}, {"prehandle": "2"}, {"denoise": None}):
+            with self.subTest(options=options):
+                response = self.client.post("/api/analysis/kml_roi_inference", json={
+                    "new_tif_path": str(self.tif_path), "year": "2024", **options,
+                })
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(InferenceJob.query.count(), 0)
+
+
 
 if __name__ == "__main__":
     unittest.main()
