@@ -374,7 +374,12 @@ export default {
       const sources = {};
       const layers = [{ id: 'editor-background', type: 'background', paint: { 'background-color': '#edf3f1' } }];
       if (this.tileTemplate) {
-        sources.project_basemap = { type: 'raster', tiles: [this.tileTemplate], tileSize: 256 };
+        sources.project_basemap = {
+          type: 'raster', tiles: [this.tileTemplate], tileSize: 256,
+          minzoom: mapManifest.min_zoom ?? 0,
+          maxzoom: mapManifest.max_zoom ?? 22,
+          ...(bounds ? { bounds } : {}),
+        };
         layers.push({ id: 'project-basemap', type: 'raster', source: 'project_basemap', paint: { 'raster-opacity': 0.92 } });
       }
       const backendOrigin = new URL(global.BASEURL).origin;
@@ -388,9 +393,12 @@ export default {
           ...(url.startsWith(backendOrigin) ? { credentials: 'include' } : {}),
         }),
       });
-      this.map.on('load', () => {
-        if (!this.map) return;
-        this.map.addControl(new NavigationControl(), 'top-left');
+      const map = this.map;
+      map.addControl(new NavigationControl(), 'top-left');
+      // 先定位实际成果，避免离线瓦片在初始缩放级别缺失时阻塞绘图初始化。
+      this.fitToCurrentFeatures(bounds);
+      map.once('load', () => {
+        if (this.destroyed || this.map !== map) return;
         // 对齐 MapLibre 的控件样式和画布键盘事件，避免工具可见但无法点击。
         Object.assign(MapboxDraw.constants.classes, {
           CANVAS: 'maplibregl-canvas',
@@ -409,7 +417,6 @@ export default {
         this.map.on('draw.update', this.handleDrawUpdate);
         this.map.on('draw.delete', this.handleDrawDelete);
         this.map.on('draw.selectionchange', this.handleSelectionChange);
-        this.fitToCurrentFeatures(bounds);
       });
     },
     destroyMap() {
