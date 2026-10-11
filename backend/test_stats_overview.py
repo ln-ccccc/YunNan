@@ -20,7 +20,7 @@ from applications.extensions import db
 from applications.models.classification_result import ClassificationResult
 from applications.models.inference_job import InferenceJob
 from applications.models.project import Project, ProjectMineBinding
-from applications.api.stats import _change_metrics, _spherical_ring_area_m2
+from applications.api.stats import _change_metrics, _pixel_area_m2, _spherical_ring_area_m2
 
 
 def _write_tif(path: Path, width=4, height=4, pixel_deg=0.0001):
@@ -132,7 +132,66 @@ class TestSphericalArea(unittest.TestCase):
         self.assertEqual(_spherical_ring_area_m2([]), 0.0)
 
 
+class TestPixelAreaUnits(unittest.TestCase):
+    def test_pixel_area_uses_crs_units_and_rotated_affine_cell(self):
+        import math
+        import tempfile
+        import numpy as np
+        import rasterio
+        from affine import Affine
+        cases = (
+            ("EPSG:32647", Affine(10, 0, 848510, 0, -10, 2745720), 100.0),
+            ("EPSG:32647", Affine(10, 4, 848510, 2, -10, 2745720), 108.0),
+            ("EPSG:2227", Affine(3, 0, 6000000, 0, -7, 2000000), 21 * (1200 / 3937) ** 2),
+            ("EPSG:4326", Affine(0.0001, 0, 100, 0, -0.0002, 26),
+             0.0001 * 0.0002 * 111320 ** 2 * math.cos(math.radians(25.9996))),
+            ("EPSG:4807", Affine(0.0001, 0, 10, 0, -0.0002, 28),
+             0.0001 * 0.0002 * 0.9 ** 2 * 111320 ** 2 * math.cos(math.radians(27.9996 * 0.9))),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for index, (crs, transform, expected) in enumerate(cases):
+                with self.subTest(crs=crs, rotated=bool(transform.b)):
+                    root = Path(directory) / str(index)
+                    root.mkdir()
+                    with rasterio.open(root / "17+2024_label.tif", "w", driver="GTiff", height=4,
+                                       width=4, count=1, dtype="uint8", crs=crs, transform=transform) as dst:
+                        dst.write(np.zeros((1, 4, 4), dtype=np.uint8))
+                    self.assertAlmostEqual(expected, _pixel_area_m2(root), places=6)
+
+    def test_missing_crs_does_not_guess_pixel_area(self):
+        import tempfile
+        import numpy as np
+        import rasterio
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with rasterio.open(root / "17+2024_label.tif", "w", driver="GTiff", height=4,
+                               width=4, count=1, dtype="uint8", transform=rasterio.transform.from_origin(100, 26, 10, 10)) as dst:
+                dst.write(np.zeros((1, 4, 4), dtype=np.uint8))
+            self.assertIsNone(_pixel_area_m2(root))
+
+
 class TestStatsOverview(StatsOverviewBase):
+    def test_projected_net_restoration_is_reported_in_square_metres(self):
+        import numpy as np
+        import rasterio
+        project = self._create_project("投影坐标统计")
+        db.session.add(ProjectMineBinding(project_id=project.id, mine_fid=77))
+        db.session.commit()
+        fid_dir = self.storage_root / "projects" / str(project.id) / "outputs" / "inference" / "77"
+        fid_dir.mkdir(parents=True)
+        with rasterio.open(fid_dir / "77+2025_label.tif", "w", driver="GTiff", height=4,
+                           width=4, count=1, dtype="uint8", crs="EPSG:32647",
+                           transform=rasterio.transform.from_origin(848510, 2745720, 10, 10)) as dst:
+            dst.write(np.zeros((1, 4, 4), dtype=np.uint8))
+        (fid_dir / "change_matrix_pixels.csv").write_text(
+            "class,grassland,forest,building,road,bareground,water\n"
+            "grassland,2,0,0,0,3,0\n"
+            "bareground,13,0,0,0,0,0\n", encoding="utf-8",
+        )
+        data = self.client.get("/api/stats/overview").get_json()["data"]
+        self.assertEqual(1000.0, data["restored_area_m2"])
+        self.assertEqual(1, data["suspect_mine_count"])
+
     def test_empty_database_overview(self):
         body = self.client.get("/api/stats/overview").get_json()
         self.assertEqual(body["code"], 0)

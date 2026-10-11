@@ -138,14 +138,26 @@ def _read_change_matrix_pixels(fid_dir: Path):
 
 
 def _pixel_area_m2(fid_dir: Path):
-    """像元面积：最新 label.tif 的 transform（度→米按中心纬度换算）。"""
+    """像元面积：仿射像元面积按 CRS 单位换算，地理坐标沿用中心纬度近似。"""
     labels = sorted(fid_dir.glob("*_label.tif"))
     if not labels:
         return None
     try:
         with rasterio.open(labels[-1]) as src:
-            center_lat = math.radians((src.bounds.top + src.bounds.bottom) / 2.0)
-            return abs(src.transform.a) * abs(src.transform.e) * (111320.0 ** 2) * math.cos(center_lat)
+            if src.crs is None:
+                LOGGER.warning("统计像元面积缺少 CRS，无法换算 m²: %s", labels[-1].name)
+                return None
+            cell_area = abs(src.transform.a * src.transform.e - src.transform.b * src.transform.d)
+            if src.crs.is_projected:
+                return cell_area * src.crs.linear_units_factor[1] ** 2
+            if src.crs.is_geographic:
+                from osgeo import osr
+
+                radians_per_unit = osr.SpatialReference(wkt=src.crs.to_wkt()).GetAngularUnits()
+                center_lat = (src.bounds.top + src.bounds.bottom) / 2.0 * radians_per_unit
+                return cell_area * math.degrees(radians_per_unit) ** 2 * (111320.0 ** 2) * math.cos(center_lat)
+            LOGGER.warning("统计像元面积不支持此 CRS，无法换算 m²: %s", labels[-1].name)
+            return None
     except (OSError, ValueError):
         return None
 
