@@ -205,6 +205,35 @@ class TestProjectAPI(unittest.TestCase):
         self.assertIn(item["lifecycle_status"], ("draft", "active", "completed", "archived"))
         self.assertEqual(item["lifecycle_status"], item["status"])
 
+    def test_project_cards_read_latest_task_metadata_without_loading_result_json(self):
+        from datetime import datetime
+        from applications.models.inference_job import InferenceJob
+
+        self.login_as_admin()
+        project_id = self._create_project("任务元数据列表")
+        for job_id, status, year in (("older", "succeeded", 2020), ("latest", "running", 2021)):
+            db.session.add(InferenceJob(
+                id=job_id, project_id=project_id, status=status,
+                request_payload_json="{}", result_json=json.dumps({"large": "x" * 500000}),
+                create_time=datetime(year, 1, 1),
+            ))
+        db.session.commit()
+        statements = []
+        def record_sql(connection, cursor, statement, parameters, context, executemany):
+            if "FROM inference_jobs" in statement:
+                statements.append(statement)
+        event.listen(db.engine, "before_cursor_execute", record_sql)
+        try:
+            response = self.client.get("/api/projects")
+        finally:
+            event.remove(db.engine, "before_cursor_execute", record_sql)
+        self.assertEqual(response.status_code, 200)
+        item = next(row for row in self._json(response)["data"]["items"] if row["id"] == project_id)
+        self.assertEqual(item["latest_inference"]["job_id"], "latest")
+        self.assertEqual(item["latest_inference"]["status"], "running")
+        self.assertTrue(statements)
+        self.assertFalse(any("inference_jobs.result_json" in sql for sql in statements))
+
     def test_dataset_registration_requires_safe_incoming_tiff_storage_key(self):
         self.login_as_admin()
         response = self.client.post(

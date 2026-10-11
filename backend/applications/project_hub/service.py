@@ -110,6 +110,7 @@ def _project_list_latest_inference():
     """项目 → 最近一次推理任务（状态/时间），供项目卡片"最新解译进度"。"""
     latest = (
         InferenceJob.query.filter(InferenceJob.project_id.isnot(None))
+        .with_entities(InferenceJob.id, InferenceJob.project_id, InferenceJob.status, InferenceJob.create_time)
         .order_by(InferenceJob.project_id, InferenceJob.create_time.desc())
         .all()
     )
