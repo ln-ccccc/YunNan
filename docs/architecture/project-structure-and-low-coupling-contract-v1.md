@@ -185,6 +185,12 @@ HTTP 响应沿用标准 envelope：`{success, code, data}`。`data` 是完整的
 - 不返回与 Vue 路由绑定的后端路径，以免领域层与页面结构耦合；
 - `GET /api/projects/{id}` 和列表接口继续兼容，`overview` 作为新的聚合读取入口。
 
+### 矿山导入面积单位
+
+`POST /api/projects/{id}/spatial/mines` 增加可选 `area_unit`，只接受 `m2`、`km2`，省略时按旧接口的 `m2` 处理。Miner 在选择面积字段后必须显式选择源单位；不从字段名称猜测单位。后端将绑定的 `area_snapshot` 统一为 m²，并在规范化 GeoJSON 添加同单位的 `area_m2`。原文件和原面积属性保持原值；页面详情、项目统计及后续导出优先消费 `area_m2`，旧记录仍兼容既有字段。未映射/缺失面积保留为空，不声称自动计算多边形面积；非有限或负面积、未知单位明确拒绝。活动记录保留本次源单位。成功、缺失、参数错误与失败样例见 `tests/fixtures/project-hub-v1/mine-area-units.json`。
+
+已有错误单位的项目不会静默重算，需要选择正确源单位重新导入矿山；该操作产生新的空间资源版本，不覆盖原文件。
+
 ## 6. ProjectAssetView 契约
 
 目标接口：

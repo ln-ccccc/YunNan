@@ -297,6 +297,7 @@ def project_mines_import_api(project_id):
                 payload.get("content"),
                 payload.get("field_mapping") or {},
                 actor=_request_actor(),
+                area_unit=payload.get("area_unit", "m2"),
             )
         )
     except Exception as exc:

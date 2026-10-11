@@ -248,7 +248,7 @@ const mineOptions = computed(() => (slices.mineOptions.data?.features || []).map
     fid: String(properties.FID_1),
     name: properties.mine_name || properties.name || `矿山 ${properties.FID_1}`,
     city: properties.SHI || '',
-    area: properties.area || properties.TBTYMJ || null,
+    area: Object.prototype.hasOwnProperty.call(properties, 'area_m2') ? properties.area_m2 : (properties.area ?? properties.TBTYMJ ?? null),
     status: properties.status_normalized || '',
   };
 }));

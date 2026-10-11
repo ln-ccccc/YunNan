@@ -198,12 +198,13 @@ def get_project_stats(project_id):
             binding = binding_by_fid.get(int(fid))
         except (TypeError, ValueError):
             binding = None
-        # 面积取值优先级：矢量属性 area/TBTYMJ_1/TBTYMJ（官方图斑面积别名，m²，
+        # 新导入的 area_m2 已按明确源单位换算，空值不回退到未映射的原属性。
+        # 旧记录兼容：矢量属性 area/TBTYMJ_1/TBTYMJ（官方图斑面积别名，m²，
         # 与 spatial_service 字段别名表口径一致）优先；
         # binding.area_snapshot 是导入映射的原始值，量纲随源数据（历史项目曾误映射
         # 到 SHAPE_Area 平方度），仅作无属性时的兜底，避免污染 m² 口径汇总。
         # 候选逐个尝试解析：真值非数字（如 "待定"）时回落下一来源，而非整矿丢面积。
-        area_candidates = (
+        area_candidates = (properties["area_m2"],) if "area_m2" in properties else (
             properties.get("area"),
             properties.get("TBTYMJ_1"),
             properties.get("TBTYMJ"),

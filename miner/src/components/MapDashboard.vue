@@ -278,7 +278,7 @@ const handleSelectMine = async ({ feature, center }) => {
   selectedMine.value = {
     mine_id: properties.FID_1,
     name: properties.mine_name || properties.name || `矿山 ${properties.FID_1}`,
-    area: properties.area || properties.TBTYMJ,
+    area: Object.prototype.hasOwnProperty.call(properties, 'area_m2') ? properties.area_m2 : (properties.area ?? properties.TBTYMJ),
     status_raw: properties.HFZLQK,
     status_normalized: properties.status_normalized,
     center_lat: center.lat,

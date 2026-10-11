@@ -1,0 +1,7 @@
+{
+  "success": {"area": 0.2827, "area_unit": "km2", "expected_m2": 282700.0},
+  "legacy": {"area": 282700.0, "expected_m2": 282700.0},
+  "no_data": {"area": null, "area_unit": "km2", "expected_m2": null},
+  "parameter_error": {"area": 0.2827, "area_unit": "hectare"},
+  "invalid_area": {"area": "nan", "area_unit": "m2"}
+}

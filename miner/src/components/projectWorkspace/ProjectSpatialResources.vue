@@ -38,10 +38,19 @@
               </option>
             </select>
           </label>
+          <label v-if="mineFieldMapping.area">
+            源面积单位
+            <select v-model="mineAreaUnit" :disabled="busy || !canConfigure">
+              <option value="">请选择源数据的面积单位</option>
+              <option value="m2">m²（平方米）</option>
+              <option value="km2">km²（平方千米）</option>
+            </select>
+          </label>
+          <p class="muted-text">面积按所选源单位换算；不映射面积时保留为空，不自动计算多边形面积。</p>
           <button
             class="primary-btn"
             type="button"
-            :disabled="busy || !canConfigure || !mineFileContent || !mineFieldMapping.fid"
+            :disabled="busy || !canConfigure || !mineFileContent || !mineFieldMapping.fid || (mineFieldMapping.area && !mineAreaUnit)"
             @click="importMine"
           >
             {{ busy ? '导入中…' : '确认导入全部矿山' }}
@@ -257,6 +266,7 @@ const mineFileName = ref('');
 const mineFileContent = ref('');
 const localError = ref('');
 const mineFieldMapping = ref(createEmptyMapping());
+const mineAreaUnit = ref('');
 
 const spatialJobs = computed(() => Array.isArray(props.spatial?.jobs) ? props.spatial.jobs : []);
 const latestTerminalJob = computed(() => (
@@ -282,6 +292,7 @@ watch(
   () => props.minePreview,
   (preview) => {
     if (!preview) return;
+    mineAreaUnit.value = '';
     mineFieldMapping.value = {
       ...createEmptyMapping(),
       ...(preview.suggested_mapping || {}),
@@ -293,6 +304,8 @@ watch(
 function createEmptyMapping() {
   return { fid: '', name: '', region: '', status: '', area: '' };
 }
+
+watch(() => mineFieldMapping.value.area, () => { mineAreaUnit.value = ''; });
 
 function toggleOpen() {
   emit('update:open', !props.open);
@@ -339,6 +352,7 @@ function importMine() {
     filename: mineFileName.value,
     content: mineFileContent.value,
     field_mapping: { ...mineFieldMapping.value },
+    area_unit: mineFieldMapping.value.area ? mineAreaUnit.value : 'm2',
   });
 }
 

@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import shutil
 import uuid
@@ -257,16 +258,21 @@ def _mapped_value(properties, mapping, target):
     return properties.get(field_name) if field_name else None
 
 
-def _binding_rows(features, mapping):
+def _binding_rows(features, mapping, area_unit="m2"):
+    if area_unit not in ("m2", "km2"):
+        raise ValueError("面积单位必须为 m2 或 km2")
+    area_factor = 1_000_000 if area_unit == "km2" else 1
     fids = _validate_fids(features, mapping.get("fid"))
     rows = []
     for index, (feature, fid) in enumerate(zip(features, fids)):
         properties = feature["properties"]
         raw_area = _mapped_value(properties, mapping, "area")
         try:
-            area = float(raw_area) if raw_area not in (None, "") else None
+            area = float(raw_area) * area_factor if raw_area not in (None, "") else None
         except (TypeError, ValueError) as exc:
             raise ValueError("面积字段必须是数字") from exc
+        if area is not None and (not math.isfinite(area) or area < 0):
+            raise ValueError("面积字段必须是有限非负数字，请核对源面积与单位")
         rows.append(
             ProjectMineBinding(
                 mine_fid=fid,
@@ -321,7 +327,7 @@ def _editable_project(project_id):
     return project
 
 
-def import_mine_vector(project_id, filename, content, field_mapping=None, actor="system"):
+def import_mine_vector(project_id, filename, content, field_mapping=None, actor="system", area_unit="m2"):
     project = _editable_project(project_id)
 
     extracted = _extract_vector(filename, content)
@@ -331,8 +337,10 @@ def import_mine_vector(project_id, filename, content, field_mapping=None, actor=
     for target, field_name in mapping.items():
         if field_name and field_name not in valid_fields:
             raise ValueError(f"字段映射不存在: {target}={field_name}")
-    bindings = _binding_rows(extracted["features"], mapping)
+    bindings = _binding_rows(extracted["features"], mapping, area_unit)
     normalized_features = _canonicalize_mine_features(extracted["features"], mapping.get("fid"))
+    for feature, binding in zip(normalized_features, bindings):
+        feature["properties"]["area_m2"] = binding.area_snapshot
     raw = _content_bytes(content)
 
     latest_version = (
@@ -412,6 +420,7 @@ def import_mine_vector(project_id, filename, content, field_mapping=None, actor=
                 "resource_type": resource.resource_type,
                 "version": resource.version,
                 "feature_count": resource.feature_count,
+                "area_unit": area_unit,
             },
             actor=actor,
             target={"type": "spatial_resource", "id": str(resource.id)},
