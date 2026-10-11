@@ -49,7 +49,7 @@ class ProjectDatasetSchema(ma.Schema):
     id = fields.Integer()
     dataset_kind = fields.Str()
     display_name = fields.Str()
-    file_path = fields.Str()
+    file_path = fields.Method("get_file_path", allow_none=True)
     source_format = fields.Str(allow_none=True)
     mine_fid = fields.Integer(allow_none=True)
     year_start = fields.Integer(allow_none=True)
@@ -60,6 +60,14 @@ class ProjectDatasetSchema(ma.Schema):
 
     def get_slice_config(self, obj):
         return _json_text_to_obj(obj.slice_config_json)
+
+    def get_file_path(self, obj):
+        from applications.project_hub.spatial_storage import get_storage_root, normalize_dataset_storage_key
+
+        try:
+            return normalize_dataset_storage_key(get_storage_root(), obj.file_path, obj.project_id, allow_legacy=True)
+        except ValueError:
+            return None
 
 
 class ProjectActivityLogSchema(ma.Schema):

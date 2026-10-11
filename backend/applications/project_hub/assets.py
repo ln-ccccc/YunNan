@@ -19,6 +19,7 @@ from applications.project_hub.spatial_storage import (
     SUPPORTED_INCOMING_RASTER_FORMATS,
     get_storage_root,
     resolve_storage_path,
+    resolve_project_imagery_path,
 )
 
 VALID_ASSET_TYPES = (
@@ -266,6 +267,12 @@ def _dataset_asset(dataset, storage_root, result_ids, result_identities):
     temporal = _temporal_metadata(dataset.year_start, dataset.year_end)
 
     if dataset_kind == "imagery":
+        try:
+            candidate = resolve_project_imagery_path(storage_root, dataset.file_path, dataset.project_id)
+            if not candidate.is_file():
+                candidate = None
+        except ValueError:
+            candidate = None
         is_ready = (
             candidate is not None
             and suffix in SUPPORTED_INCOMING_RASTER_FORMATS

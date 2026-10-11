@@ -6,7 +6,7 @@
   过小边片丢弃并报告，总量上限防误操作；
 - candidates：可操作影像清单（数据集 imagery + 推理输入）。
 
-口径：外扩距离（米）按影像中心纬度换算为度，再换算像素窗口外扩。
+口径：WGS84 局部等距投影中的米制外扩，输出为向外取整的矩形像素窗口。
 """
 import logging
 import math
@@ -15,12 +15,17 @@ from datetime import datetime
 from pathlib import Path
 
 import rasterio
-from rasterio.warp import transform_geom
+from rasterio.enums import MaskFlags
+from rasterio.warp import transform_bounds, transform_geom
 from rasterio.windows import Window, from_bounds
+from shapely.geometry import mapping, shape
 
 from applications.extensions import db
 from applications.models.project import Project, ProjectDataset
-from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+from applications.project_hub.spatial_storage import (
+    get_storage_root, resolve_storage_path, resolve_project_imagery_path,
+    normalize_dataset_storage_key,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,7 +62,12 @@ def _resolve_source(project, source_key):
             raise ImageryProcessingError(f"数据集不存在: {text}")
         if not dataset.file_path:
             raise ImageryProcessingError("数据集未登记文件路径")
-        path = Path(dataset.file_path).expanduser().resolve()
+        try:
+            path = resolve_project_imagery_path(
+                get_storage_root(), dataset.file_path, project.id, allow_legacy=True
+            )
+        except ValueError:
+            raise ImageryProcessingError("影像来源路径不合法") from None
     else:
         if not text:
             raise ImageryProcessingError("缺少影像来源")
@@ -67,7 +77,8 @@ def _resolve_source(project, source_key):
         if not text.startswith(f"projects/{project.id}/"):
             raise ImageryProcessingError("影像来源路径不合法")
         try:
-            path = resolve_storage_path(storage_root, Path(text))
+            key = normalize_dataset_storage_key(storage_root, text, project.id)
+            path = resolve_storage_path(storage_root, key)
         except ValueError:
             raise ImageryProcessingError("影像来源路径不合法") from None
         try:
@@ -83,13 +94,18 @@ def list_imagery_candidates(project_id):
     project = _project_or_404(project_id)
     items = []
     for dataset in ProjectDataset.query.filter_by(project_id=project.id, dataset_kind="imagery"):
-        path = Path(dataset.file_path).expanduser().resolve() if dataset.file_path else None
+        try:
+            path = resolve_project_imagery_path(
+                get_storage_root(), dataset.file_path, project.id, allow_legacy=True
+            )
+        except ValueError:
+            path = None
         summary = _raster_summary(path)
         items.append({
             "dataset_id": dataset.id,
             "display_name": dataset.display_name,
             "year": dataset.year_start,
-            **(summary or {"width": None, "height": None, "count": None, "crs": None, "size_bytes": None}),
+            **(summary or {"width": None, "height": None, "count": None, "crs": None, "size_bytes": None, "bounds": None}),
         })
     # 项目影像输入目录（裁剪/切片产物与登记影像）：与 interpretation 输入同级
     for sub in ("imagery", "interpretation"):
@@ -148,12 +164,18 @@ def _raster_summary(path):
         return None
     try:
         with rasterio.open(path) as src:
+            bounds = None
+            if src.crs:
+                transformed = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
+                if all(math.isfinite(value) for value in transformed):
+                    bounds = list(transformed)
             return {
                 "width": src.width,
                 "height": src.height,
                 "count": src.count,
                 "crs": str(src.crs) if src.crs else None,
                 "size_bytes": path.stat().st_size,
+                "bounds": bounds,
             }
     except Exception:
         return None
@@ -166,7 +188,7 @@ def clip_imagery(project_id, payload):
     geometry = payload.get("geometry")
     mine_fid = payload.get("mine_fid")
     buffer_meters = float(payload.get("buffer_meters") or 0)
-    if buffer_meters < 0 or buffer_meters > 5000:
+    if not math.isfinite(buffer_meters) or buffer_meters < 0 or buffer_meters > 5000:
         raise ImageryProcessingError("外扩距离须在 0~5000 米之间")
 
     with rasterio.open(source_path) as src:
@@ -177,28 +199,28 @@ def clip_imagery(project_id, payload):
         if not isinstance(geometry, dict) or geometry.get("type") not in ("Polygon", "MultiPolygon"):
             raise ImageryProcessingError("裁剪范围必须是 Polygon/MultiPolygon GeoJSON")
 
-        geom_src = transform_geom("EPSG:4326", src.crs, geometry, precision=6)
+        original_bounds = _geom_bounds(geometry)
+        if not all(math.isfinite(value) for value in original_bounds):
+            raise ImageryProcessingError("裁剪范围坐标不合法")
+        if buffer_meters:
+            lon = (original_bounds[0] + original_bounds[2]) / 2
+            lat = (original_bounds[1] + original_bounds[3]) / 2
+            metric_crs = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
+            metric_geometry = shape(transform_geom("EPSG:4326", metric_crs, geometry))
+            geometry = mapping(metric_geometry.buffer(buffer_meters, resolution=64))
+            geom_src = transform_geom(metric_crs, src.crs, geometry)
+        else:
+            geom_src = transform_geom("EPSG:4326", src.crs, geometry)
         minx, miny, maxx, maxy = _geom_bounds(geom_src)
         if minx >= maxx or miny >= maxy:
             raise ImageryProcessingError("裁剪范围无效（零面积）")
 
-        # 外扩按 src.crs 单位换算：地理系（度）按中心纬度米→度；投影系（米）直接加
-        # （收官审查 C2：投影系曾按度加导致外扩静默失效）
-        if src.crs.is_geographic:
-            center_lat = math.radians((src.bounds.top + src.bounds.bottom) / 2.0)
-            buffer_x = buffer_meters / (_METERS_PER_DEG_LAT * max(math.cos(center_lat), 1e-6))
-            buffer_y = buffer_meters / _METERS_PER_DEG_LAT
-        else:
-            buffer_x = buffer_meters
-            buffer_y = buffer_meters
-        minx -= buffer_x
-        maxx += buffer_x
-        miny -= buffer_y
-        maxy += buffer_y
-
         try:
             window = from_bounds(minx, miny, maxx, maxy, src.transform)
-            window = window.intersection(Window(0, 0, src.width, src.height)).round_offsets().round_lengths()
+            # 四边独立向外取整，避免 round_lengths 截去右/下边缘像素。
+            left, top = math.floor(window.col_off), math.floor(window.row_off)
+            right, bottom = math.ceil(window.col_off + window.width), math.ceil(window.row_off + window.height)
+            window = Window(left, top, right - left, bottom - top).intersection(Window(0, 0, src.width, src.height))
         except Exception:
             raise ImageryProcessingError("裁剪范围与影像无有效重叠") from None
         _guard_window_bytes(src, window)
@@ -206,6 +228,7 @@ def clip_imagery(project_id, payload):
             raise ImageryProcessingError("裁剪范围与影像无有效重叠（结果小于 8×8 像素）")
 
         data = src.read(window=window)
+        valid_mask = src.dataset_mask(window=window) if any(MaskFlags.per_dataset in flags for flags in src.mask_flag_enums) else None
         out_transform = src.window_transform(window)
         out_profile = src.profile.copy()
 
@@ -216,16 +239,23 @@ def clip_imagery(project_id, payload):
         driver="GTiff", height=int(window.height), width=int(window.width),
         transform=out_transform, compress="lzw",
     )
-    out_profile.pop("nodata", None)
-    with rasterio.open(out_path, "w", **out_profile) as dst:
-        dst.write(data)
+    with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
+        with rasterio.open(out_path, "w", **out_profile) as dst:
+            dst.write(data)
+            if valid_mask is not None:
+                dst.write_mask(valid_mask)
+
+    source_dataset = _source_dataset(project.id, payload.get("source"))
 
     dataset = ProjectDataset(
         project_id=project.id,
         dataset_kind="imagery",
         display_name=f"裁剪 {payload.get('display_name') or source_path.name} (+{buffer_meters:g}m)",
-        file_path=str(out_path),
+        file_path=_storage_key(out_path),
         source_format="tif",
+        mine_fid=source_dataset.mine_fid if source_dataset else mine_fid,
+        year_start=source_dataset.year_start if source_dataset else None,
+        year_end=source_dataset.year_end if source_dataset else None,
         slice_config_json='{"origin":"clip"}',
     )
     db.session.add(dataset)
@@ -248,6 +278,7 @@ def slice_imagery(project_id, payload):
     tile_pixels = payload.get("tile_pixels")
     tile_area_m2 = payload.get("tile_area_m2")
     limit = max(1, min(int(payload.get("limit") or DEFAULT_SLICE_LIMIT), MAX_SLICE_LIMIT))
+    source_dataset = _source_dataset(project.id, payload.get("source"))
 
     with rasterio.open(source_path) as src:
         if mode == "grid_pixels":
@@ -277,7 +308,6 @@ def slice_imagery(project_id, payload):
 
         out_profile = src.profile.copy()
         out_profile.update(driver="GTiff", compress="lzw")
-        out_profile.pop("nodata", None)
 
         target_dir = _imagery_output_dir(project.id)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -292,18 +322,25 @@ def slice_imagery(project_id, payload):
                     continue
                 _guard_window_bytes(src, window)
                 data = src.read(window=window)
+                valid_mask = src.dataset_mask(window=window) if any(MaskFlags.per_dataset in flags for flags in src.mask_flag_enums) else None
                 transform = src.window_transform(window)
                 out_name = f"slice_{stamp}_{uuid.uuid4().hex[:6]}_r{row}c{col}.tif"
                 out_path = target_dir / out_name
                 profile = dict(out_profile, height=int(window.height), width=int(window.width), transform=transform)
-                with rasterio.open(out_path, "w", **profile) as dst:
-                    dst.write(data)
+                with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
+                    with rasterio.open(out_path, "w", **profile) as dst:
+                        dst.write(data)
+                        if valid_mask is not None:
+                            dst.write_mask(valid_mask)
                 dataset = ProjectDataset(
                     project_id=project.id,
                     dataset_kind="imagery",
                     display_name=f"切片 r{row}c{col} {window.width}×{window.height}",
-                    file_path=str(out_path),
+                    file_path=_storage_key(out_path),
                     source_format="tif",
+                    mine_fid=source_dataset.mine_fid if source_dataset else None,
+                    year_start=source_dataset.year_start if source_dataset else None,
+                    year_end=source_dataset.year_end if source_dataset else None,
                     slice_config_json='{"origin":"slice"}',
                 )
                 db.session.add(dataset)
@@ -327,6 +364,13 @@ def slice_imagery(project_id, payload):
 
 # 单窗读入字节上限（2GB）：clip/slice 都不允许一次把超大窗口整读进内存
 MAX_WINDOW_BYTES = 2 * 1024 ** 3
+
+
+def _source_dataset(project_id, source):
+    text = str(source or "").strip()
+    if text.isascii() and text.isdigit():
+        return ProjectDataset.query.filter_by(id=int(text), project_id=project_id).first()
+    return None
 
 
 def _guard_window_bytes(src, window):

@@ -427,15 +427,27 @@ def delete_project(project_id, actor="system"):
         trash_root.mkdir(parents=True, exist_ok=True)
         shutil.move(str(project_root), str(trash_target))
 
-    project.deleted_at = datetime.now()
-    _append_activity(
-        project.id,
-        "project_deleted",
-        {"trash_target": trash_target.name if trash_target else None},
-        actor=actor,
-        target={"type": "project", "id": str(project.id)},
-    )
-    db.session.commit()
+    try:
+        project.deleted_at = datetime.now()
+        _append_activity(
+            project.id,
+            "project_deleted",
+            {"trash_target": trash_target.name if trash_target else None},
+            actor=actor,
+            target={"type": "project", "id": str(project.id)},
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        if trash_target is not None:
+            try:
+                if project_root.exists():
+                    raise RuntimeError("删除回滚时项目目录已被占用，未覆盖现有目录")
+                shutil.move(str(trash_target), str(project_root))
+            except Exception:
+                logging.getLogger(__name__).exception("项目删除回滚后目录恢复失败；请检查项目及 trash 目录", extra={"project_id": project_id})
+                raise
+        raise
     return {
         "id": project.id,
         "name": project.name,

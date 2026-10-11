@@ -13,6 +13,7 @@ from applications.project_hub.spatial_storage import (
     SUPPORTED_INCOMING_RASTER_FORMATS,
     get_storage_root,
     resolve_storage_path,
+    resolve_project_imagery_path,
 )
 
 class ProjectInferenceInputError(ValueError):
@@ -36,7 +37,7 @@ def _positive_integer(value, field_name):
     return result
 
 
-def _resolve_registered_tif(storage_root, file_path):
+def _resolve_registered_tif(storage_root, file_path, project_id=None):
     storage_key = str(file_path or "").strip()
     path = Path(storage_key)
     windows_path = PureWindowsPath(storage_key)
@@ -50,11 +51,9 @@ def _resolve_registered_tif(storage_root, file_path):
     ):
         raise ProjectInferenceInputError("数据集影像路径必须是 incoming/ 下的相对 TIFF 文件")
     try:
-        tif_path = resolve_storage_path(storage_root, storage_key)
-        incoming_root = resolve_storage_path(storage_root, "incoming")
-        tif_path.relative_to(incoming_root)
+        tif_path = resolve_project_imagery_path(storage_root, storage_key, project_id)
     except ValueError as exc:
-        raise ProjectInferenceInputError("数据集影像路径必须位于 incoming/ 目录") from exc
+        raise ProjectInferenceInputError("数据集影像路径必须位于 incoming/ 或本项目 inputs/imagery 目录") from exc
     if tif_path.suffix.lower().lstrip(".") not in SUPPORTED_INCOMING_RASTER_FORMATS:
         raise ProjectInferenceInputError(
             "数据集影像必须是受支持的栅格格式（tif/tiff/img/jp2）"
@@ -127,7 +126,7 @@ def resolve_project_inference_inputs(
     normalized_year = _resolve_inference_year(year, dataset)
 
     storage_root = get_storage_root()
-    tif_path = _resolve_registered_tif(storage_root, dataset.file_path)
+    tif_path = _resolve_registered_tif(storage_root, dataset.file_path, project.id)
     overview = get_project_overview(project.id)
     if not bool((overview.get("capabilities") or {}).get("can_start_inference")):
         raise ProjectInferenceInputError("项目当前不满足启动推理条件")
