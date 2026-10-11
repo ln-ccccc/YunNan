@@ -391,6 +391,12 @@ export default {
       this.map.on('load', () => {
         if (!this.map) return;
         this.map.addControl(new NavigationControl(), 'top-left');
+        // 对齐 MapLibre 的控件样式和画布键盘事件，避免工具可见但无法点击。
+        Object.assign(MapboxDraw.constants.classes, {
+          CANVAS: 'maplibregl-canvas',
+          CONTROL_BASE: 'maplibregl-ctrl',
+          CONTROL_GROUP: 'maplibregl-ctrl-group',
+        });
         this.draw = new MapboxDraw({
           displayControlsDefault: false,
           controls: { polygon: true, trash: true },
