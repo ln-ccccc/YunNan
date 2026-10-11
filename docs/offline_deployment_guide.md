@@ -126,6 +126,8 @@ docker load -i images/mysql_8.0.30-8.6.tar
 - `yunnan-runtime:current` 无 Dockerfile，其构建层谱系等价留档于 `docker/Dockerfile.yunnan-runtime-provenance`（非重建指令）；离线交付一律以 `images/yunnan_runtime_current.tar` 为准。
 - 镜像与数据隔离的完整设计见 `docs/superpowers/specs/2026-07-18-yunnan-jiangxi-data-isolation-design.md`。
 
+独立推理镜像构建时，`Dockerfile.inference-gpu` 的最终 Worker 阶段执行 `python /app/docker/check-inference-image.py --worker`。除版本、权重与非运行资产检查外，该模式在隔离子进程及临时 SQLite 中验证 Worker 冷启动、项目成果发布与成功/失败活动记录，缺少运行源码会使构建失败。它不连接部署数据库、不加载模型权重，也不替代真实 GPU 推理验收；core 阶段仍只执行原有镜像内容检查。
+
 ### 3. 启动
 
 ```bash

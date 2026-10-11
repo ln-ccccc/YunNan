@@ -1120,6 +1120,46 @@ class InferenceDockerfileContractTest(unittest.TestCase):
         self.assertIn("USER inference", worker_stage)
         self.assertIn("HEALTHCHECK", worker_stage)
 
+    def test_final_stage_packaged_source_bootstraps_worker_and_project_publication(self):
+        worker_stage = self.text.split("FROM inference-core AS inference-worker", 1)[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for line in worker_stage.splitlines():
+                if not line.startswith("COPY "):
+                    continue
+                entries = shlex.split(line)[1:]
+                destination = root / entries[-1].lstrip("/")
+                for entry in entries[:-1]:
+                    if not entry.startswith("backend/applications/"):
+                        continue
+                    source = ROOT / entry
+                    target = destination / source.name if entries[-1].endswith("/") else destination
+                    if source.is_dir():
+                        shutil.copytree(source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, target)
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(root / "app" / "backend")
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            command = [
+                sys.executable, "-c",
+                "import runpy, json, sys; module = runpy.run_path(sys.argv[1]); "
+                "print(json.dumps(module['probe_worker_runtime']()))", str(IMAGE_CHECKER),
+            ]
+            process = subprocess.run(command, cwd=root / "app" / "backend", env=environment,
+                                     capture_output=True, text=True, timeout=60)
+            self.assertEqual(0, process.returncode, process.stderr)
+            report = json.loads(process.stdout.strip().splitlines()[-1])
+            self.assertEqual(["inference_failed", "inference_result_published"], report["activities"])
+            self.assertFalse(report["model_loaded"])
+            (root / "app" / "backend" / "applications" / "runtime_schema.py").unlink()
+            missing_schema = subprocess.run(command, cwd=root / "app" / "backend", env=environment,
+                                            capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(0, missing_schema.returncode)
+            self.assertIn("applications.runtime_schema", missing_schema.stderr)
+        self.assertIn("python /app/docker/check-inference-image.py --worker", worker_stage)
+
     def test_final_checker_uses_the_same_pythonpath_as_worker_startup(self):
         worker_stage = self.text.split("FROM inference-core AS inference-worker", 1)[1]
         pythonpath = (
@@ -1957,6 +1997,29 @@ class InferenceImageCheckerContractTest(unittest.TestCase):
             "mmseg_version": "1.1.2",
             "import_errors": [],
         }
+
+    def test_checker_records_successful_worker_probe(self):
+        checker = self.load_checker()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker_runtime = {"activities": ["inference_result_published", "inference_failed"]}
+            report = checker.build_report(
+                Path(temp_dir), version_probe=self.fake_versions, nvcc_probe=lambda _root: False,
+                worker=True, worker_probe=lambda: worker_runtime,
+            )
+        self.assertTrue(report["ok"])
+        self.assertEqual(worker_runtime, report["worker_runtime"])
+
+    def test_checker_rejects_worker_bootstrap_failure(self):
+        checker = self.load_checker()
+        def fail_worker():
+            raise ModuleNotFoundError("applications.runtime_schema")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report = checker.build_report(
+                Path(temp_dir), version_probe=self.fake_versions, nvcc_probe=lambda _root: False,
+                worker=True, worker_probe=fail_worker,
+            )
+        self.assertFalse(report["ok"])
+        self.assertIn("applications.runtime_schema", report["import_errors"][0])
 
     def test_checker_reports_versions_and_accepts_empty_runtime_mount_directories(self):
         checker = self.load_checker()

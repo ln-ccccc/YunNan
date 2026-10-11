@@ -153,14 +153,17 @@ FROM inference-core AS inference-worker
 
 COPY backend/__init__.py backend/run_inference_worker.py /app/backend/
 COPY backend/applications/__init__.py /app/backend/applications/__init__.py
+COPY backend/applications/auth/__init__.py backend/applications/auth/guard.py /app/backend/applications/auth/
+COPY backend/applications/runtime_schema.py /app/backend/applications/runtime_schema.py
 COPY backend/applications/configs /app/backend/applications/configs
 COPY backend/applications/extensions/__init__.py backend/applications/extensions/database.py /app/backend/applications/extensions/
-COPY backend/applications/models/__init__.py backend/applications/models/inference_job.py /app/backend/applications/models/
+COPY backend/applications/models/__init__.py backend/applications/models/analysis.py backend/applications/models/admin_user.py backend/applications/models/classification_result.py backend/applications/models/photo.py backend/applications/models/inference_job.py backend/applications/models/project.py backend/applications/models/project_spatial.py /app/backend/applications/models/
+COPY backend/applications/project_hub/__init__.py backend/applications/project_hub/_foundation.py backend/applications/project_hub/project_storage.py backend/applications/project_hub/spatial_storage.py backend/applications/project_hub/inference_results.py backend/applications/project_hub/classification_results.py /app/backend/applications/project_hub/
 COPY backend/applications/inference /app/backend/applications/inference
 COPY backend/applications/kml_roi /app/backend/applications/kml_roi
 COPY backend/applications/interface/__init__.py backend/applications/interface/mmseg_inference_caller.py backend/applications/interface/mmseg_segmentation.py /app/backend/applications/interface/
 COPY backend/applications/common/__init__.py backend/applications/common/path_global.py /app/backend/applications/common/
-COPY backend/applications/common/utils/__init__.py backend/applications/common/utils/tiff_processor.py /app/backend/applications/common/utils/
+COPY backend/applications/common/utils/__init__.py backend/applications/common/utils/tiff_processor.py backend/applications/common/utils/utc_time.py /app/backend/applications/common/utils/
 COPY backend/model/mmseg_config/dinov3_swinV1.py /app/backend/model/mmseg_config/dinov3_swinV1.py
 COPY backend/model/mmseg_config/dinov3_swinV1/mmseg /app/backend/model/mmseg_config/dinov3_swinV1/mmseg
 COPY docker/dinov3-hubconf.py /app/backend/model/mmseg_config/dinov3_swinV1/dinov3/hubconf.py
@@ -182,7 +185,7 @@ RUN chmod 0755 /app/docker/start-inference-worker.sh /app/docker/check-inference
        /app/miner/change_matrix_outputs \
        /app/miner/uploads \
     && chown -R inference:inference /app \
-    && python /app/docker/check-inference-image.py
+    && python /app/docker/check-inference-image.py --worker
 
 WORKDIR /app/backend
 USER inference
