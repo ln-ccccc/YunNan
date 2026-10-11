@@ -7,6 +7,7 @@ import unittest
 import cv2
 import numpy as np
 import rasterio
+from affine import Affine
 from rasterio.transform import from_origin, from_bounds
 from rasterio.warp import transform_bounds
 
@@ -88,6 +89,13 @@ class TestChangeMatrixAlignment(unittest.TestCase):
         old = self.pair('old', [[0, 1]], from_origin(500000, 2800000, 10, 10), crs=None)
         new = self.pair('new', [[1, 4]], from_origin(500000, 2800000, 10, 10))
         with self.assertRaisesRegex(ValueError, 'CRS'):
+            write_change_matrix_csv(old, new, self.root)
+
+    def test_overflowing_singular_transform_is_not_verified(self):
+        transform = Affine(1e200, 1e200, 1, 1e200, 1e200, 2)
+        old = self.pair('old', [[0, 1]], transform)
+        new = self.pair('new', [[1, 4]], transform)
+        with self.assertRaisesRegex(ValueError, '有效地理变换'):
             write_change_matrix_csv(old, new, self.root)
 
     def test_legacy_different_size_rejected(self):

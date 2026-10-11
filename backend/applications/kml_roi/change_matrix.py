@@ -28,7 +28,8 @@ def _read_labels(source):
     if source.crs is None:
         raise ValueError("变化矩阵标签缺少 CRS，需重新生成地理参考标签")
     if (not all(math.isfinite(value) for value in coefficients)
-            or transform.is_identity or transform.determinant == 0):
+            or transform.is_identity or not math.isfinite(transform.determinant)
+            or transform.determinant == 0):
         raise ValueError("变化矩阵标签缺少有效地理变换，需重新生成地理参考标签")
     if source.count != 1 or not np.issubdtype(np.dtype(source.dtypes[0]), np.integer):
         raise ValueError("变化矩阵标签必须是单波段整数类别栅格")
