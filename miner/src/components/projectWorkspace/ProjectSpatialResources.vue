@@ -68,7 +68,8 @@
 
         <article v-if="latestTerminalJob" class="job-item">
           <p>上次任务：阶段 {{ latestTerminalJob.stage || '--' }} · 状态 {{ latestTerminalJob.status || '--' }}</p>
-          <p class="error-text">失败原因：{{ latestTerminalJob.error_message || '未提供' }}</p>
+          <p v-if="latestTerminalJob.status === 'cancelled'" class="muted-text">任务已取消，可重试。</p>
+          <p v-else class="error-text">失败原因：{{ latestTerminalJob.error_message || '未提供' }}</p>
           <button
             class="secondary-btn"
             type="button"
@@ -116,7 +117,8 @@
               <progress :value="progressValue(job.progress)" max="100"></progress>
               <span>{{ progressValue(job.progress).toFixed(1) }}%</span>
             </template>
-            <p v-if="job.error_message" class="error-text">失败原因：{{ job.error_message }}</p>
+            <p v-if="job.status === 'cancelled'" class="muted-text">任务已取消，可重试。</p>
+            <p v-else-if="job.status === 'failed' && job.error_message" class="error-text">失败原因：{{ job.error_message }}</p>
             <div class="action-row">
               <button
                 v-if="canRetryJob(job)"

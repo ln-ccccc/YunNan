@@ -41,6 +41,28 @@ test('已激活底图项目可以选择新底图，已有地图不隐藏新切�
   view.dispose();
 });
 
+test('取消的空间任务保留重试入口并显示取消提示，失败任务仍显示真实原因', async () => {
+  for (const mapReady of [false, true]) {
+    const props = Vue.reactive({
+      open: true, canConfigure: true, busy: false, error: '',
+      spatial: { map_ready: mapReady, missing_resources: ['basemap'], jobs: [
+        { id: 'cancelled-tiles', status: 'cancelled', stage: 'cancelled', error_message: '用户取消任务' },
+      ] },
+      mineOptions: [], retainedBasemaps: [], basemapCandidates: [],
+    });
+    const view = component('projectWorkspace/ProjectSpatialResources.vue', {}, { props, resolveSpatialWizardStep });
+    view.state.syncWizardStep();
+    const cancelled = await view.render();
+    assert.match(cancelled, /任务已取消，可重试/);
+    assert.doesNotMatch(cancelled, /失败原因/);
+    assert.match(cancelled, /重试/);
+    props.spatial.jobs = [{ id: 'failed-tiles', status: 'failed', stage: 'failed', error_message: '影像无法读取' }];
+    view.state.syncWizardStep();
+    assert.match(await view.render(), /失败原因：影像无法读取/);
+    view.dispose();
+  }
+});
+
 // 编译并运行真实 setup；仅隔离 HTTP 和浏览器边界，不替换被测视图逻辑。
 function component(filename, http = {}, additions = {}) {
   const unmount = [];
