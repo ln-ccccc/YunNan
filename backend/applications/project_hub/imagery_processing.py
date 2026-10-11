@@ -204,6 +204,12 @@ def clip_imagery(project_id, payload):
             raise ImageryProcessingError("裁剪范围坐标不合法")
         if original_bounds[0] >= original_bounds[2] or original_bounds[1] >= original_bounds[3]:
             raise ImageryProcessingError("裁剪范围无效（零面积）")
+        try:
+            original_polygon = shape(geometry)
+        except (TypeError, ValueError):
+            raise ImageryProcessingError("裁剪范围坐标不合法") from None
+        if original_polygon.area <= 0 or not original_polygon.is_valid:
+            raise ImageryProcessingError("裁剪范围须为有效的非零面积多边形")
         if buffer_meters:
             lon = (original_bounds[0] + original_bounds[2]) / 2
             lat = (original_bounds[1] + original_bounds[3]) / 2

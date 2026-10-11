@@ -262,6 +262,33 @@ class TestBackendRemediation(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(ProjectDataset.query.filter_by(project_id=pid).count(), 1)
 
+    def test_buffer_rejects_slanted_degenerate_and_self_intersecting_polygons(self):
+        pid, did, _ = self._source()
+        slanted = [[102.441, 24.796], [102.4419765625, 24.7969765625],
+                   [102.442953125, 24.797953125], [102.441, 24.796]]
+        crossing = [[102.441, 24.796], [102.444, 24.799], [102.441, 24.799],
+                    [102.443, 24.796], [102.441, 24.796]]
+        for kind, coordinates in (("Polygon", [slanted]), ("MultiPolygon", [[slanted]]),
+                                  ("Polygon", [crossing])):
+            with self.subTest(kind=kind, coordinates=coordinates):
+                response = self.client.post(f"/api/projects/{pid}/imagery/clip", json={
+                    "source": did, "buffer_meters": 100,
+                    "geometry": {"type": kind, "coordinates": coordinates},
+                })
+                self.assertEqual(response.status_code, 400, response.get_data(as_text=True))
+        self.assertEqual(ProjectDataset.query.filter_by(project_id=pid).count(), 1)
+        self.assertFalse((self.storage_root / f"projects/{pid}/inputs/imagery").exists())
+
+    def test_buffer_preserves_valid_multipolygon_support(self):
+        pid, did, _ = self._source()
+        polygons = [box(102.441, 24.796, 102.442, 24.797),
+                    box(102.443, 24.798, 102.444, 24.799)]
+        geometry = {"type": "MultiPolygon", "coordinates": [
+            polygon.__geo_interface__["coordinates"] for polygon in polygons
+        ]}
+        self._clip(pid, did, buffer=100, geometry=geometry)
+        self.assertEqual(ProjectDataset.query.filter_by(project_id=pid).count(), 2)
+
     def test_old_internal_snapshot_restores_external_reference_as_metadata_only(self):
         pid, _, _ = self._source()
         created = service.create_backup(pid, {"scope": "metadata_index"})
