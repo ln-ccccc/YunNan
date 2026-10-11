@@ -168,7 +168,7 @@
                   </span>
                 </div>
                 <div class="stat-box">
-                  <span class="label">MK检验</span>
+                  <span class="label" title="根据年度指数均值的线性趋势斜率判断上升、下降或稳定">趋势方向</span>
                   <span class="val">{{ currentIndexData?.mk_trend }}</span>
                 </div>
               </div>
