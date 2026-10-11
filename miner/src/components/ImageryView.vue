@@ -61,12 +61,12 @@
               </select>
             </div>
             <div v-if="clipSource === 'draw'" class="draw-area" ref="drawAreaRef">
-              <div class="draw-hint">在图上点击添加顶点，双击闭合多边形</div>
+              <div class="draw-hint">{{ candidateBounds ? '在影像范围内点击添加顶点，双击闭合多边形' : '影像缺少地理范围，请使用矿山边界裁剪' }}</div>
               <div class="draw-ops">
                 <button class="secondary-btn" type="button" @click="clearDraw">清除重画</button>
                 <span class="muted-text">{{ drawPoints.length }} 个顶点{{ polygonClosed ? '（已闭合）' : '' }}</span>
               </div>
-              <svg class="draw-svg" :viewBox="svgViewBox" preserveAspectRatio="none" @click="handleDrawClick" @dblclick="handleDrawDblClick">
+              <svg class="draw-svg" :class="{ disabled: !candidateBounds }" :aria-disabled="!candidateBounds" :viewBox="svgViewBox" preserveAspectRatio="none" @click="handleDrawClick" @dblclick="handleDrawDblClick">
                 <polygon v-if="polygonClosed" :points="svgPoints" class="draw-polygon" />
                 <polyline v-else :points="svgPoints" class="draw-polyline" />
                 <circle v-for="(p, i) in drawPoints" :key="i" :cx="p.x" :cy="p.y" r="4" class="draw-dot" />
@@ -79,7 +79,7 @@
             <button class="primary-btn" type="button" :disabled="!clipReady || busy" @click="runClip">
               {{ busy === 'clip' ? '裁剪中…' : '执行裁剪' }}
             </button>
-            <p v-if="clipResult" class="result-line ok">✓ {{ clipResult }}</p>
+            <p v-if="clipResult" class="result-line" :class="clipSucceeded ? 'ok' : 'error'" role="status">{{ clipSucceeded ? '✓' : '✗' }} {{ clipResult }}</p>
           </article>
 
           <article class="tool-card">
@@ -125,14 +125,15 @@
 
 <script setup>
 import axios from 'axios';
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
 import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
+import { buildGeoViewUrl } from '../navigation/geoviewNavigation.js';
 
 const emit = defineEmits(['go-map']);
 
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
-const GEOVIEW_BASE_URL = `${window.location.protocol}//${window.location.hostname}:3000`;
+const GEOVIEW_BASE_URL = import.meta.env.VITE_GEOVIEW_URL || `${window.location.protocol}//${window.location.hostname}:3000`;
 const PRESET_KEY = 'imagery_tool_presets_v1';
 
 const projects = ref([]);
@@ -142,6 +143,9 @@ const candidatesLoading = ref(false);
 const error = ref('');
 const selectedCandidate = ref(null);
 const busy = ref(null);
+let disposed = false;
+let candidatesSeq = 0;
+let operationSeq = 0;
 
 // 裁剪状态
 const clipSource = ref('draw');
@@ -151,6 +155,7 @@ const drawPoints = ref([]);
 const polygonClosed = ref(false);
 const mineFids = ref([]);
 const clipResult = ref('');
+const clipSucceeded = ref(false);
 
 // 切片状态
 const sliceMode = ref('grid_pixels');
@@ -177,6 +182,7 @@ const formatBytes = (bytes) => {
 const loadProjects = async () => {
   try {
     const res = await axios.get(`${MINER_API_BASE_URL}/api/projects`);
+    if (disposed) return;
     projects.value = res.data?.data?.items || [];
     // 共享项目上下文：模块页首次载入时自动回选工作台/其他模块选中的项目（gui-audit #5）
     const sharedProjectId = getSelectedProjectId();
@@ -185,11 +191,14 @@ const loadProjects = async () => {
       loadCandidates();
     }
   } catch (_) {
-    error.value = '项目列表读取失败';
+    if (!disposed) error.value = '项目列表读取失败';
   }
 };
 
 const loadCandidates = async () => {
+  const seq = ++candidatesSeq;
+  const projectId = selectedProjectId.value;
+  const isCurrent = () => !disposed && seq === candidatesSeq && projectId === selectedProjectId.value;
   setSelectedProjectId(Number(selectedProjectId.value) || null); // 用户手选同步共享上下文
   // 刷新后按稳定标识回填选中（收官审查 P1：切片成功后清空选中曾使工具卡与"去解译"自毁）
   const previous = selectedCandidate.value;
@@ -197,14 +206,18 @@ const loadCandidates = async () => {
   selectedCandidate.value = null;
   mineFids.value = [];
   clipMineFid.value = null;
-  if (!selectedProjectId.value) return;
+  if (!projectId) {
+    candidatesLoading.value = false;
+    return;
+  }
   candidatesLoading.value = true;
   error.value = '';
   try {
     const [candRes, geoRes] = await Promise.all([
-      axios.get(`${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/imagery/candidates`),
-      axios.get(`${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/geojson`).catch(() => null),
+      axios.get(`${MINER_API_BASE_URL}/api/projects/${projectId}/imagery/candidates`),
+      axios.get(`${MINER_API_BASE_URL}/api/projects/${projectId}/geojson`).catch(() => null),
     ]);
+    if (!isCurrent()) return;
     const items = candRes.data?.data?.items || [];
     candidates.value = items.map((item, index) => ({
       ...item,
@@ -226,20 +239,25 @@ const loadCandidates = async () => {
     mineFids.value = Array.from(fids).sort((a, b) => a - b).slice(0, 500);
     if (mineFids.value.length && clipMineFid.value === null) clipMineFid.value = mineFids.value[0];
   } catch (e) {
-    error.value = e?.response?.data?.msg || '影像清单读取失败';
+    if (isCurrent()) error.value = e?.response?.data?.msg || '影像清单读取失败';
   } finally {
-    candidatesLoading.value = false;
+    if (isCurrent()) candidatesLoading.value = false;
   }
 };
 
 // ===== 手绘多边形（SVG 归一化坐标 0-100，提交时换算经纬度） =====
-const RASTER_BBOX = { minLon: 100.0, maxLon: 100.5, minLat: 25.8, maxLat: 26.1 };
+const candidateBounds = computed(() => {
+  const bounds = selectedCandidate.value?.bounds;
+  if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) return null;
+  const [west, south, east, north] = bounds;
+  return west >= -180 && east <= 180 && south >= -90 && north <= 90 && west < east && south < north ? bounds : null;
+});
 
 const svgViewBox = '0 0 100 100';
 const svgPoints = computed(() => drawPoints.value.map((p) => `${p.x},${p.y}`).join(' '));
 
 const handleDrawClick = (event) => {
-  if (polygonClosed.value) return;
+  if (!candidateBounds.value || polygonClosed.value) return;
   const svg = event.currentTarget;
   const rect = svg.getBoundingClientRect();
   const x = ((event.clientX - rect.left) / rect.width) * 100;
@@ -247,7 +265,7 @@ const handleDrawClick = (event) => {
   drawPoints.value.push({ x, y });
 };
 const handleDrawDblClick = () => {
-  if (drawPoints.value.length >= 3) polygonClosed.value = true;
+  if (candidateBounds.value && drawPoints.value.length >= 3) polygonClosed.value = true;
 };
 const clearDraw = () => {
   drawPoints.value = [];
@@ -255,10 +273,11 @@ const clearDraw = () => {
 };
 
 const drawGeometry = computed(() => {
-  if (!polygonClosed.value || drawPoints.value.length < 3) return null;
+  if (!candidateBounds.value || !polygonClosed.value || drawPoints.value.length < 3) return null;
+  const [west, south, east, north] = candidateBounds.value;
   const ring = drawPoints.value.map((p) => {
-    const lon = RASTER_BBOX.minLon + (p.x / 100) * (RASTER_BBOX.maxLon - RASTER_BBOX.minLon);
-    const lat = RASTER_BBOX.maxLat - (p.y / 100) * (RASTER_BBOX.maxLat - RASTER_BBOX.minLat);
+    const lon = west + (p.x / 100) * (east - west);
+    const lat = north - (p.y / 100) * (north - south);
     return [Number(lon.toFixed(6)), Number(lat.toFixed(6))];
   });
   ring.push(ring[0]);
@@ -272,8 +291,12 @@ const clipReady = computed(() => {
 });
 
 const runClip = async () => {
+  const projectId = selectedProjectId.value;
+  const seq = ++operationSeq;
+  const isCurrent = () => !disposed && seq === operationSeq && projectId === selectedProjectId.value;
   busy.value = 'clip';
   clipResult.value = '';
+  clipSucceeded.value = false;
   try {
     const body = {
       // 契约（AGENTS §6）：浏览器不提交服务器物理路径；输入目录候选用相对 storage_key
@@ -286,17 +309,20 @@ const runClip = async () => {
         : { geometry: drawGeometry.value }),
     };
     const res = await axios.post(
-      `${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/imagery/clip`,
+      `${MINER_API_BASE_URL}/api/projects/${projectId}/imagery/clip`,
       body,
     );
+    if (!isCurrent()) return;
     const data = res.data?.data || {};
+    clipSucceeded.value = true;
     clipResult.value = `裁剪完成：${data.width}×${data.height} 像素，已登记数据集 #${data.dataset_id}`;
     await loadCandidates();
   } catch (e) {
-    clipResult.value = `✗ ${e?.response?.data?.msg || '裁剪失败'}`;
+    if (!isCurrent()) return;
+    clipResult.value = e?.response?.data?.msg || '裁剪失败';
     window.alert(e?.response?.data?.msg || '裁剪失败');
   } finally {
-    busy.value = null;
+    if (isCurrent()) busy.value = null;
   }
 };
 
@@ -317,6 +343,9 @@ const sliceReady = computed(() => {
 });
 
 const runSlice = async () => {
+  const projectId = selectedProjectId.value;
+  const seq = ++operationSeq;
+  const isCurrent = () => !disposed && seq === operationSeq && projectId === selectedProjectId.value;
   busy.value = 'slice';
   sliceResult.value = '';
   sliceItems.value = [];
@@ -334,19 +363,21 @@ const runSlice = async () => {
         : { tile_area_m2: Number(sliceArea.value) }),
     };
     const res = await axios.post(
-      `${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/imagery/slice`,
+      `${MINER_API_BASE_URL}/api/projects/${projectId}/imagery/slice`,
       body,
     );
+    if (!isCurrent()) return;
     const data = res.data?.data || {};
     sliceSummary.value = true;
     sliceResult.value = `切片完成：${data.created} 片（网格 ${data.grid.cols}×${data.grid.rows}）${data.skipped?.length ? `，丢弃边片 ${data.skipped.length}` : ''}`;
     sliceItems.value = data.items || [];
     await loadCandidates();
   } catch (e) {
+    if (!isCurrent()) return;
     sliceResult.value = `✗ ${e?.response?.data?.msg || '切片失败'}`;
     window.alert(e?.response?.data?.msg || '切片失败');
   } finally {
-    busy.value = null;
+    if (isCurrent()) busy.value = null;
   }
 };
 
@@ -383,9 +414,31 @@ const restorePreset = () => {
 };
 
 const interpretHref = computed(() => {
-  const target = new URL(`${GEOVIEW_BASE_URL}/segmentation`);
-  target.searchParams.set('project_id', String(selectedProjectId.value || ''));
-  return target.toString();
+  return buildGeoViewUrl(GEOVIEW_BASE_URL, window.location, selectedProjectId.value);
+});
+
+watch(() => selectedCandidate.value?.dataset_id ?? selectedCandidate.value?.storage_key, clearDraw, { flush: 'sync' });
+watch(selectedProjectId, () => {
+  ++candidatesSeq;
+  ++operationSeq;
+  candidates.value = [];
+  selectedCandidate.value = null;
+  mineFids.value = [];
+  clipMineFid.value = null;
+  candidatesLoading.value = false;
+  error.value = '';
+  busy.value = null;
+  clipResult.value = '';
+  clipSucceeded.value = false;
+  sliceResult.value = '';
+  sliceItems.value = [];
+  sliceSummary.value = false;
+}, { flush: 'sync' });
+
+onUnmounted(() => {
+  disposed = true;
+  ++candidatesSeq;
+  ++operationSeq;
 });
 
 const goWorkspace = () => {
@@ -449,6 +502,7 @@ h3 { font-size: 14px; color: #2f6f61; margin: 12px 0 8px; }
 .draw-hint { font-size: 12px; color: #5a7d75; margin-bottom: 6px; }
 .draw-ops { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .draw-svg { width: 100%; height: 180px; background: rgba(38, 75, 69, 0.05); border-radius: 6px; cursor: crosshair; }
+.draw-svg.disabled { cursor: not-allowed; }
 .draw-polygon { fill: rgba(78, 205, 196, 0.25); stroke: #2f6f61; stroke-width: 0.8; }
 .draw-polyline { fill: none; stroke: #2f6f61; stroke-width: 0.8; stroke-dasharray: 2 2; }
 .draw-dot { fill: #2f6f61; }

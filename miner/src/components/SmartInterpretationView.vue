@@ -43,14 +43,14 @@
             </span>
           </div>
           <button
-            v-if="editorTargets.get(`${row.data?.fid}:${row.data?.year ?? ''}`)?.editable"
+            v-if="getEditorTarget(row)?.editable"
             class="edit-btn"
             type="button"
             title="自动筛查细碎图斑等疑似误判线索"
             @click="openReview(row)"
           >智能复核</button>
           <button
-            v-if="editorTargets.get(`${row.data?.fid}:${row.data?.year ?? ''}`)?.editable"
+            v-if="getEditorTarget(row)?.editable"
             class="edit-btn"
             type="button"
             title="在 GeoView 编辑器中打开"
@@ -122,7 +122,7 @@ let editorTargetsSeq = 0;
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
 
-// 成果映射：fid+year → 可编辑的 result_id（供解译记录一键转编辑）
+// 优先按成果编号匹配；旧记录无编号时按矿山/年份取最大编号，避免依赖响应顺序。
 const editorTargets = ref(new Map());
 const EDITABLE_STATUS = new Set(['ready', 'ready_empty']);
 
@@ -143,11 +143,14 @@ const loadEditorTargets = async () => {
     const map = new Map();
     for (const item of Array.isArray(items) ? items : []) {
       if (!item?.result_id) continue;
-      map.set(`${item.mine_fid}:${item.year ?? ''}`, {
+      const target = {
         resultId: item.result_id,
         editable: EDITABLE_STATUS.has(item.vector_status),
         vectorStatus: item.vector_status || '',
-      });
+      };
+      map.set(`result:${item.result_id}`, target);
+      const key = `${item.mine_fid}:${item.year ?? ''}`;
+      if (!map.has(key) || Number(item.result_id) > Number(map.get(key).resultId)) map.set(key, target);
     }
     editorTargets.value = map;
   } catch (_) {
@@ -156,10 +159,16 @@ const loadEditorTargets = async () => {
   }
 };
 
+const getEditorTarget = (row) => {
+  const resultId = row.data?.result_id ?? row.result_id;
+  if (resultId != null) return editorTargets.value.get(`result:${resultId}`);
+  return editorTargets.value.get(`${row.data?.fid}:${row.data?.year ?? ''}`);
+};
+
 const openEditor = (row) => {
   const fid = row.data?.fid;
   const year = row.data?.year ?? '';
-  const target = editorTargets.value.get(`${fid}:${year}`);
+  const target = getEditorTarget(row);
   if (!target?.editable) return;
   openEditorTarget({ fid, year, resultId: target.resultId });
 };
@@ -169,7 +178,7 @@ const reviewTarget = ref(null);
 const openReview = (row) => {
   const fid = row.data?.fid;
   const year = row.data?.year ?? '';
-  const target = editorTargets.value.get(`${fid}:${year}`);
+  const target = getEditorTarget(row);
   if (!target) return;
   reviewTarget.value = {
     fid,

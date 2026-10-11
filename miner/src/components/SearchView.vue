@@ -39,7 +39,7 @@
 
 <script setup>
 import axios from 'axios';
-import { ref } from 'vue';
+import { onUnmounted, ref } from 'vue';
 import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
 
 const emit = defineEmits(['open-map']);
@@ -50,9 +50,12 @@ const keyword = ref('');
 const searched = ref(false);
 const projectHits = ref([]);
 const mineHits = ref([]);
-
+let requestSeq = 0;
+let disposed = false;
 
 const runSearch = async () => {
+  const seq = ++requestSeq;
+  const isCurrent = () => !disposed && seq === requestSeq;
   searched.value = true;
   projectHits.value = [];
   mineHits.value = [];
@@ -60,6 +63,7 @@ const runSearch = async () => {
   if (!kw) return;
   try {
     const res = await axios.get(`${MINER_API_BASE_URL}/api/projects`);
+    if (!isCurrent()) return;
     const items = res.data?.data?.items || [];
     // 项目模糊匹配：名称/区域
     projectHits.value = items.filter((p) =>
@@ -84,12 +88,18 @@ const runSearch = async () => {
           }
         })
       );
+      if (!isCurrent()) return;
       mineHits.value = results.filter(Boolean);
     }
   } catch (_) {
     /* 空结果保持 */
   }
 };
+
+onUnmounted(() => {
+  disposed = true;
+  ++requestSeq;
+});
 
 const openMap = (projectId, fid = null) => {
   emit('open-map', projectId, fid);

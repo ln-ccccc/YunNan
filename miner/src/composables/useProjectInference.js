@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { onScopeDispose, ref } from 'vue';
+import { onScopeDispose, ref, watch } from 'vue';
 
 import { pollInferenceJob } from '../services/inferencePolling.js';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
@@ -23,7 +23,11 @@ export function useProjectInference(resolveProjectId) {
 
   // 推理轮询取消位：组件销毁后若不取消，旧轮询会以固定间隔无限打后端
   let inferencePollCancelled = false;
+  let disposed = false;
+  let imageryRequestSeq = 0;
   onScopeDispose(() => {
+    disposed = true;
+    ++imageryRequestSeq;
     inferencePollCancelled = true;
   });
 
@@ -33,18 +37,29 @@ export function useProjectInference(resolveProjectId) {
 
   const loadImageryAssets = async () => {
     const projectId = getProjectId();
+    const seq = ++imageryRequestSeq;
+    const isCurrent = () => !disposed && seq === imageryRequestSeq && projectId === getProjectId();
     imageryAssetsLoading.value = true;
     imageryAssetsError.value = '';
     try {
       const response = await projectApi.loadAssets(projectId, { type: 'imagery', status: 'ready' });
+      if (!isCurrent()) return;
       imageryAssets.value = response?.items || [];
     } catch (error) {
+      if (!isCurrent()) return;
       imageryAssets.value = [];
       imageryAssetsError.value = error?.message || '推理影像加载失败';
     } finally {
-      imageryAssetsLoading.value = false;
+      if (isCurrent()) imageryAssetsLoading.value = false;
     }
   };
+
+  watch(getProjectId, () => {
+    ++imageryRequestSeq;
+    imageryAssets.value = [];
+    imageryAssetsError.value = '';
+    imageryAssetsLoading.value = false;
+  }, { flush: 'sync' });
 
   const runProjectInference = async ({ datasetId, year = '', device = 'auto' } = {}) => {
     inferenceRunning.value = true;

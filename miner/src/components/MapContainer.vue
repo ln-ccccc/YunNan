@@ -12,7 +12,7 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, watch, defineProps, defineEmits, defineExpose } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch, defineProps, defineEmits, defineExpose } from 'vue';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { createTileFallbackState, noteTileError, noteTileLoad } from '../map/tileFallbackPolicy.js';
@@ -22,6 +22,7 @@ const props = defineProps({
   leftCollapsed: Boolean,
   rightCollapsed: Boolean,
   tileUrl: { type: String, default: '' },
+  bounds: { type: Array, default: null },
   minZoom: { type: Number, default: 8 },
   maxZoom: { type: Number, default: 15 }
 });
@@ -78,15 +79,17 @@ const makeGaodeLayer = (kind) => {
   return L.tileLayer(url, { subdomains: ['1', '2', '3', '4'], maxZoom: 19 });
 };
 
-const makeLocalLayer = (url, minZoom = 0, maxNativeZoom = localTileMaxNativeZoom) => {
+const makeLocalLayer = (url, minZoom = 0, maxNativeZoom = localTileMaxNativeZoom, bounds = null) => {
   const value = String(url || '').trim();
   if (!value) return null;
+  const hasBounds = Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite);
   return L.tileLayer(value, {
     minZoom,
     maxZoom: Math.max(maxNativeZoom, 15),
     maxNativeZoom,
     crossOrigin: true,
-    tms: localTileTms
+    tms: localTileTms,
+    bounds: hasBounds ? [[bounds[1], bounds[0]], [bounds[3], bounds[2]]] : undefined,
   });
 };
 
@@ -179,9 +182,9 @@ const initMap = () => {
     };
   } else if (provider === 'project') {
     baseMaps = {
-      base: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom),
-      satellite: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom),
-      terrain: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom)
+      base: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom, props.bounds),
+      satellite: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom, props.bounds),
+      terrain: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom, props.bounds)
     };
   } else if (provider === 'local') {
     const fallback = localTileUrl || '/tiles/{z}/{x}/{y}.png';
@@ -196,6 +199,8 @@ const initMap = () => {
 
   const onTileError = () => {
     if (usingOfflineFallback || provider === 'offline' || !map.value) return;
+    // 项目影像是局部覆盖，边缘 404 不能移除仍在加载的有效瓦片。
+    if (provider === 'project') return;
     if (!noteTileError(tileFallbackState, { initialErrorThreshold: 4 })) return;
     usingOfflineFallback = true;
     Object.values(baseMaps).forEach((layer) => {
@@ -274,7 +279,7 @@ const fitMineLayerBounds = () => {
   map.value.fitBounds(bounds, {
     paddingTopLeft: [24, 30],
     paddingBottomRight: [24, 30],
-    maxZoom: 12
+    maxZoom: 15
   });
 };
 
@@ -370,8 +375,17 @@ onMounted(() => {
   }
 });
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
   resizeObserver?.disconnect();
+  if (map.value) {
+    map.value.scrollWheelZoom?.disable();
+    // Leaflet 1.9.4 removeHooks 不清 wheel timer，remove() 不终止 CSS zoom 回调。
+    clearTimeout(map.value.scrollWheelZoom?._timer);
+    clearTimeout(map.value._sizeTimer);
+    map.value.stop();
+    map.value._animatingZoom = false;
+    map.value.off('moveend', drawGraticule);
+  }
   // Leaflet 实例持有 DOM 事件绑定与图层：App.vue 按 selectedProjectId 用 :key
   // 重建组件，不 remove() 会整实例泄漏（2026-09-20 审查 P2）
   map.value?.remove();
