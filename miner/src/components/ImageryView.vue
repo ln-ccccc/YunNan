@@ -225,8 +225,9 @@ const loadCandidates = async () => {
     }));
     if (previous) {
       const restored = candidates.value.find(
-        (item) => (previous.dataset_id != null && item.dataset_id === previous.dataset_id)
-          || (item.display_name === previous.display_name && item.width === previous.width && item.height === previous.height),
+        (item) => previous.dataset_id != null
+          ? item.dataset_id === previous.dataset_id
+          : item.dataset_id == null && Boolean(previous.storage_key) && item.storage_key === previous.storage_key,
       );
       if (restored) selectedCandidate.value = restored;
     }

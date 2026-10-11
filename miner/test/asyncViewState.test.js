@@ -131,6 +131,54 @@ test('旧影像失败及卸载后成功都不写入当前页面', async () => {
   assert.equal(view.state.error.value, '');
 });
 
+test('刷新同名同尺寸影像时保留精确数据集而非列表首项', async () => {
+  const items = [
+    { dataset_id: 4, display_name: '矿山影像', width: 256, height: 256, year: 2020 },
+    { dataset_id: 5, display_name: '矿山影像', width: 256, height: 256, year: 2021 },
+  ];
+  const view = component('ImageryView.vue', { get: async (url) => response(
+    url.endsWith('/imagery/candidates') ? { items } : { features: [] },
+  ) });
+  view.state.selectedProjectId.value = 1;
+  view.state.selectedCandidate.value = items[1];
+  await view.state.loadCandidates();
+  assert.equal(view.state.selectedCandidate.value?.dataset_id, 5);
+  view.dispose();
+});
+
+test('未登记影像刷新按 storage_key 保留原文件而非同名文件', async () => {
+  const items = ['first.tif', 'second.tif'].map((filename) => ({
+    dataset_id: null, storage_key: `projects/1/inputs/imagery/${filename}`,
+    display_name: '同名文件', width: 256, height: 256,
+  }));
+  const view = component('ImageryView.vue', { get: async (url) => response(
+    url.endsWith('/imagery/candidates') ? { items } : { features: [] },
+  ) });
+  view.state.selectedProjectId.value = 1;
+  view.state.selectedCandidate.value = items[1];
+  await view.state.loadCandidates();
+  assert.equal(view.state.selectedCandidate.value?.storage_key, items[1].storage_key);
+  view.dispose();
+});
+
+test('原影像身份消失或缺失时刷新清空选择，不借同名替代文件', async () => {
+  const replacement = { dataset_id: 4, display_name: '矿山影像', width: 256, height: 256 };
+  const view = component('ImageryView.vue', { get: async (url) => response(
+    url.endsWith('/imagery/candidates') ? { items: [replacement] } : { features: [] },
+  ) });
+  view.state.selectedProjectId.value = 1;
+  for (const previous of [
+    { ...replacement, dataset_id: 5 },
+    { ...replacement, dataset_id: null, storage_key: 'projects/1/inputs/imagery/missing.tif' },
+    { ...replacement, dataset_id: null },
+  ]) {
+    view.state.selectedCandidate.value = previous;
+    await view.state.loadCandidates();
+    assert.equal(view.state.selectedCandidate.value, null);
+  }
+  view.dispose();
+});
+
 test('手绘多边形使用当前影像 EPSG:4326 bounds 且无范围时不可裁剪', () => {
   const view = component('ImageryView.vue');
   const { state } = view;
