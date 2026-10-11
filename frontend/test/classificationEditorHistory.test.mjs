@@ -1,7 +1,37 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createEditorHistory } from '../src/utils/classificationEditorHistory.mjs';
+import { createEditorHistory, serializeEditorSnapshot } from '../src/utils/classificationEditorHistory.mjs';
+
+test('undo restoring a deleted feature at a new array position returns to the saved baseline', () => {
+  const first = { type: 'Feature', id: 'a', properties: { class_code: 0 }, geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [0, 1], [0, 0]]] } };
+  const second = { ...first, id: 'b', properties: { class_code: 1 } };
+  const collection = features => ({ type: 'FeatureCollection', features });
+  const original = collection([first, second]);
+  const deleted = collection([second]);
+  const restored = collection([second, first]);
+  const history = createEditorHistory();
+  history.reset(serializeEditorSnapshot(original));
+  history.record('delete', serializeEditorSnapshot(deleted), 1000);
+  assert.equal(history.isDirty(serializeEditorSnapshot(deleted)), true);
+  history.undo(serializeEditorSnapshot(deleted));
+  assert.equal(history.isDirty(serializeEditorSnapshot(restored)), false);
+  assert.equal(history.canUndo, false);
+  assert.equal(history.canRedo, true);
+  assert.deepEqual(original.features, [first, second]);
+});
+
+test('snapshot comparison still detects class and vertex edits', () => {
+  const feature = { type: 'Feature', id: 'a', properties: { class_code: 0 }, geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [0, 1], [0, 0]]] } };
+  const baseline = { type: 'FeatureCollection', features: [feature] };
+  const history = createEditorHistory();
+  history.reset(serializeEditorSnapshot(baseline));
+  const changedClass = { ...baseline, features: [{ ...feature, properties: { class_code: 1 } }] };
+  const changedVertex = JSON.parse(JSON.stringify(baseline));
+  changedVertex.features[0].geometry.coordinates[0][1][0] = 1.1;
+  assert.equal(history.isDirty(serializeEditorSnapshot(changedClass)), true);
+  assert.equal(history.isDirty(serializeEditorSnapshot(changedVertex)), true);
+});
 
 test('record pushes the pre-gesture state and redo is cleared on new edits', () => {
   const history = createEditorHistory();

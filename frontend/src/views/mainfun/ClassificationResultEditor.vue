@@ -130,7 +130,7 @@ import {
   isEditableVectorStatus,
   resolveSecureTileTemplate,
 } from '@/utils/classificationEditor.mjs';
-import { createEditorHistory } from '@/utils/classificationEditorHistory.mjs';
+import { createEditorHistory, serializeEditorSnapshot } from '@/utils/classificationEditorHistory.mjs';
 import {
   classColor as resolveClassColor,
   classColorExpression,
@@ -451,7 +451,7 @@ export default {
     },
     currentDrawJson() {
       if (!this.draw) return '';
-      return JSON.stringify(this.draw.getAll());
+      return serializeEditorSnapshot(this.draw.getAll());
     },
     resetEditHistory() {
       this.history = createEditorHistory();

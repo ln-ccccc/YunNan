@@ -8,6 +8,15 @@
  * - 栈深上限 limit，超出丢最旧；
  * - baseline 为已保存版本快照，撤销回基线即不再脏。
  */
+export function serializeEditorSnapshot(featureCollection) {
+  const features = [...featureCollection.features].sort((first, second) => {
+    const firstId = JSON.stringify(first.id);
+    const secondId = JSON.stringify(second.id);
+    return firstId < secondId ? -1 : firstId > secondId ? 1 : 0;
+  });
+  return JSON.stringify({ ...featureCollection, features });
+}
+
 export function createEditorHistory({ limit = 50, coalesceWindowMs = 500 } = {}) {
   let baselineJson = '';
   let lastJson = '';
