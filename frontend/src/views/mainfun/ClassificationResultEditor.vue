@@ -67,6 +67,7 @@
             :key="definition.class_code"
             class="class-option"
             :class="{ active: activeClassCode === definition.class_code }"
+            :disabled="saving"
             type="button"
             @click="selectClass(definition.class_code)"
           >
@@ -81,7 +82,8 @@
         </aside>
 
         <div class="map-card">
-          <div ref="mapContainer" class="classification-map" />
+          <div ref="mapContainer" class="classification-map" :inert="saving || undefined" />
+          <div v-if="saving" class="map-saving" role="status">正在保存新版本，请稍候…</div>
           <div v-if="!hasBasemap" class="map-notice">
             当前项目没有可用底图，仍可编辑已有矢量；建议在 Miner 项目工作台先完成离线底图切片并启用。
           </div>
@@ -259,6 +261,8 @@ export default {
       map: null,
       draw: null,
       tileTemplate: null,
+      reloadSeq: 0,
+      destroyed: false,
     };
   },
   computed: {
@@ -268,21 +272,44 @@ export default {
   },
   watch: {
     '$route.fullPath'() {
-      this.reloadResult();
+      this.reloadResult({ discardConfirmed: true });
     },
+  },
+  beforeRouteLeave() {
+    return this.confirmDiscardChanges();
+  },
+  beforeRouteUpdate() {
+    return this.confirmDiscardChanges();
   },
   mounted() {
     document.addEventListener('keydown', this.handleKeydown);
+    window.addEventListener('beforeunload', this.handleBeforeUnload);
     this.reloadResult();
   },
   beforeUnmount() {
+    this.destroyed = true;
     document.removeEventListener('keydown', this.handleKeydown);
+    window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.destroyMap();
     // 组件销毁后丢弃在途响应（route query 变化会复用实例并发起第二次 reload）
     this.reloadSeq = -1;
   },
   methods: {
-    async reloadResult() {
+    confirmDiscardChanges() {
+      return !this.isDirty || window.confirm('存在未保存的编辑，继续将放弃这些修改。是否继续？');
+    },
+    handleBeforeUnload(event) {
+      if (!this.isDirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    },
+    isCurrentContext(context, seq) {
+      return !this.destroyed && this.reloadSeq === seq
+        && this.context?.projectId === context.projectId
+        && this.context?.resultId === context.resultId;
+    },
+    async reloadResult({ discardConfirmed = false } = {}) {
+      if (this.destroyed || (!discardConfirmed && !this.confirmDiscardChanges())) return;
       // 竞态守卫：两次 reload 并发时（前进/后退、重复进入），先发后至的旧响应
       // 会把 A 成果的数据装进 B 成果的 context，保存时即写错对象
       const seq = (this.reloadSeq = (this.reloadSeq || 0) + 1);
@@ -292,6 +319,7 @@ export default {
       this.revisions = [];
       this.loadError = '';
       this.isDirty = false;
+      this.saving = false;
       this.selectedDrawIds = [];
       this.loading = true;
       if (!this.context) {
@@ -326,6 +354,7 @@ export default {
           // （2026-09-20 GUI 实测发现的 P1）
           await this.$nextTick();
           if (
+            seq === this.reloadSeq && !this.destroyed &&
             this.result &&
             !this.loadError &&
             isEditableVectorStatus(this.result.vector_status)
@@ -402,7 +431,7 @@ export default {
       }
     },
     resetDrawing() {
-      if (!this.draw || !this.result) return;
+      if (this.saving || !this.draw || !this.result) return;
       this.draw.set(this.result.current_feature_collection || emptyFeatureCollection());
       this.resetEditHistory();
       this.selectedDrawIds = [];
@@ -427,7 +456,7 @@ export default {
       this.syncHistoryState();
     },
     undoLastEdit() {
-      if (!this.draw || !this.history?.canUndo) return;
+      if (this.saving || !this.draw || !this.history?.canUndo) return;
       const previous = this.history.undo(this.currentDrawJson());
       if (!previous) return;
       this.draw.set(JSON.parse(previous));
@@ -435,7 +464,7 @@ export default {
       this.syncHistoryState();
     },
     redoLastEdit() {
-      if (!this.draw || !this.history?.canRedo) return;
+      if (this.saving || !this.draw || !this.history?.canRedo) return;
       const next = this.history.redo(this.currentDrawJson());
       if (!next) return;
       this.draw.set(JSON.parse(next));
@@ -456,6 +485,7 @@ export default {
       }
     },
     selectClass(classCode) {
+      if (this.saving) return;
       this.activeClassCode = classCode;
       if (!this.draw || !this.selectedDrawIds.length) return;
       this.selectedDrawIds.forEach((drawId) => {
@@ -486,7 +516,7 @@ export default {
       this.selectedDrawIds = (event.features || []).map((feature) => feature.id);
     },
     mergeSelectedFeatures() {
-      if (!this.draw || this.selectedDrawIds.length < 2) return;
+      if (this.saving || !this.draw || this.selectedDrawIds.length < 2) return;
       const selected = this.selectedDrawIds
         .map((id) => {
           try {
@@ -534,7 +564,7 @@ export default {
       }
     },
     simplifySelectedFeatures() {
-      if (!this.draw || !this.selectedDrawIds.length) return;
+      if (this.saving || !this.draw || !this.selectedDrawIds.length) return;
       // 容差 ≈1.1m（0.00001°）：消除栅格掩膜边缘锯齿而不明显改变地物形状
       const tolerance = 0.00001;
       let simplifiedCount = 0;
@@ -583,7 +613,9 @@ export default {
       }
     },
     async saveDrawing() {
-      if (!this.context || !this.result || !this.draw) return;
+      if (this.destroyed || this.saving || !this.context || !this.result || !this.draw) return;
+      const context = { ...this.context };
+      const seq = this.reloadSeq;
       let featureCollection;
       try {
         featureCollection = buildEditableFeatureCollection(this.draw.getAll());
@@ -593,10 +625,11 @@ export default {
       }
       this.saving = true;
       try {
-        const saved = await saveClassificationRevision(this.context.projectId, this.context.resultId, {
+        const saved = await saveClassificationRevision(context.projectId, context.resultId, {
           base_revision_no: this.result.current_revision_no,
           feature_collection: featureCollection,
         });
+        if (!this.isCurrentContext(context, seq)) return;
         this.result.current_feature_collection = saved.feature_collection;
         this.result.current_revision_no = saved.current_revision_no;
         this.draw.set(saved.feature_collection || emptyFeatureCollection());
@@ -604,8 +637,10 @@ export default {
         this.resetEditHistory();
         this.selectedDrawIds = [];
         await this.loadRevisions();
+        if (!this.isCurrentContext(context, seq)) return;
         this.$message.success(`已保存为 V${saved.current_revision_no}`);
       } catch (error) {
+        if (!this.isCurrentContext(context, seq)) return;
         if (error?.status === 409) {
           this.$message.error('该成果已有新版本，请重新加载后再编辑；系统不会自动覆盖他人的修改。');
         } else if (error?.status === 422) {
@@ -615,12 +650,15 @@ export default {
           this.$message.error(error?.message || '保存分类成果失败');
         }
       } finally {
-        this.saving = false;
+        if (this.isCurrentContext(context, seq)) this.saving = false;
       }
     },
     async loadRevisions() {
-      if (!this.context) return;
-      const payload = await getClassificationRevisions(this.context.projectId, this.context.resultId);
+      if (this.destroyed || !this.context) return;
+      const context = { ...this.context };
+      const seq = this.reloadSeq;
+      const payload = await getClassificationRevisions(context.projectId, context.resultId);
+      if (!this.isCurrentContext(context, seq)) return;
       this.revisions = payload?.revisions || [];
     },
     async downloadCurrent() {
@@ -814,6 +852,11 @@ h1 {
   background: var(--primary-hover);
 }
 
+.class-option:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .class-option small {
   grid-column: 2;
   margin-top: 2px;
@@ -841,6 +884,17 @@ h1 {
 .classification-map {
   width: 100%;
   min-height: 650px;
+}
+
+.map-saving {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  background: rgba(247, 250, 249, 0.64);
+  color: var(--text-primary);
+  cursor: wait;
 }
 
 .map-notice {
