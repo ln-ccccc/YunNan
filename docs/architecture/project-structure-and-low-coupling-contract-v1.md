@@ -70,7 +70,7 @@ blocked | partial | ready
 | `PROJECT_PROFILE` | 项目名称与监测期有效 | `PROJECT_PROFILE_INCOMPLETE` |
 | `MINE_BOUNDARY` | 存在可用矿山边界资源 | `NO_MINE_BOUNDARY` |
 | `ACTIVE_BASEMAP` | 存在已激活且可读的项目底图 | `NO_ACTIVE_BASEMAP` |
-| `INFERENCE_INPUT` | 存在已验证的相对 `storage_key`，且影像格式为 `tif`、`tiff`、`img` 或 `jp2` | `NO_INFERENCE_INPUT` |
+| `INFERENCE_INPUT` | 存在已验证的 imagery 数据集，或当前激活底图拥有可读的受控原栅格；格式为 `tif`、`tiff`、`img` 或 `jp2` | `NO_INFERENCE_INPUT` |
 | `REVIEWABLE_RESULT` | 任一 `ClassificationResult.vector_status` 为 `ready` 或 `ready_empty` | `NO_REVIEWABLE_RESULT` |
 
 历史绝对 `file_path` 记录最多只能公开为 `registered` 资产，不能通过 `INFERENCE_INPUT` 检查；只有经验证的相对 `storage_key` 和受支持栅格格式（`tif`/`tiff`/`img`/`jp2`，GDAL 可读的单文件格式）组合才是可推理输入。
@@ -239,6 +239,10 @@ vector_revision | report | export | backup_snapshot
 `POST /datasets` 的成功响应是安全登记回执，仅含 `id`、`asset_id` 和 `status`；页面随后通过 `/assets` 读取公开资产。配置快照恢复成功返回 `ProjectOverviewView`，不得复用旧项目详情 DTO。历史 `GET /api/projects/{project_id}` 为兼容接口，可能仍保留旧字段；新 Miner 工作台不得调用它或把其响应转发给浏览器。GeoJSON/SHP 导出未传 `features` 时，由 Flask 从当前公开矿山边界、项目绑定和数据集生成导出要素，BFF 只转发请求且不得读取旧详情；兼容的显式 `features` 同样必须过滤保留路径键、覆盖 `project_id`，并校验矿山/数据集引用只属于当前项目。
 
 项目化地物分类统一调用 `POST /api/inference/jobs`。Miner 只提交 `project_id`、`dataset_id`、可选 `year` 和 `device`；后端确认数据集属于当前项目、是已就绪的 `imagery`，再解析受控 `incoming/` 或本项目 `projects/{id}/inputs/imagery/` 下受支持栅格文件、矿山边界和项目输出目录。浏览器不得提交或接收推理输入、KML、输出目录等服务器物理路径。省略 `year` 时使用影像登记年份；两者都没有时，后端直接提示补充年份。裁剪/切片产物继续使用既有目录，保存相对 storage key，继承登记来源年份和矿山引用；readiness 与推理使用相同目录规则。兼容详情的 `datasets[].file_path` 只返回受控相对键，不能安全映射的历史物理路径返回 `null`。
+
+激活底图原栅格同时通过 `/assets?type=imagery&status=ready` 暴露为 `id=basemap_imagery:{resource_id}` 的 imagery 读取视图；固定资产 DTO 不增加字段，`source_type=spatial_resource`，`source_id=resource_id`，`provenance.source=active_basemap_source`，`parent_asset_ids=[basemap:{resource_id}]`。它与 basemap 视图描述同一资源的两个用途，不新增文件或数据集；`counts.assets` 仍统计公开读取视图，`dataset_count` 不变；影像裁剪候选清单不重复新增底图。仅当前最高版本的 active 底图可以提供该视图，原源文件必须位于 `incoming/` 或本项目 `basemap/`、`basemaps/` 下，使用受支持格式并有可读栅格元数据及 CRS。缺源、不可读、越界或非激活资源不满足 `INFERENCE_INPUT`，XYZ/PNG 瓦片永远不是模型输入。
+
+推理请求增加 `input_asset_id`（直接使用公开 imagery 资产 ID），与旧 `dataset_id` 必须且只能提供一项。`imagery:{id}` 延续数据集规则；`basemap_imagery:{id}` 由后端重新确认项目归属、当前激活资源及受控原源文件，必须显式提交四位 `year`，私有 Worker 参数和公开任务请求保留 `basemap_resource_id` 来源。Miner 不按 `source_type` 或服务器目录做选择。任务使用原始栅格像素，沿用已有预处理链；切换激活底图后旧资产 ID 返回 400，不会自动改用新底图。成功、无源、非法/跨项目、不可读与未激活样例见 `tests/fixtures/project-hub-v1/active-basemap-inference.json`。
 
 影像候选 `GET /api/projects/{id}/imagery/candidates` 的各项增加可空 `bounds`：EPSG:4326 `[west,south,east,north]`，从该影像实际地理参考转换，不使用固定区域。缺少 CRS、文件或有效栅格时返回 `null`，尺寸等不可读摘要同样为空。成功、空、不可读示例见 `tests/fixtures/project-hub-v1/imagery-candidates.json`。裁剪前确认原始 Polygon/MultiPolygon 有效且面积大于零，退化或自交范围返回 400，不通过缓冲修复。裁剪仍输出请求范围的矩形像素窗口：米制外扩在以范围中心为原点的 WGS84 局部等距投影计算，然后投回影像 CRS，窗口向外取整并限制在源影像内；不改为多边形掩膜、不降采样。产物保留 NoData 和有效数据掩膜。
 

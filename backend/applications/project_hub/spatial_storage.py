@@ -61,3 +61,32 @@ def resolve_project_imagery_path(storage_root, value, project_id, *, allow_legac
     if not (key.startswith("incoming/") or key.startswith(f"projects/{project_id}/inputs/imagery/")):
         raise ValueError("影像必须位于 incoming 或本项目 inputs/imagery 目录")
     return resolve_storage_path(storage_root, key)
+
+
+def resolve_basemap_source_path(storage_root, resource):
+    """解析底图的受控原栅格；地图瓦片目录不能作为推理输入。"""
+    import rasterio
+    from rasterio.errors import RasterioError
+
+    key = normalize_dataset_storage_key(storage_root, resource.source_path, resource.project_id)
+    prefixes = (
+        "incoming/",
+        f"projects/{resource.project_id}/basemap/",
+        f"projects/{resource.project_id}/basemaps/",
+    )
+    if not key.startswith(prefixes):
+        raise ValueError("底图原影像不在受控来源目录，请重新登记底图")
+    path = resolve_storage_path(storage_root, key)
+    if (
+        path.suffix.lower().lstrip(".") not in SUPPORTED_INCOMING_RASTER_FORMATS
+        or str(resource.source_format or "").lower() not in SUPPORTED_INCOMING_RASTER_FORMATS
+        or not path.is_file()
+    ):
+        raise ValueError("底图原影像不存在或格式不支持，请重新登记底图")
+    try:
+        with rasterio.open(path) as src:
+            if src.width <= 0 or src.height <= 0 or src.count <= 0 or src.crs is None:
+                raise ValueError("底图原影像缺少有效尺寸或坐标系，请重新登记底图")
+    except (OSError, RasterioError) as exc:
+        raise ValueError("底图原影像不可读，请检查源文件并重新登记底图") from exc
+    return path

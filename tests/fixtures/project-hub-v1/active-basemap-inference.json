@@ -1,0 +1,14 @@
+{
+  "success": {
+    "input_asset_id": "basemap_imagery:2",
+    "year": "2024",
+    "http_status": 201,
+    "can_start_inference": true,
+    "parent_asset_ids": ["basemap:2"]
+  },
+  "empty": {"source_path": "incoming/missing.tif", "http_status": 400, "can_start_inference": false},
+  "invalid": {"input_asset_id": "basemap_imagery:999", "http_status": 400},
+  "failed": {"source_path": "incoming/unreadable.tif", "http_status": 400, "can_start_inference": false},
+  "unsafe_sources": ["../scene.tif", "/secret/scene.tif", "C:\\secret\\scene.tif", "projects/999/basemap/scene.tif", "projects/1/tiles/2/0/0/0.png"],
+  "inactive_statuses": ["pending", "processing", "retained", "failed"]
+}

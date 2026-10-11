@@ -539,6 +539,122 @@ class TestInferenceJobAPI(unittest.TestCase):
         )
         self.assertNotIn(str(self.storage_root), json.dumps(public_job, ensure_ascii=False))
 
+    def seed_active_basemap_only(self):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+        from applications.models.project_spatial import ProjectSpatialResource
+
+        seed = self.seed_ready_project()
+        self.db.session.delete(seed.dataset)
+        seed.basemap = ProjectSpatialResource.query.filter_by(
+            project_id=seed.project.id, resource_type="basemap"
+        ).one()
+        seed.basemap.source_path = "incoming/active-source.tif"
+        seed.source_path = self.storage_root / seed.basemap.source_path
+        with rasterio.open(
+            seed.source_path, "w", driver="GTiff", width=8, height=8, count=3,
+            dtype="uint8", crs="EPSG:4326", transform=from_origin(102.4, 24.8, 0.001, 0.001),
+        ) as dst:
+            dst.write(np.full((3, 8, 8), 37, dtype=np.uint8))
+        self.db.session.commit()
+        return seed
+
+    @staticmethod
+    def basemap_body(seed, **extra):
+        return {
+            "project_id": seed.project.id,
+            "input_asset_id": f"basemap_imagery:{seed.basemap.id}",
+            "year": "2024",
+            **extra,
+        }
+
+    def test_active_basemap_only_is_ready_and_exposes_safe_imagery_asset(self):
+        self.login()
+        seed = self.seed_active_basemap_only()
+        overview = self.client.get(f"/api/projects/{seed.project.id}/overview").get_json()["data"]
+        self.assertTrue(overview["capabilities"]["can_start_inference"])
+        self.assertNotIn("NO_INFERENCE_INPUT", [item["code"] for item in overview["blockers"]])
+        assets = self.client.get(f"/api/projects/{seed.project.id}/assets?type=imagery&status=ready").get_json()["data"]["items"]
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0]["id"], f"basemap_imagery:{seed.basemap.id}")
+        self.assertEqual(assets[0]["provenance"]["parent_asset_ids"], [f"basemap:{seed.basemap.id}"])
+        self.assertNotIn(str(self.storage_root), json.dumps(assets))
+
+    def test_active_basemap_job_uses_original_raster_and_records_resource(self):
+        from applications.models.inference_job import InferenceJob
+        self.login()
+        seed = self.seed_active_basemap_only()
+        response = self.post_safe_job(seed, self.basemap_body(seed))
+        self.assertEqual(response.status_code, 201, response.get_json())
+        private = json.loads(InferenceJob.query.one().request_payload_json)
+        public = response.get_json()["data"]["request"]
+        self.assertEqual(private["old_tif_path"], str(seed.source_path.resolve()))
+        self.assertEqual(private["new_tif_path"], str(seed.source_path.resolve()))
+        self.assertEqual(private["basemap_resource_id"], seed.basemap.id)
+        self.assertEqual(public["basemap_resource_id"], seed.basemap.id)
+        self.assertNotIn("dataset_id", private)
+        self.assertNotIn(str(self.storage_root), json.dumps(response.get_json()))
+
+    def test_active_basemap_rejects_missing_unreadable_or_unsafe_sources(self):
+        self.login()
+        seed = self.seed_active_basemap_only()
+        fixture_path = Path(__file__).resolve().parents[1] / "tests/fixtures/project-hub-v1/active-basemap-inference.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        (self.storage_root / "incoming/unreadable.tif").write_text("invalid", encoding="utf-8")
+        for source in [fixture["empty"]["source_path"], fixture["failed"]["source_path"], *fixture["unsafe_sources"]]:
+            with self.subTest(source=source):
+                seed.basemap.source_path = source
+                self.db.session.commit()
+                overview = self.client.get(f"/api/projects/{seed.project.id}/overview").get_json()["data"]
+                self.assertFalse(overview["capabilities"]["can_start_inference"])
+                response = self.post_safe_job(seed, self.basemap_body(seed))
+                self.assertEqual(response.status_code, 400, response.get_json())
+                self.assertEqual(self.job_count(), 0)
+
+    def test_active_basemap_rejects_inactive_and_cross_project_ids(self):
+        self.login()
+        seed = self.seed_active_basemap_only()
+        fixture_path = Path(__file__).resolve().parents[1] / "tests/fixtures/project-hub-v1/active-basemap-inference.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        for status in fixture["inactive_statuses"]:
+            seed.basemap.status = status
+            self.db.session.commit()
+            response = self.post_safe_job(seed, self.basemap_body(seed))
+            self.assertEqual(response.status_code, 400, response.get_json())
+        seed.basemap.status = "active"
+        other = self.seed_active_basemap_only()
+        response = self.post_safe_job(seed, self.basemap_body(seed, input_asset_id=f"basemap_imagery:{other.basemap.id}"))
+        self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertEqual(self.job_count(), 0)
+
+    def test_active_basemap_requires_year_and_exactly_one_input_reference(self):
+        self.login()
+        seed = self.seed_active_basemap_only()
+        without_year = self.basemap_body(seed)
+        without_year.pop("year")
+        response = self.post_safe_job(seed, without_year)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("year", response.get_json()["msg"])
+        for body in [self.basemap_body(seed, dataset_id=1), self.basemap_body(seed, input_asset_id="basemap_imagery:../2"), {"project_id": seed.project.id}]:
+            response = self.post_safe_job(seed, body)
+            self.assertEqual(response.status_code, 422, response.get_json())
+        self.assertEqual(self.job_count(), 0)
+
+    def test_changed_active_basemap_rejects_previous_asset_id(self):
+        from applications.models.project_spatial import ProjectSpatialResource
+        self.login()
+        seed = self.seed_active_basemap_only()
+        seed.basemap.status = "retained"
+        self.db.session.add(ProjectSpatialResource(
+            project_id=seed.project.id, resource_type="basemap", version=2,
+            status="active", source_path=seed.basemap.source_path, source_format="tif",
+        ))
+        self.db.session.commit()
+        response = self.post_safe_job(seed, self.basemap_body(seed))
+        self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertEqual(self.job_count(), 0)
+
     def test_create_job_uses_dataset_year_when_request_omits_year(self):
         from applications.models.inference_job import InferenceJob
 

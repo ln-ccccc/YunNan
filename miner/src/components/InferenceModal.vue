@@ -10,18 +10,18 @@
         <div class="modal-body">
           <div class="form-group">
             <label for="inference-imagery">推理影像</label>
-            <select id="inference-imagery" v-model="formData.datasetId" class="form-input" :disabled="assetsLoading">
-              <option value="">{{ assetsLoading ? '正在加载已登记影像…' : '请选择已登记且已就绪的影像' }}</option>
-              <option v-for="asset in imageryAssets" :key="asset.id" :value="String(asset.source_id)">
+            <select id="inference-imagery" v-model="formData.inputAssetId" class="form-input" :disabled="assetsLoading">
+              <option value="">{{ assetsLoading ? '正在加载可用影像…' : '请选择已就绪的影像或当前底图原影像' }}</option>
+              <option v-for="asset in imageryAssets" :key="asset.id" :value="asset.id">
                 {{ formatAssetLabel(asset) }}
               </option>
             </select>
-            <small v-if="!assetsLoading && !imageryAssets.length" class="tip">请先通过项目工作台登记并准备影像。</small>
+            <small v-if="!assetsLoading && !imageryAssets.length" class="tip">请先登记影像，或激活保留原影像的项目底图。</small>
           </div>
 
           <div class="form-row">
             <div class="form-group half">
-              <label for="inference-year">年份（不填则用影像登记年份）</label>
+              <label for="inference-year">年份（底图原影像必填，登记影像可留空）</label>
               <input id="inference-year" v-model="formData.year" placeholder="例如：2024" class="form-input" inputmode="numeric" />
             </div>
             <div class="form-group half">
@@ -44,7 +44,7 @@
 
           <div class="modal-footer">
             <button class="btn-cancel" type="button" :disabled="running" @click="$emit('close')">取消</button>
-            <button class="btn-submit" type="button" data-testid="inference-submit" :disabled="running || assetsLoading || !formData.datasetId" @click="handleSubmit">
+            <button class="btn-submit" type="button" data-testid="inference-submit" :disabled="running || assetsLoading || !formData.inputAssetId" @click="handleSubmit">
               {{ running ? '正在计算…' : '确认开始推理' }}
             </button>
           </div>
@@ -72,7 +72,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'load-imagery', 'submit']);
 
 const formData = reactive({
-  datasetId: '',
+  inputAssetId: '',
   year: '',
   device: 'auto',
 });
@@ -83,7 +83,7 @@ watch(() => props.visible, (visible) => {
   if (!visible) return;
   errorMsg.value = '';
   successMsg.value = '';
-  formData.datasetId = '';
+  formData.inputAssetId = '';
   emit('load-imagery');
 });
 
@@ -115,12 +115,12 @@ function handleSubmit() {
     errorMsg.value = '年份必须为 4 位数字，例如 2024。';
     return;
   }
-  if (!formData.datasetId) {
-    errorMsg.value = '请选择已登记且已就绪的影像。';
+  if (!formData.inputAssetId) {
+    errorMsg.value = '请选择已就绪的推理影像。';
     return;
   }
   emit('submit', {
-    datasetId: Number(formData.datasetId),
+    inputAssetId: formData.inputAssetId,
     year,
     device: formData.device || 'auto',
   });

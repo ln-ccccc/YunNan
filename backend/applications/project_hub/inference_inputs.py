@@ -14,6 +14,7 @@ from applications.project_hub.spatial_storage import (
     get_storage_root,
     resolve_storage_path,
     resolve_project_imagery_path,
+    resolve_basemap_source_path,
 )
 
 class ProjectInferenceInputError(ValueError):
@@ -63,9 +64,11 @@ def _resolve_registered_tif(storage_root, file_path, project_id=None):
     return tif_path
 
 
-def _resolve_inference_year(value, dataset):
+def _resolve_inference_year(value, dataset=None):
     candidate = value
     if candidate is None or (isinstance(candidate, str) and not candidate.strip()):
+        if dataset is None:
+            raise ProjectInferenceInputError("底图原影像必须显式提供四位 year，请填写影像年份")
         candidate = dataset.year_end if dataset.year_end not in (None, "") else dataset.year_start
     if isinstance(candidate, bool) or not _YEAR_VALUE.fullmatch(str(candidate or "").strip()):
         raise ProjectInferenceInputError("year 必须是四位年份，或数据集必须登记年份")
@@ -105,7 +108,8 @@ def _resolve_scope(scope_resolver, project_id, tif_path):
 def resolve_project_inference_inputs(
     *,
     project_id,
-    dataset_id,
+    dataset_id=None,
+    input_asset_id=None,
     year=None,
     mine_fids=None,
     device=None,
@@ -113,20 +117,45 @@ def resolve_project_inference_inputs(
 ):
     """Return private, canonical Worker inputs for an approved project dataset."""
     project_id = _positive_integer(project_id, "project_id")
-    dataset_id = _positive_integer(dataset_id, "dataset_id")
     project = Project.query.filter_by(id=project_id, deleted_at=None).first()
     if project is None:
         raise ProjectInferenceInputError("项目不存在")
-    dataset = ProjectDataset.query.filter_by(id=dataset_id, project_id=project.id).first()
-    if dataset is None:
-        raise ProjectInferenceInputError("数据集不存在或不属于当前项目")
-    if str(dataset.dataset_kind or "").strip().lower() != "imagery":
-        raise ProjectInferenceInputError("当前仅支持使用影像数据集启动推理")
-
-    normalized_year = _resolve_inference_year(year, dataset)
-
     storage_root = get_storage_root()
-    tif_path = _resolve_registered_tif(storage_root, dataset.file_path, project.id)
+    references = {}
+    if input_asset_id is not None:
+        match = re.fullmatch(r"(imagery|basemap_imagery):([1-9]\d*)", str(input_asset_id))
+        if dataset_id is not None or match is None:
+            raise ProjectInferenceInputError("input_asset_id 与 dataset_id 必须且只能提供一项有效引用")
+        references["input_asset_id"] = input_asset_id
+        asset_type, source_id = match.group(1), int(match.group(2))
+        if asset_type == "imagery":
+            dataset_id = source_id
+        else:
+            basemap = (
+                ProjectSpatialResource.query.filter_by(
+                    project_id=project.id, resource_type="basemap", status="active",
+                ).order_by(ProjectSpatialResource.version.desc()).first()
+            )
+            if basemap is None or basemap.id != source_id:
+                raise ProjectInferenceInputError("底图原影像不存在、不属于当前项目或已不是当前激活底图，请刷新影像清单")
+            try:
+                tif_path = resolve_basemap_source_path(storage_root, basemap)
+            except ValueError as exc:
+                raise ProjectInferenceInputError("当前激活底图的原影像不可用，请检查源文件并重新登记底图") from exc
+            references["basemap_resource_id"] = basemap.id
+    dataset = None
+    if dataset_id is not None:
+        dataset_id = _positive_integer(dataset_id, "dataset_id")
+        dataset = ProjectDataset.query.filter_by(id=dataset_id, project_id=project.id).first()
+        if dataset is None:
+            raise ProjectInferenceInputError("数据集不存在或不属于当前项目")
+        if str(dataset.dataset_kind or "").strip().lower() != "imagery":
+            raise ProjectInferenceInputError("当前仅支持使用影像数据集启动推理")
+        tif_path = _resolve_registered_tif(storage_root, dataset.file_path, project.id)
+        references["dataset_id"] = dataset.id
+    elif "basemap_resource_id" not in references:
+        raise ProjectInferenceInputError("缺少推理影像资产引用")
+    normalized_year = _resolve_inference_year(year, dataset)
     overview = get_project_overview(project.id)
     if not bool((overview.get("capabilities") or {}).get("can_start_inference")):
         raise ProjectInferenceInputError("项目当前不满足启动推理条件")
@@ -168,7 +197,7 @@ def resolve_project_inference_inputs(
     )
     return {
         "project_id": project.id,
-        "dataset_id": dataset.id,
+        **references,
         "mine_resource_id": mine_resource.id,
         "mine_fids": selected_fids,
         "old_tif_path": str(tif_path),

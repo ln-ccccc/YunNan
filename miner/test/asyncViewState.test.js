@@ -402,6 +402,19 @@ test('旧项目创建失败不写错误，也不关闭新项目正在执行的 l
   state.dispose();
 });
 
+test('底图原影像推理提交公开资产 ID，保留数据集调用兼容', async () => {
+  const bodies = [];
+  const state = inference({
+    post: async (_, body) => { bodies.push(body); return response({ id: 'asset-job', status: 'queued' }); },
+    get: async () => response({ id: 'asset-job', status: 'succeeded' }),
+  }, Vue.ref(7));
+  await state.runProjectInference({ inputAssetId: 'basemap_imagery:22', year: '2024' });
+  assert.deepEqual(bodies[0], { project_id: 7, input_asset_id: 'basemap_imagery:22', year: '2024', device: 'auto' });
+  await state.runProjectInference({ datasetId: 11 });
+  assert.deepEqual(bodies[1], { project_id: 7, dataset_id: 11, device: 'auto' });
+  state.dispose();
+});
+
 test('项目切换时已发出的旧轮询终态不回填、不触发成功回调', async () => {
   const status = deferred();
   const queried = deferred();

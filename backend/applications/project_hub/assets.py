@@ -20,6 +20,7 @@ from applications.project_hub.spatial_storage import (
     get_storage_root,
     resolve_storage_path,
     resolve_project_imagery_path,
+    resolve_basemap_source_path,
 )
 
 VALID_ASSET_TYPES = (
@@ -386,6 +387,11 @@ def list_project_assets(project, asset_type=None, status=None):
     assets = []
 
     spatial_resources = ProjectSpatialResource.query.filter_by(project_id=project_id).all()
+    active_basemap = max(
+        (item for item in spatial_resources if item.resource_type == "basemap" and item.status == "active"),
+        key=lambda item: item.version,
+        default=None,
+    )
     for resource in spatial_resources:
         source_type = str(resource.resource_type or "").strip().lower()
         if source_type == "mine_vector":
@@ -415,6 +421,27 @@ def list_project_assets(project, asset_type=None, status=None):
                 error_message=resource.error_message,
             )
         )
+
+        if resource is active_basemap:
+            try:
+                resolve_basemap_source_path(storage_root, resource)
+            except ValueError:
+                continue
+            assets.append(_asset(
+                asset_id=f"basemap_imagery:{resource.id}",
+                source_type="spatial_resource",
+                source_id=resource.id,
+                asset_type="imagery",
+                name=f"当前激活底图原影像 {resource.id}",
+                asset_format=_public_format(resource.source_format),
+                asset_status="ready",
+                version=resource.version,
+                created_at=resource.create_time,
+                updated_at=resource.update_time,
+                spatial=_spatial_metadata(resource),
+                provenance_source="active_basemap_source",
+                parent_asset_ids=[f"basemap:{resource.id}"],
+            ))
 
     results = ClassificationResult.query.filter_by(project_id=project_id).all()
     result_identities = {(result.mine_fid, result.year) for result in results}

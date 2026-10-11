@@ -26,7 +26,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 inference_api = Blueprint("inference_api", __name__, url_prefix="/api/inference")
-_CREATE_JOB_FIELDS = {"project_id", "dataset_id", "year", "mine_fids", "device"}
+_CREATE_JOB_FIELDS = {"project_id", "dataset_id", "input_asset_id", "year", "mine_fids", "device"}
 _URL_VALUE = re.compile(r"(?i)\b(?:https?|ftp)://[^\s]+")
 _ABSOLUTE_PATH_VALUE = re.compile(r"(?<![A-Za-z0-9+.\-])(?:[A-Za-z]:[\\/]|[\\/]{1,2})")
 
@@ -66,8 +66,16 @@ def _parse_create_job_payload():
         )
     result = {
         "project_id": _request_positive_integer(payload, "project_id"),
-        "dataset_id": _request_positive_integer(payload, "dataset_id"),
     }
+    if ("dataset_id" in payload) == ("input_asset_id" in payload):
+        raise InferenceRequestValidationError("input_asset_id 与 dataset_id 必须且只能提供一项")
+    if "dataset_id" in payload:
+        result["dataset_id"] = _request_positive_integer(payload, "dataset_id")
+    else:
+        asset_id = payload["input_asset_id"]
+        if not isinstance(asset_id, str) or not re.fullmatch(r"(?:imagery|basemap_imagery):[1-9]\d*", asset_id):
+            raise InferenceRequestValidationError("input_asset_id 必须是有效的影像资产 ID")
+        result["input_asset_id"] = asset_id
     if "year" in payload:
         year = payload["year"]
         if isinstance(year, bool) or not isinstance(year, (str, int)):

@@ -11,6 +11,8 @@ from applications.common.utils.utc_time import to_utc_z
 _PUBLIC_REQUEST_FIELDS = (
     "project_id",
     "dataset_id",
+    "input_asset_id",
+    "basemap_resource_id",
     "mine_resource_id",
     "mine_fids",
     "year",
@@ -94,6 +96,10 @@ def normalize_job_request(payload, *, allowed_roots, allowed_output_roots=None):
         if dataset_id <= 0:
             raise ValueError("dataset_id 必须是正整数")
         result["dataset_id"] = dataset_id
+    if source.get("input_asset_id"):
+        result["input_asset_id"] = str(source["input_asset_id"])
+    if source.get("basemap_resource_id") not in (None, ""):
+        result["basemap_resource_id"] = int(source["basemap_resource_id"])
     if source.get("mine_resource_id") not in (None, ""):
         result["mine_resource_id"] = int(source["mine_resource_id"])
     if source.get("mine_fids") is not None:

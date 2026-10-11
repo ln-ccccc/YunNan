@@ -294,7 +294,7 @@ const handleSelectMine = async ({ feature, center }) => {
 // 旧名保留：排队版 focusByFid 已在上方定义（数据未载时暂存），此处删除重复定义
 
 const handleInferenceSubmit = async (formData) => {
-  if (!Number.isSafeInteger(formData?.datasetId) || formData.datasetId <= 0) return;
+  if (!formData?.inputAssetId) return;
   try {
     const result = await runProjectInference(formData);
     const writtenFids = Array.isArray(result?.result?.written_fid_list)

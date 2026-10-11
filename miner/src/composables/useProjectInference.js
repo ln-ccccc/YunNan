@@ -65,7 +65,7 @@ export function useProjectInference(resolveProjectId) {
     inferenceError.value = '';
   }, { flush: 'sync' });
 
-  const runProjectInference = async ({ datasetId, year = '', device = 'auto' } = {}) => {
+  const runProjectInference = async ({ inputAssetId, datasetId, year = '', device = 'auto' } = {}) => {
     const projectId = getProjectId();
     const seq = ++inferenceRequestSeq;
     const isCurrent = () => !disposed && seq === inferenceRequestSeq && projectId === getProjectId();
@@ -82,9 +82,10 @@ export function useProjectInference(resolveProjectId) {
     try {
       const payload = {
         project_id: projectId,
-        dataset_id: Number(datasetId),
         device,
       };
+      if (inputAssetId) payload.input_asset_id = inputAssetId;
+      else payload.dataset_id = Number(datasetId);
       if (year) payload.year = year;
       const res = await axios.post(apiUrl('/api/inference/jobs'), payload);
       ensureCurrent();
