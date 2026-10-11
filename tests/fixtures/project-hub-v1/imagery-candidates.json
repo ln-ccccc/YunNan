@@ -1,0 +1,6 @@
+{
+  "success": {"items": [{"dataset_id": 17, "display_name": "2022影像", "year": 2022, "width": 512, "height": 512, "count": 3, "crs": "EPSG:4326", "size_bytes": 800000, "bounds": [102.44, 24.79, 102.45, 24.80]}], "count": 1},
+  "empty": {"items": [], "count": 0},
+  "unreadable": {"items": [{"dataset_id": 18, "display_name": "待检查影像", "year": null, "width": null, "height": null, "count": null, "crs": null, "size_bytes": null, "bounds": null}], "count": 1},
+  "invalid": {"success": false, "code": -1, "msg": "影像来源路径不合法"}
+}

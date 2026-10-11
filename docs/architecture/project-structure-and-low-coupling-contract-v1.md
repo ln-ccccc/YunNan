@@ -232,7 +232,9 @@ vector_revision | report | export | backup_snapshot
 
 `POST /datasets` 的成功响应是安全登记回执，仅含 `id`、`asset_id` 和 `status`；页面随后通过 `/assets` 读取公开资产。配置快照恢复成功返回 `ProjectOverviewView`，不得复用旧项目详情 DTO。历史 `GET /api/projects/{project_id}` 为兼容接口，可能仍保留旧字段；新 Miner 工作台不得调用它或把其响应转发给浏览器。GeoJSON/SHP 导出未传 `features` 时，由 Flask 从当前公开矿山边界、项目绑定和数据集生成导出要素，BFF 只转发请求且不得读取旧详情；兼容的显式 `features` 同样必须过滤保留路径键、覆盖 `project_id`，并校验矿山/数据集引用只属于当前项目。
 
-项目化地物分类统一调用 `POST /api/inference/jobs`。Miner 只提交 `project_id`、`dataset_id`、可选 `year` 和 `device`；后端确认数据集属于当前项目、是已就绪的 `imagery`，再解析受控 `incoming/` 下受支持栅格文件、矿山边界和项目输出目录。浏览器不得提交或接收推理输入、KML、输出目录等服务器物理路径。省略 `year` 时使用影像登记年份；两者都没有时，后端直接提示补充年份。
+项目化地物分类统一调用 `POST /api/inference/jobs`。Miner 只提交 `project_id`、`dataset_id`、可选 `year` 和 `device`；后端确认数据集属于当前项目、是已就绪的 `imagery`，再解析受控 `incoming/` 或本项目 `projects/{id}/inputs/imagery/` 下受支持栅格文件、矿山边界和项目输出目录。浏览器不得提交或接收推理输入、KML、输出目录等服务器物理路径。省略 `year` 时使用影像登记年份；两者都没有时，后端直接提示补充年份。裁剪/切片产物继续使用既有目录，保存相对 storage key，继承登记来源年份和矿山引用；readiness 与推理使用相同目录规则。兼容详情的 `datasets[].file_path` 只返回受控相对键，不能安全映射的历史物理路径返回 `null`。
+
+影像候选 `GET /api/projects/{id}/imagery/candidates` 的各项增加可空 `bounds`：EPSG:4326 `[west,south,east,north]`，从该影像实际地理参考转换，不使用固定区域。缺少 CRS、文件或有效栅格时返回 `null`，尺寸等不可读摘要同样为空。成功、空、不可读示例见 `tests/fixtures/project-hub-v1/imagery-candidates.json`。裁剪仍输出请求范围的矩形像素窗口：米制外扩在以范围中心为原点的 WGS84 局部等距投影计算，然后投回影像 CRS，窗口向外取整并限制在源影像内；不改为多边形掩膜、不降采样。产物保留 NoData 和有效数据掩膜。
 
 空间矿山预览和公开 GeoJSON 输出可以保留用户定义的业务属性，但必须递归剔除属性名为 `file_path`、`source_path`、`normalized_path`、`tile_path`、`manifest_path`、`output_dir` 的字段（大小写不敏感）。这些是存储保留名，不能作为可映射的矿山字段，也不能作为浏览器可读属性输出。导入时必须将用户所选 FID 映射写入规范化 GeoJSON 的 `FID_1`，使后续地图、矿山选择和自动导出不依赖临时字段映射。
 
@@ -316,6 +318,7 @@ PROJECT_STORAGE_ROOT/projects/{project_id}/
 3. 每个导出写入 `manifest.json`，至少包含 `project_id`、创建时间、来源资产 ID、版本和可用校验值。
 4. 每个项目配置快照写入 `snapshots/{snapshot_id}/manifest.json`，清单必须包含 `snapshot_version`、`project_id` 和 `backup_id`。恢复仅接受与当前项目和快照记录精确匹配、状态为 completed 且 restorable 的普通清单文件；旧的无身份字段清单需要重新生成快照后才能恢复。
 5. 页面把当前元数据备份称作“项目配置快照”；完整灾备仍由数据库、原始数据、瓦片和成果文件的运维恢复流程负责。
+6. 配置快照的数据集引用保持相对 storage key；导入/恢复允许 `incoming/` 和目标项目自身的相对引用，拒绝绝对客户端路径、目录遍历及跨项目引用。快照只保存索引，不复制影像；引用文件缺失时资产仍为 registered。安全映射到相同 allowlist 的历史服务端记录在新快照中规范化为相对键。
 
 ## 10. 实施顺序与门禁
 
