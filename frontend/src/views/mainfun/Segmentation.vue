@@ -21,22 +21,11 @@
         <TiffUploadCard
           v-model="fileList"
           clear-text="清空图片"
-          @select="onFilesSelected"
         >
 
           <el-row justify="center">
             <p>
-              <label class="prehandle-label container">
-                <input
-                  ref="cut"
-                  type="checkbox"
-                  @change="select()"
-                >
-                <span class="checkmark" />
-                <span class="go-bold label-words">上传时编辑图片</span><i
-                  class="iconfont icon-crop-full"
-                />
-              </label>
+              地理栅格按原文件上传，保留原始波段和坐标；如需地理裁剪，请前往项目工作台的影像管理。
             </p>
           </el-row>
           <div style="text-align: center; margin-bottom: 20px;">
@@ -280,23 +269,6 @@
         </div>
       </template>
     </Tabinfor>
-    <el-dialog
-      v-model="cutVisible"
-      :modal="false"
-      title="编辑"
-      width="75%"
-      top="0"
-    >
-      <MyVueCropper
-        :fileimg="fileimg"
-        :funtype="funtype"
-        :file="file"
-        :child-prehandle="uploadSrc.prehandle"
-        :child-denoise="uploadSrc.denoise"
-        @cut-changed="notvisible"
-        @child-refresh="getMore"
-      />
-    </el-dialog>
     <ImgShow
       :img-arr="imgArr"
       @delete-item="deleteHistoryItem"
@@ -320,7 +292,6 @@ import { selectClahe, selectFilter, selectSharpen, selectSmooth, } from "@/utils
 import ImgShow from "@/components/ImgShow";
 import Tabinfor from "@/components/Tabinfor";
 import Bottominfor from "@/components/Bottominfor";
-import MyVueCropper from "@/components/MyVueCropper";
 import TiffUploadCard from "@/components/TiffUploadCard.vue";
 
 export default {
@@ -329,7 +300,6 @@ export default {
     ImgShow,
     Tabinfor,
     Bottominfor,
-    MyVueCropper,
     TiffUploadCard,
   },
   beforeRouteEnter(to, from, next) {
@@ -340,16 +310,10 @@ export default {
   data() {
     return {
       isUpload: true,
-      canUpload: true,
       claheImg: [],
       sharpenImg: [],
       before: [],
-      fileimg: "",
-      file: {},
-      isNotCut: true,
-      cutVisible: false,
       fileList: [],
-      funtype: "地物分类",
       scrollTop: "",
       fit: "fill",
 
@@ -368,13 +332,6 @@ export default {
   created() {
     this.getUploadImg("地物分类");
   },
-  beforeUnmount() {
-    // 离开页面时释放预览 object URL，避免内存泄漏
-    if (this.fileimg) {
-      window.URL.revokeObjectURL(this.fileimg);
-      this.fileimg = "";
-    }
-  },
   methods: {
     getImgArrayBuffer,
     atchDownload,
@@ -392,24 +349,6 @@ export default {
     downloadimgWithWords,
     flashHistoryDeleteOne,
     flashHistoryClear,
-    notvisible() {
-      this.cutVisible = false;
-      this.fileList = [];
-    },
-    // TiffUploadCard select 联动：空=全部被拒（收起裁剪弹层）；>1 文件=批量，自动关裁剪。
-    // 注：与旧版的差异——旧代码"选择整个文件夹"即使只含 1 个 tiff 也强制关裁剪并告警，
-    // 现统一为按文件数判定（单个 tiff 无论来源都可进裁剪），属有意简化
-    onFilesSelected(items) {
-      if (items.length === 0) {
-        this.cutVisible = false;
-        this.canUpload = false;
-        return;
-      }
-      if (items.length > 1) {
-        this.disableCutForBatchUpload();
-      }
-      this.setPreviewFile(items[items.length - 1]);
-    },
     getMore() {
       this.getUploadImg("地物分类");
     },
@@ -443,29 +382,6 @@ export default {
         this.$message.success("清理完成");
         this.getMore();
       }).catch(() => {});
-    },
-    setPreviewFile(fileLike) {
-      const file = fileLike?.raw || fileLike?.file || fileLike;
-      this.cutVisible = !!this.$refs.cut?.checked;
-      this.canUpload = true;
-      // MyVueCropper 依赖 file.name 生成裁剪产物文件名，缺失会得到 undefined.png
-      this.file = file;
-      // 释放上一张预览的 object URL，避免反复选图累积泄漏
-      if (this.fileimg) {
-        window.URL.revokeObjectURL(this.fileimg);
-      }
-      this.fileimg = window.URL.createObjectURL(file);
-    },
-    disableCutForBatchUpload() {
-      if (this.$refs.cut?.checked) {
-        this.$refs.cut.checked = false;
-        this.cutVisible = false;
-        this.isNotCut = true;
-        this.$message.warning("整文件夹/批量上传不支持上传时编辑，已自动关闭编辑模式");
-      }
-    },
-    select() {
-      this.isNotCut = this.$refs.cut.checked;
     },
   },
 };
