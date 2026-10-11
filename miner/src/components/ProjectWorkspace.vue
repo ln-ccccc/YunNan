@@ -150,6 +150,7 @@
 
           <ParcelPanel
             id="parcel-panel"
+            :key="parcelContextKey"
             :project-id="currentProjectId"
             @locate-mine="locateMine"
           />
@@ -242,6 +243,12 @@ const assetItems = computed(() => slices.assets.data?.items || []);
 const activityItems = computed(() => slices.activity.data?.items || []);
 const exportItems = computed(() => slices.exports.data?.items || []);
 const snapshotItems = computed(() => slices.snapshots.data?.items || []);
+const parcelContextKey = computed(() => {
+  const mineResource = (slices.spatial.data?.resources || []).find((resource) => (
+    resource.resource_type === 'mine_vector' && resource.status === 'active'
+  ));
+  return `${currentProjectId.value}-${mineResource?.id || ''}`;
+});
 const mineOptions = computed(() => (slices.mineOptions.data?.features || []).map((feature) => {
   const properties = feature?.properties || {};
   return {

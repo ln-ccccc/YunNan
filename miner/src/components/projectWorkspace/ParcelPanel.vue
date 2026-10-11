@@ -48,7 +48,7 @@
 
 <script setup>
 import axios from 'axios';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { formatDate } from '../../utils/formatDate.js';
 
 const props = defineProps({
@@ -65,6 +65,8 @@ const limit = 20;
 const loading = ref(false);
 const error = ref('');
 const fidFilter = ref('');
+let submittedFilter = '';
+let requestSequence = 0;
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
 
@@ -75,22 +77,33 @@ const formatTime = (value) => {
 };
 
 const loadSummary = async () => {
+  const filter = fidFilter.value.trim();
+  if (filter !== submittedFilter) page.value = 1;
+  submittedFilter = filter;
+  const sequence = ++requestSequence;
+  const projectId = props.projectId;
+  const isCurrent = () => sequence === requestSequence && projectId === props.projectId;
   loading.value = true;
   error.value = '';
   try {
     const params = new URLSearchParams({ page: String(page.value), limit: String(limit) });
-    if (fidFilter.value.trim()) params.set('fid', fidFilter.value.trim());
+    if (filter) params.set('fid', filter);
     const res = await axios.get(
-      `${MINER_API_BASE_URL}/api/projects/${props.projectId}/mines/parcel-summary?${params}`,
+      `${MINER_API_BASE_URL}/api/projects/${projectId}/mines/parcel-summary?${params}`,
     );
+    if (!isCurrent()) return;
     const data = res.data?.data || {};
-    items.value = data.items || [];
     total.value = data.count || 0;
-    if (page.value > totalPages.value) page.value = totalPages.value;
+    if (page.value > totalPages.value) {
+      page.value = totalPages.value;
+      await loadSummary();
+      return;
+    }
+    items.value = data.items || [];
   } catch (e) {
-    error.value = e?.response?.data?.msg || '图斑清单读取失败';
+    if (isCurrent()) error.value = e?.response?.data?.msg || '图斑清单读取失败';
   } finally {
-    loading.value = false;
+    if (isCurrent()) loading.value = false;
   }
 };
 
@@ -106,6 +119,7 @@ watch(() => props.projectId, () => {
 });
 
 onMounted(loadSummary);
+onBeforeUnmount(() => { requestSequence += 1; });
 </script>
 
 <style scoped>

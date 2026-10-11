@@ -62,6 +62,40 @@ function component(filename, http = {}, additions = {}) {
   };
 }
 
+test('图斑第二页筛选存在的 FID 时从第一页读取', async () => {
+  const urls = [];
+  const view = component('projectWorkspace/ParcelPanel.vue', { get: async (url) => {
+    urls.push(url);
+    const query = new URL(url, 'http://127.0.0.1').searchParams;
+    return response({ count: 1, items: query.get('page') === '1' ? [{ mine_fid: 7206 }] : [] });
+  } }, { props: { projectId: 9 }, formatDate: (value) => value });
+  view.state.page.value = 2;
+  view.state.fidFilter.value = '7206';
+  await view.state.loadSummary();
+  assert.equal(new URL(urls[0], 'http://127.0.0.1').searchParams.get('page'), '1');
+  assert.equal(view.state.items.value[0].mine_fid, 7206);
+  view.dispose();
+});
+
+test('图斑快速筛选时旧回复不覆盖新筛选', async () => {
+  const first = deferred();
+  const second = deferred();
+  let calls = 0;
+  const view = component('projectWorkspace/ParcelPanel.vue', { get: () => (++calls === 1 ? first.promise : second.promise) },
+    { props: { projectId: 9 }, formatDate: (value) => value });
+  view.state.fidFilter.value = '7206';
+  const old = view.state.loadSummary();
+  view.state.fidFilter.value = '7503';
+  const fresh = view.state.loadSummary();
+  second.resolve(response({ count: 1, items: [{ mine_fid: 7503 }] }));
+  await fresh;
+  first.resolve(response({ count: 1, items: [{ mine_fid: 7206 }] }));
+  await old;
+  assert.equal(view.state.items.value[0].mine_fid, 7503);
+  assert.equal(view.state.loading.value, false);
+  view.dispose();
+});
+
 test('影像项目切换后旧候选、矿山和 finally 不覆盖当前请求', async () => {
   const old = deferred();
   const fresh = deferred();
