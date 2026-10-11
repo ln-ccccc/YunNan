@@ -4,7 +4,7 @@
       <div class="modal-content glass-panel">
         <div class="modal-header">
           <h3>项目地物分类</h3>
-          <button class="close-btn" type="button" @click="$emit('close')">×</button>
+          <button class="close-btn" type="button" aria-label="关闭推理窗口" @click="$emit('close')">×</button>
         </div>
 
         <div class="modal-body">
@@ -128,30 +128,39 @@ function handleSubmit() {
 </script>
 
 <style scoped>
-.modal-overlay { position: fixed; inset: 0; z-index: 4000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.7); }
-.modal-content { width: min(550px, calc(100vw - 32px)); border: 1px solid #4ecdc4; border-radius: 8px; background: #0a1929; box-shadow: 0 0 30px rgba(78, 205, 196, 0.2); }
-.modal-header { display: flex; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
-.modal-header h3 { margin: 0; color: #4ecdc4; font-size: 16px; }
-.close-btn { border: 0; background: none; color: #fff; font-size: 24px; cursor: pointer; }
+.modal-overlay { position: fixed; inset: 0; z-index: 4000; display: flex; align-items: center; justify-content: center; background: rgba(22, 56, 60, 0.26); }
+.modal-content { width: min(550px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border: 1px solid var(--glass-border); border-radius: 24px; background: var(--glass-surface); color: var(--glass-ink); box-shadow: var(--glass-shadow); backdrop-filter: blur(20px) saturate(125%); -webkit-backdrop-filter: blur(20px) saturate(125%); }
+.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid rgba(35, 70, 73, 0.12); }
+.modal-header h3 { margin: 0; color: var(--glass-ink); font-size: 18px; font-weight: 600; }
+.close-btn { width: 36px; height: 36px; border: 0; border-radius: 10px; background: rgba(255, 255, 255, 0.64); color: var(--glass-muted); font-size: 24px; cursor: pointer; }
 .modal-body { padding: 20px; }
 .form-group { margin-bottom: 15px; }
 .form-row { display: flex; gap: 15px; }
 .half { flex: 1; }
-.form-group label { display: block; margin-bottom: 6px; color: #8da3b6; font-size: 13px; }
-.form-input { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 4px; outline: none; background: rgba(0, 0, 0, 0.3); color: #fff; }
-.form-input:focus { border-color: #4ecdc4; box-shadow: 0 0 0 2px rgba(78, 205, 196, 0.28); }
-.tip { display: block; margin-top: 4px; color: #8da3b6; font-size: 11px; }
-.error-msg, .success-msg, .task-status { margin-bottom: 15px; padding: 10px; border-radius: 4px; font-size: 13px; }
-.error-msg { background: rgba(255, 118, 117, 0.1); color: #ff7675; }
-.success-msg { background: rgba(0, 184, 148, 0.1); color: #00b894; }
-.task-status { background: rgba(78, 205, 196, 0.08); color: #c8d6e5; font-size: 12px; line-height: 1.7; }
-.fallback-msg { color: #feca57; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
-.btn-cancel, .btn-submit { border: 0; border-radius: 4px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
-.btn-cancel { background: rgba(255, 255, 255, 0.1); color: #fff; }
-.btn-submit { background: #4ecdc4; color: #000; font-weight: bold; }
+.form-group label { display: block; margin-bottom: 6px; color: var(--glass-muted); font-size: 13px; }
+.form-input { box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid #cadbd5; border-radius: 10px; outline: none; background: rgba(255, 255, 255, 0.9); color: var(--glass-ink); transition: border-color var(--motion-control) ease, box-shadow var(--motion-control) ease; }
+.form-input:focus { border-color: var(--glass-accent); box-shadow: 0 0 0 3px rgba(36, 108, 89, 0.16); }
+.tip { display: block; margin-top: 6px; color: var(--glass-muted); font-size: 12px; }
+.error-msg, .success-msg, .task-status { margin-bottom: 15px; padding: 12px; border-radius: 10px; font-size: 13px; animation: inference-status var(--motion-control) ease; }
+.error-msg { background: #fff0ed; color: #a43f32; }
+.success-msg { background: #e0ede6; color: var(--glass-accent); }
+.task-status { background: #edf5f1; color: var(--glass-ink); font-size: 12px; line-height: 1.7; }
+.fallback-msg { color: #886017; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(35, 70, 73, 0.12); }
+.btn-cancel, .btn-submit { border: 1px solid transparent; border-radius: 12px; padding: 10px 16px; font-size: 13px; cursor: pointer; transition: background-color var(--motion-control) ease, box-shadow var(--motion-control) ease, transform var(--motion-fast) var(--motion-ease); }
+.btn-cancel { background: rgba(255, 255, 255, 0.85); border-color: #cadbd5; color: var(--glass-accent); }
+.btn-submit { background: var(--glass-accent); color: #fff; font-weight: 600; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 3px 8px rgba(36, 108, 89, 0.12); }
+.close-btn:hover, .btn-cancel:hover:not(:disabled) { background: #e0ede6; }
+.btn-submit:hover:not(:disabled) { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 5px 14px rgba(36, 108, 89, 0.2); }
+.close-btn:active, .btn-cancel:active:not(:disabled), .btn-submit:active:not(:disabled) { transform: scale(0.97); }
+.close-btn:focus-visible, .btn-cancel:focus-visible, .btn-submit:focus-visible { outline: 3px solid rgba(36, 108, 89, 0.32); outline-offset: 3px; }
 .btn-submit:disabled, .btn-cancel:disabled { cursor: not-allowed; opacity: 0.55; }
-.fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
+.fade-enter-active, .fade-leave-active { transition: opacity var(--motion-panel) ease; }
+.fade-enter-active .modal-content, .fade-leave-active .modal-content { transition: transform var(--motion-panel) var(--motion-ease); }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+.fade-enter-from .modal-content, .fade-leave-to .modal-content { transform: translateY(8px) scale(0.98); }
+@keyframes inference-status { from { opacity: 0.35; } to { opacity: 1; } }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .modal-content { background: #f8fbfa; } }
+@media (prefers-reduced-motion: reduce) { .modal-overlay, .modal-content, .form-input, .close-btn, .btn-cancel, .btn-submit, .error-msg, .success-msg, .task-status { transition: none !important; animation: none !important; transform: none !important; } }
 @media (max-width: 560px) { .form-row { flex-direction: column; gap: 0; } }
 </style>
