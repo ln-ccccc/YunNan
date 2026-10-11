@@ -53,7 +53,7 @@ queued ──► running ──► succeeded
 | 自动矢量 | 自动快照 FeatureCollection | 经 Polygonize、矿山边界裁剪、碎面过滤（最小面积阈值）、稳定要素 ID；`来源=自动`，不可被人工修订覆盖 |
 | 统计文件 | `change_matrix_pixels.csv`、`change_matrix_percent_rownorm.csv`、`class_ratio_percent.json` | 变化矩阵与地类占比 |
 
-发布原子性：暂存目录 → 逐 FID 原子替换（备份-替换-回滚）；任一 FID 失败整体回滚不留半发布状态。
+发布范围：暂存目录 → 逐 FID 文件替换（备份-替换-失败补偿），并逐 FID 提交数据库。当前不提供整个任务的原子事务；后续 FID 失败不会保证撤销此前已提交的 FID。单 FID 的文件补偿也不等同于整个任务的成果、矢量与审计一次提交。
 
 ## 5. 矢量化状态（成果级）
 
