@@ -1,62 +1,37 @@
 <template>
-  <el-header height="60px">
-    <el-row>
-      <el-col
-        :xs="12"
-        :sm="12"
-        :md="16"
-        :lg="16"
-        :xl="16"
-        class="hidden-sm-and-down"
-        style="margin-left:30px"
-      />
-      <el-col
-        :xs="24"
-        :sm="24"
-        :md="8"
-        :lg="4"
-        :xl="4"
-        style="margin-left:30px"
-      >
-        more details please click <a @click="goGithub">here<i
-          class="iconfont icon-dianji1"
-        /></a>
-      </el-col>
-    </el-row>
-  </el-header>
+  <footer class="page-footer">
+    <a
+      href="https://github.com/PaddleCV-SIG/cugrs"
+      target="_blank"
+      rel="noopener noreferrer"
+    >查看项目说明</a>
+  </footer>
 </template>
 
 <script>
 
 export default {
-  name: "Bottominfor",
-  methods:{
-    goGithub(){
-      window.open('https://github.com/PaddleCV-SIG/cugrs');
-    }
-
-  }
+  name: "Bottominfor"
 };
 </script>
 
 <style scoped>
-.el-header {
-  margin-top: 30px;
-  line-height: 60px;
-  position: relative;
-  left: -37px;
-  width: 120%;
-  color: rgb(157,164,168);
-  font-size: 15px;
-  font-family: sans-serif;
-  overflow: hidden;
+.page-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 24px;
+  padding: 12px 0;
+  font-size: 13px;
+  line-height: 1.6;
 }
-a{
-  color: rgba(255, 0, 128, 0.979);
-  cursor: pointer;
-  transition: all .4s;
+.page-footer a {
+  color: var(--primary-color);
+  padding: 4px 8px;
+  border-radius: 6px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
-a:hover{
-  color: var(--theme--color);
+.page-footer a:hover {
+  color: var(--primary-dark);
 }
 </style>
