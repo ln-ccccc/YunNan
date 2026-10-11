@@ -310,6 +310,10 @@ def run_inference_with_model(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+    # 最后一片的 CPU 同步/后处理期间也可能收到取消，不能依赖下一批检查。
+    if should_cancel is not None and should_cancel():
+        raise RuntimeError("INFERENCE_CANCELLED")
+
     return {
         "status": "completed",
         "total": len(file_names),

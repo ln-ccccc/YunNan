@@ -434,6 +434,11 @@ class InferenceWorker:
                 publication_payload = dict(payload)
                 publication_payload["inference_job_id"] = str(job.id)
                 publication_payload["model_id"] = "cc-ln/CUGRS"
+                # 流水线收尾期间的外部取消必须在正式发布前从新快照读取。
+                if hasattr(self.job_store, "refresh_job"):
+                    self.job_store.refresh_job(job)
+                if job.cancel_requested:
+                    raise RuntimeError("INFERENCE_CANCELLED")
                 publication = publisher(payload["project_id"], publication_payload, summary)
                 summary["routing"] = {
                     "mode": "project",

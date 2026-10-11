@@ -28,7 +28,7 @@ queued ──► running ──► succeeded
 ```
 
 - 终态集合：`succeeded / succeeded_with_fallback / partial_failed / failed / cancelled`。
-- 取消语义：`queued` 立即置 `cancelled`；`running` 置 `cancel_requested` 由 worker 在图斑边界响应；对终态任务重复取消是幂等空操作。
+- 取消语义：`queued` 立即置 `cancelled`；`running` 置 `cancel_requested`，由 worker 在瓦片边界、最后批次收尾后及项目成果发布前刷新检查。发布前已观察到取消时不调用正式发布服务；正式发布开始后按实际发布结果结束任务，不能在成果已提交后改记为 `cancelled`。对终态任务重复取消是幂等空操作。
 - 公开序列化不泄露服务器物理路径（`_PRIVATE_PATH_FIELDS` 脱敏；越权访问他项目任务 404）。
 
 ## 3. 任务标识与可追溯字段

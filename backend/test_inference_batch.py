@@ -192,6 +192,39 @@ class TestInferenceBatching(unittest.TestCase):
             )
         self.assertIn("INFERENCE_CANCELLED", str(ctx.exception))
 
+    def _cancel_during_final_result_copy(self, tile_count, batch_size):
+        names = _write_tiles(self.input_dir, tile_count)
+        forward = FakeForward()
+        copied = 0
+        cancelled = False
+
+        def copy_to_cpu(plane):
+            nonlocal copied, cancelled
+            copied += 1
+            if copied == tile_count:
+                cancelled = True
+            return plane
+
+        # GPU 前向可异步返回；cpu() 等待最后结果期间收到取消请求。
+        with patch.object(_FakePlane, "cpu", autospec=True, side_effect=copy_to_cpu):
+            with self.assertRaisesRegex(RuntimeError, "INFERENCE_CANCELLED"):
+                run_inference_with_model(
+                    _FakeModel(),
+                    input_dir=str(self.input_dir),
+                    output_dir=str(self.output_dir),
+                    file_names=names,
+                    batch_size=batch_size,
+                    forward_fn=forward,
+                    should_cancel=lambda: cancelled,
+                )
+        self.assertEqual(copied, tile_count)
+
+    def test_cancel_during_single_forward_result_copy(self):
+        self._cancel_during_final_result_copy(1, 1)
+
+    def test_cancel_during_last_batch_result_copy(self):
+        self._cancel_during_final_result_copy(3, 2)
+
 
 class TestGpuCacheRelease(unittest.TestCase):
     """每 chunk 推理完成后释放 GPU 缓存块（移植江西 2026-09-18 验收反馈）。"""
