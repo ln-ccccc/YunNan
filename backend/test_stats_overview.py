@@ -243,5 +243,30 @@ class TestProjectListEnhancements(StatsOverviewBase):
         self.assertIsNone(item["latest_inference"])
 
 
+class TestOverviewQueryShape(unittest.TestCase):
+    """源码形状守护（沿 classificationEditorLifecycle 惯例）：看板去重查询
+    必须保持 load_only 轻量列——整行加载会连带 MEDIUMTEXT 的
+    current_feature_collection_json（单成果矢量 64KB+），去重后大部分行被
+    丢弃仍白拉全量矢量，属热路径无界加载（2026-10-24 审查 P2-5）。"""
+
+    def test_latest_results_dedup_uses_load_only(self):
+        source = (Path(__file__).parent / "applications" / "api" / "stats.py").read_text(encoding="utf-8")
+        start = source.index("def _latest_results_per_fid_year")
+        body = source[start:source.index("def _class_area_share", start)]
+        self.assertIn("load_only(", body, "去重查询必须 load_only 轻量列")
+        self.assertIn("ClassificationResult.vector_status", body)
+        self.assertIn("ClassificationResult.feature_count", body)
+        options_span = body[body.index("load_only("):body.index(".order_by")]
+        self.assertNotIn(
+            "current_feature_collection_json", options_span,
+            "load_only 不得包含 MEDIUMTEXT 重列",
+        )
+
+        share = source[source.index("def _class_area_share"):source.index("def _read_change_matrix_pixels")]
+        # 矢量 JSON 只对去重后 id 按需加载
+        self.assertIn(".in_(", share)
+        self.assertIn("current_feature_collection_json", share)
+
+
 if __name__ == "__main__":
     unittest.main()

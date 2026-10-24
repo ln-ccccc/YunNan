@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import rasterio
 from rasterio.warp import transform_geom
 from rasterio.windows import Window, from_bounds
@@ -230,6 +231,7 @@ def clip_imagery(project_id, payload):
             raise ImageryProcessingError("裁剪范围与影像无有效重叠（结果小于 8×8 像素）")
 
         data = src.read(window=window)
+        masks = src.read_masks(window=window)
         out_transform = src.window_transform(window)
         out_profile = src.profile.copy()
 
@@ -240,9 +242,9 @@ def clip_imagery(project_id, payload):
         driver="GTiff", height=int(window.height), width=int(window.width),
         transform=out_transform, compress="lzw",
     )
-    out_profile.pop("nodata", None)
     with rasterio.open(out_path, "w", **out_profile) as dst:
         dst.write(data)
+        _copy_valid_mask(dst, masks)
 
     dataset = ProjectDataset(
         project_id=project.id,
@@ -301,7 +303,6 @@ def slice_imagery(project_id, payload):
 
         out_profile = src.profile.copy()
         out_profile.update(driver="GTiff", compress="lzw")
-        out_profile.pop("nodata", None)
 
         target_dir = _imagery_output_dir(project.id)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -316,12 +317,14 @@ def slice_imagery(project_id, payload):
                     continue
                 _guard_window_bytes(src, window)
                 data = src.read(window=window)
+                masks = src.read_masks(window=window)
                 transform = src.window_transform(window)
                 out_name = f"slice_{stamp}_{uuid.uuid4().hex[:6]}_r{row}c{col}.tif"
                 out_path = target_dir / out_name
                 profile = dict(out_profile, height=int(window.height), width=int(window.width), transform=transform)
                 with rasterio.open(out_path, "w", **profile) as dst:
                     dst.write(data)
+                    _copy_valid_mask(dst, masks)
                 dataset = ProjectDataset(
                     project_id=project.id,
                     dataset_kind="imagery",
@@ -376,6 +379,19 @@ def _imagery_output_dir(project_id):
     )
     target.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def _copy_valid_mask(dst, masks):
+    """nodata/内部掩膜透传（2026-10-24 审查 P1-4）：此前 profile.pop("nodata")
+    且不带掩膜带，源影像的黑边/补零区在 clip/slice 产物中与有效像元不可区分，
+    推理与预览会把它们当真实地物。产物保留 nodata 声明 + 写入有效掩膜带；
+    全有效时不写（省一副带）。"""
+    if masks is None or masks.size == 0:
+        return
+    valid = np.all(masks > 0, axis=0)
+    if valid.all():
+        return
+    dst.write_mask(np.where(valid, 255, 0).astype("uint8"))
 
 
 def _pixel_area_m2(src):

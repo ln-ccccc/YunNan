@@ -304,5 +304,69 @@ class TestFilePathContract(ImageryProcessingBase):
             self.assertIn("不合法", response.get_json()["msg"])
 
 
+class TestNodataMaskPreservation(ImageryProcessingBase):
+    """2026-10-24 审查 P1-4：clip/slice 曾 pop 掉 nodata 声明且不写掩膜带，
+    源影像的黑边/补零区在产物中与有效像元不可区分，推理/预览当真实地物处理。"""
+
+    def _clip_left_quarter(self, key):
+        # 覆盖影像左带（含 nodata/掩膜区）的裁剪窗口
+        geometry = {
+            "type": "Polygon",
+            "coordinates": [[[100.0, 25.9], [100.12, 25.9], [100.12, 25.99], [100.0, 25.99], [100.0, 25.9]]],
+        }
+        return self._clip({"source": key, "geometry": geometry, "buffer_meters": 0})
+
+    def test_clip_preserves_nodata_declaration_and_valid_domain(self):
+        nodata_tif = self.inputs_dir / "nodata_edge.tif"
+        nodata_tif.parent.mkdir(parents=True, exist_ok=True)
+        rng = np.random.default_rng(7)
+        profile = {
+            "driver": "GTiff", "height": 640, "width": 960, "count": 3, "dtype": "uint8",
+            "crs": "EPSG:4326", "nodata": 0,
+            "transform": rasterio.transform.from_origin(100.0, 26.0, 0.0005, 0.0005),
+        }
+        data = rng.integers(20, 235, size=(3, 640, 960), dtype=np.uint8)
+        data[:, :, :240] = 0  # 左 1/4 为 nodata 黑边
+        with rasterio.open(nodata_tif, "w", **profile) as dst:
+            dst.write(data)
+
+        response = self._clip_left_quarter(f"projects/{self.project_id}/inputs/imagery/nodata_edge.tif")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        out = self.storage_root / response.get_json()["data"]["storage_key"]
+        with rasterio.open(out) as clipped:
+            self.assertEqual(clipped.nodata, 0, "nodata 声明必须随产物保留")
+            pixels = clipped.read()
+            valid = np.all(clipped.read_masks() > 0, axis=0)
+            invalid_pixels = np.all(pixels == 0, axis=0)
+            self.assertTrue(invalid_pixels.any(), "测试影像应含 nodata 区")
+            # 有效域逐像元一致：全 0 黑边必须判无效，其余必须判有效
+            self.assertFalse(valid[invalid_pixels].any())
+            self.assertTrue(valid[~invalid_pixels].all())
+
+    def test_slice_preserves_mask_band_without_nodata_declaration(self):
+        # 无 nodata 声明、仅内部掩膜带的源：掩膜同样必须透传到切片
+        masked_tif = self.inputs_dir / "masked_edge.tif"
+        _make_raster(masked_tif)
+        with rasterio.open(masked_tif, "r+") as src:
+            mask = np.full((src.height, src.width), 255, dtype=np.uint8)
+            mask[:, : src.width // 4] = 0
+            src.write_mask(mask)
+
+        response = self._slice({
+            "source": f"projects/{self.project_id}/inputs/imagery/masked_edge.tif",
+            "mode": "grid_pixels", "tile_pixels": 256,
+        })
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        invalid_tile_seen = False
+        for item in response.get_json()["data"]["items"]:
+            with rasterio.open(self.storage_root / item["storage_key"]) as tile:
+                valid = np.all(tile.read_masks() > 0, axis=0)
+                if (~valid).any():
+                    invalid_tile_seen = True
+                    # 无效带在源左 1/4：该片的第 0 列必须整列无效
+                    self.assertFalse(valid[:, 0].any())
+        self.assertTrue(invalid_tile_seen, "左带切片应携带无效掩膜（修前掩膜带丢失）")
+
+
 if __name__ == "__main__":
     unittest.main()

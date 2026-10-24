@@ -17,6 +17,7 @@ from pathlib import Path
 
 import rasterio
 from flask import Blueprint
+from sqlalchemy.orm import load_only
 
 from applications.auth.guard import ensure_logged_in
 from applications.common.utils.http import success_api
@@ -73,10 +74,26 @@ def _polygon_area_m2(geometry):
 
 
 def _latest_results_per_fid_year(project_ids):
-    """每 (project, fid, year) 最新一条成果（同年多任务不重复计数）。"""
+    """每 (project, fid, year) 最新一条成果（同年多任务不重复计数）。
+
+    只取去重所需的轻量列：整行加载会连带拉出 MEDIUMTEXT 的
+    current_feature_collection_json（单成果矢量 64KB+，随人工保存无上限增长），
+    且去重会加载全部历史行再丢弃大部分——看板是热路径，属无界全量加载
+    （AGENTS §10）；消费者按需再载重列。
+    """
     rows = (
         ClassificationResult.query.filter(
             ClassificationResult.project_id.in_(project_ids)
+        )
+        .options(
+            load_only(
+                ClassificationResult.id,
+                ClassificationResult.project_id,
+                ClassificationResult.mine_fid,
+                ClassificationResult.year,
+                ClassificationResult.vector_status,
+                ClassificationResult.feature_count,
+            )
         )
         .order_by(ClassificationResult.id.desc())
         .all()
@@ -97,10 +114,22 @@ def _latest_results_per_fid_year(project_ids):
 
 
 def _class_area_share(results):
+    # 矢量 JSON 只为去重后的成果按需加载（同批 id 一条查询），去重阶段
+    # load_only 的行不带 MEDIUMTEXT 重列
+    collections = []
+    if results:
+        collections = (
+            db.session.query(
+                ClassificationResult.id,
+                ClassificationResult.current_feature_collection_json,
+            )
+            .filter(ClassificationResult.id.in_([result.id for result in results]))
+            .all()
+        )
     area_by_class = {name: 0.0 for name in CLASS_BY_CODE.values()}
-    for result in results:
+    for _, raw in collections:
         try:
-            collection = json.loads(result.current_feature_collection_json or "{}")
+            collection = json.loads(raw or "{}")
         except (TypeError, ValueError):
             continue
         for feature in (collection.get("features") or []) if isinstance(collection, dict) else []:
