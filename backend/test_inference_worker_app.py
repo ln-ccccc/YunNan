@@ -177,6 +177,8 @@ class TestInferenceWorkerApp(unittest.TestCase):
                 "model_api",
                 "project_api",
                 "stats_api",
+                # /api/health 容器深层探针（2026-10-24 审查 P2-12）
+                "system_health",
                 "_uploads",
             },
             set(result["blueprints"]),
