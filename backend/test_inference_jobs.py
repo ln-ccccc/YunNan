@@ -723,25 +723,30 @@ class TestInferenceJobAPI(unittest.TestCase):
         self.assertNotIn("old_tif_path", public_json)
         self.assertNotIn("work_dir", public_json)
 
-    def test_recover_abandoned_jobs_only_fails_previous_process_in_same_container(self):
+    def test_recover_abandoned_jobs_fails_previous_process_including_same_id(self):
         from applications.inference.jobs import recover_abandoned_jobs
         from applications.models.inference_job import InferenceJob
 
+        # worker 是容器入口进程时 PID 恒为 1，重启前后 worker_id 完全相同：
+        # 启动回收必须同样回收同 id 遗留任务，否则任务永久孤儿（H-2 演练发现 R6）
         jobs = [
             InferenceJob(id="old", status="running", worker_id="worker-host:41", request_payload_json="{}"),
-            InferenceJob(id="current", status="running", worker_id="worker-host:42", request_payload_json="{}"),
+            InferenceJob(id="same_id", status="running", worker_id="worker-host:42", request_payload_json="{}"),
             InferenceJob(id="other", status="running", worker_id="other-host:7", request_payload_json="{}"),
+            InferenceJob(id="done", status="succeeded", worker_id="worker-host:41", request_payload_json="{}"),
         ]
         self.db.session.add_all(jobs)
         self.db.session.commit()
 
         changed = recover_abandoned_jobs("worker-host", "worker-host:42")
 
-        self.assertEqual(changed, 1)
+        self.assertEqual(changed, 2)
         self.assertEqual(InferenceJob.query.get("old").status, "failed")
         self.assertEqual(InferenceJob.query.get("old").error_code, "WORKER_RESTARTED")
-        self.assertEqual(InferenceJob.query.get("current").status, "running")
+        self.assertEqual(InferenceJob.query.get("same_id").status, "failed")
+        self.assertEqual(InferenceJob.query.get("same_id").error_code, "WORKER_RESTARTED")
         self.assertEqual(InferenceJob.query.get("other").status, "running")
+        self.assertEqual(InferenceJob.query.get("done").status, "succeeded")
 
     def test_distribute_outputs_publishes_staged_files_with_atomic_replace(self):
         from applications.kml_roi.tiles import distribute_outputs

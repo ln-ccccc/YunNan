@@ -331,13 +331,17 @@ def claim_next_job(worker_id):
 
 
 def recover_abandoned_jobs(worker_host, current_worker_id):
-    """将同一容器中上一个 Worker 进程遗留的运行任务置为可诊断失败。"""
+    """将同一容器中上一个 Worker 进程遗留的运行任务置为可诊断失败。
+
+    回收仅在进程启动、首次认领之前调用：此刻本进程名下不可能有 running 任务，
+    同主机前缀（含与本进程同 id 的任务，worker 作为容器入口进程时 PID 恒为 1，
+    重启前后 worker_id 完全相同）的 running 任务一律属于已死的前任进程。
+    """
     db, InferenceJob = _database_dependencies()
     now = datetime.datetime.now()
     changed = InferenceJob.query.filter(
         InferenceJob.status == "running",
         InferenceJob.worker_id.like(f"{worker_host}:%"),
-        InferenceJob.worker_id != str(current_worker_id),
     ).update(
         {
             "status": "failed",
