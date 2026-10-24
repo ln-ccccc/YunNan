@@ -37,8 +37,8 @@
 | 11 | 保存 + 双开 409 | ✅ 2026-10-25 | 双会话（独立 cookie）：A 保存自动基线 146 要素成功（rev 0→1，**R4 修复后**；修复前严格 covers 拒 40/146 要素，必 422）；B 持旧 base 再存 409"成果已被其他保存更新"（detail 含 base/current revision）；B 刷新 current 后重试成功；revisions 列表 0..6 连续完整（本轮累计 6 次 manual 保存） |
 | 12 | 质检 | ✅ 2026-10-25 | `GET quality-review?small_area_threshold_m2=200`：146 要素 5 类——water 15 块 58.2%（5422.6m²）、grassland 41 块 25.0%、…（真实面积/占比统计） |
 | 13 | 五格式导出逐个校验 | ✅ 2026-10-25 | geojson 1745KiB（JSON 可解析）/ csv 23.9KiB（表头+行）/ shp 545KiB（zip PK 头）/ xlsx 6.0KiB（zip PK 头）/ dxf 3284KiB（SECTION 头），五格式全部 200 且 artifact 下载 Content-Disposition 正确；导出目录 exports/<id>/artifact 落盘 |
-| 14 | 快照生成/恢复/跨环境导入 | 待执行 | |
-| 15 | 归档/删除/恢复 | 待执行 | |
+| 14 | 快照生成/恢复/跨环境导入 | ✅ 2026-10-25 | 生成 backup id=4/5（0.11s，completed+restorable）；manifest 下载（`snapshot-5-manifest.json`）校验：565 矿山/5 数据集/5 导出/14 活动，**dataset 键全为相对键且无绝对路径泄漏**（含 `incoming/real_dali_2024_573m.tif`×2、`projects/7/inputs/imagery/clip|slice_*.tif`、`projects/7/outputs/inference/696`）。同环境恢复 0.36s：矿山/数据集/导出原量恢复，时间线保留原始时间戳（project_created 仍在）+ backup_restored 新增，成果表不受影响（62/63 仍 ready）。**跨环境导入（B-5 真实验证）**：新建项目 8 → `POST backups/import` 0.34s → DB 断言 4 个 imagery 数据集全部重定位 `projects/8/inputs/imagery/`（**incoming/ 键 → `projects/8/inputs/imagery/real_dali_2024_573m.tif`**；`projects/7/inputs/imagery/clip_*.tif` → projects/8 前缀改写），inference_result 类按 projects/ 分支整子树重定位 `projects/8/outputs/inference/696`，矿山 565 全量绑定，imports/ 存档 manifest 落盘，project_imported 审计含源项目/快照 id；负例：绝对路径 `/etc/passwd` 数据集导入 422 拒绝。导入目标项目 8 验毕即清理（archive→delete→trash） |
+| 15 | 归档/删除/恢复 | ✅ 2026-10-25（含一次真实删除+人工恢复演练） | 负例：活跃态 DELETE → 409"仅已归档项目可以删除"；archive 0.03s → summary.lifecycle_status=archived、列表带 archived 标记。**真实删除演练（意外触发，全链走通）**：归档态下 DELETE → 200 `trash_target=7_20261024_182501_6361b02f`，目录整体入 trash、DB 软删（deleted_at 置位、关联行全保留）、project_deleted 审计落时间线；列表/详情立即不可见。**人工恢复**（trash 恢复无 API，按部署文档手工）：`mv trash/7_* projects/7` + `UPDATE project SET deleted_at=NULL` + `POST /api/projects/7/restore` → active，**数据零丢失**：565 矿山、5 数据集、成果 62/63 ready、影像候选 6、底图瓦片 32503 张 PNG（`tiles/14/`，3.9G）、时间线 deleted+restored 完整可溯。设计观察（进 I-1）：trash 恢复纯手工（mv+SQL），无受控 API/CLI；项目详情端点业务失败返回 HTTP 200+`success:false`（既有 business_or_server_failure 惯例，REST 语义偏弱） |
 
 ## 2. 性能实测
 
@@ -48,6 +48,7 @@
 | --- | --- | --- | --- |
 | A-1 GB 下载 >30s 不中断 | 限速客户端完整下载不中断、字节一致、BFF 存活 | ✅ 573M 原片（项目1 任务 55361cb4）经 BFF `mines/original-imagery/<jobId>/download` 限速 4MiB/s 下载 **143.4s** 完整收毕（旧 `AbortSignal.timeout(30000)` 此场景 30s 必断）：600,060,974B、md5 `1fd7139c…` 与服务端逐字节一致、Content-Length/attachment 头正确，下载后 BFF `/api/auth/session` 200 仍可服务 | 容器内 h2_download.py 输出 A1_REALSTACK_PASS |
 | 分片上传 573M | 断点续传精确、合并不损坏 | ✅ 见步骤 5：10 片暂停→重 init 报 received=[0..9]→剩余 26 片 6.2s→合并 8.2s | bu0teg2x8 输出 |
+| 快照链 | 生成/恢复/导入可用 | ✅ 生成 0.11s、同环境恢复 0.36s、跨环境导入 0.34s（见步骤 14） | h2_snapshot.py / h2_snapshot_db.py |
 
 待补：GB 上传（分片 vs 单发对照）、推理端到端、看板加载、地图连续进出 20 次、峰值 RAM/VRAM。
 
