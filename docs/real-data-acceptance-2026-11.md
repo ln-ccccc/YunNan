@@ -33,7 +33,7 @@
 | 7 | 切片 | ✅ 2026-10-25 | grid_pixels 512 → 1 片（394×332 不足两片）：dataset_id=46，相对键 slice_20261024_172541_063a8a_r0c0.tif |
 | 8 | GPU 推理 | ✅ 2026-10-25（succeeded_with_fallback） | `POST /api/inference/jobs` {project 7, dataset 46（**上手绘 clip→slice 产物**）, year 2024, mine_fids [696]}——**P1-1 契约修复的关键验证达成：clip 产物被推理端完整接受**。任务 b9af125f：86s（17:56:03→17:57:29），1/1 tile，effective_device=cpu，fallback_reason=GPU_INFERENCE_FAILED。GPU 失败根因已查明（见 §4 发现 R1）：宿主 RAM 5.93GB 不足以 torch.load 1.97GB checkpoint（需 ~2× 峰值）→ `OSError: [Errno 12] Cannot allocate memory` 被误分类为 GPU_INFERENCE_FAILED |
 | 9 | 矢量化 | ✅ 2026-10-25（发布管线自动完成） | 成果 id=62：fid 696/2024，vector_status=ready，feature_count=146，current_revision_no=0，label_path 与 auto_geojson_path 均落盘；auto_feature_collection 首要素坐标 (100.78387, 26.04445) 与矿山 KML fid696 开采中心吻合 |
-| 10 | 编辑器全功能 | 🔄 归 H-3 | 改类/顶点/增删/undo/合并/simplify 属浏览器交互，随 H-3 GUI 全量验收复跑（4 冒烟 + 编辑器操作流）；本节先以 API 完成保存/冲突/质检/导出链 |
+| 10 | 编辑器全功能 | ✅ 2026-10-25（归 H-3 完成，见 §4） | 真实栈成果 62 全功能浏览器会话 9 步全链通过（含发现并修复 R7）；API 侧保存/冲突/质检链见步骤 11-13 |
 | 11 | 保存 + 双开 409 | ✅ 2026-10-25 | 双会话（独立 cookie）：A 保存自动基线 146 要素成功（rev 0→1，**R4 修复后**；修复前严格 covers 拒 40/146 要素，必 422）；B 持旧 base 再存 409"成果已被其他保存更新"（detail 含 base/current revision）；B 刷新 current 后重试成功；revisions 列表 0..6 连续完整（本轮累计 6 次 manual 保存） |
 | 12 | 质检 | ✅ 2026-10-25 | `GET quality-review?small_area_threshold_m2=200`：146 要素 5 类——water 15 块 58.2%（5422.6m²）、grassland 41 块 25.0%、…（真实面积/占比统计） |
 | 13 | 五格式导出逐个校验 | ✅ 2026-10-25 | geojson 1745KiB（JSON 可解析）/ csv 23.9KiB（表头+行）/ shp 545KiB（zip PK 头）/ xlsx 6.0KiB（zip PK 头）/ dxf 3284KiB（SECTION 头），五格式全部 200 且 artifact 下载 Content-Disposition 正确；导出目录 exports/<id>/artifact 落盘 |
@@ -64,7 +64,44 @@
 | 3. 慢网络下载中断恢复 | ✅ | 573M 原片经 BFF 限速 4MiB/s 下载至 240MiB（60.5s）强制断连 → BFF 探活 `/api/auth/session` 200（A-1 修复的流管道 abort 未拖死进程）→ 完整重下 600,060,974B、4.9s、md5 `1fd7139c…` 与服务端一致 | h2_download_interrupt.py 输出 |
 | 4. 并发双会话修订 409 | ✅ | 已在步骤 11 完成（B 持旧 base 保存 409 → 刷新 current 重试成功） | 见步骤 11 |
 
-## 4. 真实数据发现（验收期间新查明）
+## 4. H-3 GUI 全量浏览器验收复跑（2026-10-25）
+
+4 个浏览器冒烟（tests/browser/*.cjs，HTTP fixture 拦截，chromium 1243 有头实例）+ 真实栈编辑器全功能会话。
+
+### 4.1 冒烟复跑
+
+| 冒烟 | 结果 | 关键证据 |
+| --- | --- | --- |
+| geoview-entry-smoke | ✅ | passed=true，入口无旧启动屏 |
+| geoview-glass-smoke | ✅ 6 checks | knownBugs=[]（C 批次反转项保持无回退），帧间隔 P95 12.9ms / 0 帧 >50ms，无 console 错误 |
+| liquid-glass-smoke | ✅ 12 checks | 无 failedRequests；2 条 console 409 为项目 43 无激活底图的业务冲突（fixture 预期，非缺陷） |
+| imagery-clip-map-smoke | ✅ 6 checks | 预览 PNG 经 Leaflet imageOverlay 挂载、双击闭合、提交 GeoJSON 顶点全部落在影像 bounds 内（真实地理绑定）、矿山边界叠加；裁剪请求恰 1 次。首跑"已闭合"等待超时判定为偶发（复跑通过）；脚本本次补 `executablePath` 环境变量支持与 glass/liquid 一致 |
+
+### 4.2 真实栈编辑器全功能会话（成果 62，生产构建 yunnan-frontend :3000）
+
+生产构建无 window 句柄可依赖，验收以像素坐标驱动真实鼠标 + UI 文本/按钮态断言 + 保存后 API diff 收口（脚本 D:/Temp/yunnan-h2/h3_editor_v3.cjs）。视口内可命中要素经网格探针实证：成果 146 要素中仅水体碎斑群（单一要素）大于点击精度，新建面即以水体内部为载体（⊂水体⊂ROI，covers 传递保证合法）。
+
+| # | 步骤 | 断言 | 结果 |
+| --- | --- | --- | --- |
+| 1 | 视觉点选水体面 | 选中计数=1，dirty 不变 | ✅ |
+| 2 | 改类（类0→类1） | dirty=true、撤销可用 | ✅ |
+| 3 | 撤销→重做 | undo→已保存 / redo→未保存（栈语义） | ✅ |
+| 4 | 绘制新建三角形 | dblclick 完成回到选中态 | ✅ |
+| 5 | 顶点拖动 | direct_select 手柄 (830,626)→(+10,+6)，dirty 保持、选中保持 | ✅ |
+| 6 | 删除面 | 清空→simple_select 重选→trash：选中归零、dirty、撤销可用 | ✅ |
+| 7 | 撤销恢复+多选+批量改类+合并 | 恢复的三角形可重选；Shift+水体=2；**异类合并点击弹「仅支持合并同地类的面」且选择保持 2**；批量改类同类后合并成功「已合并为 1 个面（原 2 个）」、选择清零 | ✅ |
+| 8 | 消除锯齿 | 合并面选中→简化可用→dirty | ✅ |
+| 9 | 保存新版本 + API 收口 | rev 7→8；要素 146→146（合并-1+新建+1）；按 feature_id diff：移除 1（被合并替代面）、新增 1（class_code=类0 合并面） | ✅ |
+
+### 4.3 交互语义与防线实证（H-3 期间查明，脚本已适配或记录）
+
+| 项 | 实证 | 定性 |
+| --- | --- | --- |
+| simple_select 语义三特性 | ①绘制完成新面自动选中后，单击"已选中且唯一"的面进入 direct_select（顶点模式）；②direct_select 下 trash 语义=删除激活顶点，3 顶点面受最少顶点保护无操作（表现为"删除按钮无效果"）；③simple_select 下拖动选中面=整面平移。验收脚本以"先点空白清空再单击重选"适配；首次实跑步骤 6"删除"即因 ② 未生效（07 截图三角形残留为证） | 交互语义特性（非缺陷）；进 I-1（建议 trash 在 direct_select 3 顶点面时给出提示文案） |
+| ROI 保存防线（前端无约束） | 在 ROI 外绘制（水体东/外侧空白区）保存 → 422 `几何必须完全位于成果 ROI 内`（feature_index 精确指出越界要素）；后端防线正确。但前端绘制时不做 ROI 提示/约束，用户须到保存时才发现 | UX 发现（进 I-1：绘制态叠加 ROI 边界或越界即时提示） |
+| 合并按钮语义 | 多选≥2 即可点击（`:disabled` 只看数量），异类防护在点击时弹 warning——与"异类时按钮禁用"的直觉预期不同，行为一致且已有中文提示 | 语义记录（无改动） |
+
+## 5. 真实数据发现（验收期间新查明）
 
 | # | 发现 | 定性 | 证据 |
 | --- | --- | --- | --- |
@@ -74,9 +111,10 @@
 | R4 | **自动矢量化产物无法通过自身保存校验（人工编辑保存链从未走通）**：保存校验 `roi.covers(geometry)` 无容差，矢量化坐标与 ROI 边界浮点相切（~1e-9 度）被拒——真实成果 62 共 146 要素中 40 个越界丝米级，GeoView 打开后任何保存必 422"几何必须完全位于成果 ROI 内"。佐证：classification_revisions 全表 source=auto（rev 0），**无任何 manual 修订**。修复（已入库）：covers 加 1e-9 度（亚毫米）容差，只吸收浮点误差，像素级真实越界仍拒；回归用例（ROI 边界相切 sliver 可存 / 大越界仍拒） | 代码缺陷（P1 级数据链断裂） | 诊断脚本 40/146 计数+buffer(1e-9) 全通过；修复后真实栈 146 要素保存成功 rev0→6 |
 | R5 | **单发 multipart 上传通道对大文件既慢又吃内存**：573M 单发实测 570.5s（1.0 MiB/s）+ backend 内存峰值 1.78GiB（werkzeug multipart 解析全量内存缓冲）；分片通道同文件 9.9s + 0.29GiB。前端 >512MB 分流分片掩盖了此路径，但 API 层 `MAX_UPLOAD_TIFF_SIZE_MB`=8GB 的硬上限远超实际可承受（5.79GiB Docker VM 下 ~2GB 单发即近 OOM，8GB 必 OOM） | 性能/资源风险（建议 I-1：下调单发上限至 ~1GB 或单发路径也改流式解析） | §2 对照实测 + docker stats 采样 |
 | R6 | **worker 重启遗留任务永久孤儿**：`recover_abandoned_jobs` 的 `worker_id != current` 排除条件在唯一部署形态（worker=容器入口进程，PID 恒 1，重启前后 worker_id 相同）下恰好把前任进程遗留的 running 任务排除在回收之外——任务永久卡 running（无超时、无 reaper、UI 永显运行中）。§3 演练 1 实测：被杀任务卡 running 10 分钟无人回收，新 worker 同 id 正常心跳。修复（已入库 7a59afe）：回收仅在启动、首次认领前调用，此刻 own-id 名下 running 只可能来自已死前任进程，直接回收同主机前缀全部 running 任务；单测覆盖同 id/异 id/异主机三形态（35/35），真实栈修复版重启后孤儿任务即时置 `failed/WORKER_RESTARTED` | 代码缺陷（P1 级韧性） | §3 演练 1 全链 + inference_jobs DB + worker 日志 |
+| R7 | **生产构建绘制工具栏不可点击（真实点击永不命中）**：mapbox-gl-draw 1.5.1 控件按钮沿用旧 `mapboxgl-ctrl-group` 前缀类，与 maplibre-gl 混搭时 maplibre-gl.css 对地图角容器设 `pointer-events:none` 并只对自身 `.maplibregl-ctrl` 恢复 `auto`，旧前缀组不被匹配——绘制/删除按钮可见但点击穿透。开发模式两套 CSS 加载顺序不同不现，生产构建必现（H-3 首跑步骤 5/6 绘制与删除全部无效的直接原因）。修复（已入库 076df8a）：scoped `:deep(.mapboxgl-ctrl-group){pointer-events:auto}` 一行桥接；frontend npm test 58/58，生产容器重建后探针 elementsFromPoint 命中 + 真实点击进入绘制模式，§4.2 九步全链通过 | 代码缺陷（P1 级生产功能断裂） | h3_probe_pe/stack.cjs 探针（修复前 `pe:"none"` / 修复后 `auto`+active）；§4.2 全链 |
 
 R1 建议（进 I-1 设计文档）：①设备探测/加载失败记录原始异常与分类码；②`Cannot allocate memory`/Errno 12 单独分类 `HOST_MEMORY_EXHAUSTED`，与 GPU 问题区分；③CPU 回退后在空闲期卸载 CPU 模型重试 GPU，打破"回退一次永远 CPU"的恶性循环；④部署文档标注推理机 RAM 底线（1.97GB fp32 模型加载需 ≥8GB，推荐 16GB）。R2 修复（已入库 8ef0c93）：审计 import 直连 `_foundation`，不再依赖 worker 镜像补装 schemas/osgeo 依赖链。
 
-## 5. 结论与遗留
+## 6. 结论与遗留
 
 待验收完成后填写。
