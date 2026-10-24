@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Readable } from 'node:stream';
 
 import { projectApi as defaultProjectApi } from '../services/projectBackend.js';
 
@@ -16,6 +17,41 @@ function relayBinary(res, upstream) {
     res.set('content-disposition', upstream.contentDisposition);
   }
   res.send(upstream.body);
+}
+
+/**
+ * GB 级下载统一流式转发（原始影像/导出制品/快照清单）。裸 pipe 无 error 监听时，
+ * 上游中断的错误沿流传播无人消费 → uncaughtException → BFF 进程退出，Miner
+ * 全功能下线（2026-10-24 审查 P1-2），因此必须挂全三处兜底：
+ * - 上游流 error → 日志 + abort 上游 + 销毁响应（客户端收到截断错误而非挂死）；
+ * - 客户端断连（res close）→ abort 上游，后端不再向断开的连接无效传输。
+ */
+function relayUpstreamStream(res, upstream) {
+  res.status(upstream.status || 200);
+  if (upstream.contentType) {
+    res.set('content-type', upstream.contentType);
+  }
+  if (upstream.contentDisposition) {
+    res.set('content-disposition', upstream.contentDisposition);
+  }
+  if (upstream.contentLength) {
+    res.set('content-length', upstream.contentLength);
+  }
+  const nodeStream = Readable.fromWeb(upstream.stream);
+  nodeStream.on('error', (error) => {
+    console.error('projects route upstream stream error:', error);
+    if (upstream.controller) {
+      upstream.controller.abort();
+    }
+    res.destroy();
+  });
+  res.on('close', () => {
+    // 正常传完 close 也会触发：流已消费完，abort 是无害空操作
+    if (upstream.controller) {
+      upstream.controller.abort();
+    }
+  });
+  nodeStream.pipe(res);
 }
 
 function requestCookie(req) {
@@ -175,13 +211,10 @@ export function createProjectRoutes({
         req.params.jobId,
         requestCookie(req),
       );
-      // GB 级流式转发：不整读进内存，边收边发；出错体（非 200 JSON）走一次性透传
-      if (upstream.stream && upstream.status === 200) {
-        res.status(200);
-        res.set('content-type', upstream.contentType);
-        if (upstream.contentLength) res.set('content-length', upstream.contentLength);
-        const { Readable } = await import('node:stream');
-        Readable.fromWeb(upstream.stream).pipe(res);
+      // GB 级流式转发：不整读进内存，边收边发；出错体（非 200 JSON）同样经流透传，
+      // 无 stream 的注入形态（测试 mock）回退 relayBinary
+      if (upstream.stream) {
+        relayUpstreamStream(res, upstream);
         return;
       }
       relayBinary(res, upstream);
@@ -381,7 +414,12 @@ export function createProjectRoutes({
       return res.status(400).json({ error: 'Invalid export path' });
     }
     try {
-      relayBinary(res, await projectApi.getProjectExportArtifact(projectId, exportId, requestCookie(req)));
+      const upstream = await projectApi.getProjectExportArtifact(projectId, exportId, requestCookie(req));
+      if (upstream.stream) {
+        relayUpstreamStream(res, upstream);
+        return;
+      }
+      relayBinary(res, upstream);
     } catch (error) {
       console.error('projects route upstream error:', error);
       res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
@@ -395,7 +433,12 @@ export function createProjectRoutes({
       return res.status(400).json({ error: 'Invalid backup path' });
     }
     try {
-      relayBinary(res, await projectApi.getProjectBackupManifest(projectId, backupId, requestCookie(req)));
+      const upstream = await projectApi.getProjectBackupManifest(projectId, backupId, requestCookie(req));
+      if (upstream.stream) {
+        relayUpstreamStream(res, upstream);
+        return;
+      }
+      relayBinary(res, upstream);
     } catch (error) {
       console.error('projects route upstream error:', error);
       res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });

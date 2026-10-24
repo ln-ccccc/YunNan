@@ -52,21 +52,33 @@ async function requestBinary(method, path, { cookie, timeoutMs = 30000 } = {}) {
 
 /**
  * GB 级大文件流式转发：不整读进内存（requestBinary 的 arrayBuffer 会让 5GB
- * 影像在 BFF 驻留 5GB 堆，两路并发即 OOM）。返回 web 流由路由层 pipe 给响应；
- * 超时只约束建立阶段（30s），body 读取无总时限——后端 gunicorn 自带 1800s 兜底。
+ * 影像在 BFF 驻留 5GB 堆，两路并发即 OOM）。返回 web 流由路由层 pipe 给响应。
+ * 超时只约束建立阶段（30s）：响应头到达即 clearTimeout，body 读取无总时限
+ * （后端 gunicorn 自带 1800s 兜底）。不能用 AbortSignal.timeout——它会覆盖
+ * 整个响应生命周期，GB 级下载超 30s 即被客户端主动掐断（2026-10-24 审查 P1-3）。
+ * controller 一并返回：路由层在客户端断连时 abort，避免上游继续无效传输。
  */
 async function requestBinaryStream(method, path, { cookie, connectTimeoutMs = 30000 } = {}) {
   const url = new URL(`${backendBaseUrl}${path}`);
-  const response = await fetch(url, {
-    method,
-    headers: cookie ? { cookie } : {},
-    signal: AbortSignal.timeout(connectTimeoutMs),
-  });
+  const controller = new AbortController();
+  const connectTimer = setTimeout(() => controller.abort(), connectTimeoutMs);
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: cookie ? { cookie } : {},
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(connectTimer);
+  }
   return {
     status: response.status,
     contentType: response.headers.get('content-type') || 'application/octet-stream',
+    contentDisposition: response.headers.get('content-disposition') || '',
     contentLength: response.headers.get('content-length'),
     stream: response.body,
+    controller,
   };
 }
 
@@ -94,15 +106,16 @@ export const projectApi = {
       { body: payload, cookie },
     );
   },
+  // 导出制品/快照清单同样走流式：制品可达百 MB，整读会让 BFF 堆随文件大小线性增长
   getProjectExportArtifact(projectId, exportId, cookie) {
-    return requestBinary(
+    return requestBinaryStream(
       'GET',
       `/api/projects/${positiveRouteId(projectId, '项目')}/exports/${positiveRouteId(exportId, '导出')}/artifact`,
       { cookie },
     );
   },
   getProjectBackupManifest(projectId, backupId, cookie) {
-    return requestBinary(
+    return requestBinaryStream(
       'GET',
       `/api/projects/${positiveRouteId(projectId, '项目')}/backups/${positiveRouteId(backupId, '快照')}/manifest`,
       { cookie },

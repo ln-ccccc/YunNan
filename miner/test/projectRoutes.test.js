@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import express from 'express';
+import { Readable } from 'node:stream';
 
 import { createProjectRoutes } from '../routes/projects.js';
 
@@ -409,6 +410,117 @@ test('createProjectRoutes relays original imagery download as binary with attach
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('content-type'), 'image/tiff');
   assert.equal(await response.text(), 'II* fake-tif-bytes');
+});
+
+// 流式转发分支（2026-10-24 审查 P1-2/P1-3）：裸 pipe 无 error 监听会让上游中断
+// 直接打崩 BFF 进程，此处锁定三条兜底行为
+const DOWNLOAD_PATH = '/1/mines/original-imagery/38d04109-6dda-4a0e-aabb-ccddeeff0011/download';
+
+test('original imagery download streams upstream body with headers passthrough', async () => {
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectOriginalImageryDownload() {
+        return {
+          status: 200,
+          contentType: 'image/tiff',
+          contentDisposition: 'attachment; filename="demo.tif"',
+          contentLength: '16',
+          stream: Readable.toWeb(Readable.from([Buffer.from('0123456789abcdef')])),
+          controller: { abort() {} },
+        };
+      },
+    },
+  });
+  const res = await withServer(router, DOWNLOAD_PATH);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/tiff');
+  assert.equal(res.headers.get('content-length'), '16');
+  assert.equal(res.headers.get('content-disposition'), 'attachment; filename="demo.tif"');
+  assert.equal(await res.text(), '0123456789abcdef');
+});
+
+test('original imagery download mid-stream error aborts upstream and severs response without crashing', async () => {
+  let upstreamAborted = false;
+  const broken = new Readable({ read() {} });
+  broken.push(Buffer.from('partial-data'));
+  setTimeout(() => broken.destroy(new Error('upstream boom')), 20);
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectOriginalImageryDownload() {
+        return {
+          status: 200,
+          contentType: 'image/tiff',
+          contentLength: '1000',
+          stream: Readable.toWeb(broken),
+          controller: { abort() { upstreamAborted = true; } },
+        };
+      },
+    },
+  });
+  const res = await withServer(router, DOWNLOAD_PATH);
+  // 上游中断：客户端读到截断错误而非挂死；进程不崩（未捕获 error 会让整个测试进程失败）
+  await assert.rejects(() => res.text());
+  assert.equal(upstreamAborted, true);
+});
+
+test('original imagery download aborts upstream fetch when client disconnects', async () => {
+  let upstreamAborted = false;
+  const endless = new Readable({ read() {} });
+  endless.push(Buffer.from('chunk-'));
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectOriginalImageryDownload() {
+        return {
+          status: 200,
+          contentType: 'image/tiff',
+          stream: Readable.toWeb(endless),
+          controller: { abort() { upstreamAborted = true; } },
+        };
+      },
+    },
+  });
+  const app = express();
+  app.use('/api/projects', router);
+  const server = await new Promise((resolve) => {
+    const instance = app.listen(0, () => resolve(instance));
+  });
+  const { port } = server.address();
+  const client = new AbortController();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/projects${DOWNLOAD_PATH}`, {
+      signal: client.signal,
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    await reader.read();
+    client.abort();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(upstreamAborted, true);
+  } finally {
+    if (server.closeAllConnections) {
+      server.closeAllConnections();
+    }
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test('export artifact stream forwards upstream error status and body', async () => {
+  const router = createProjectRoutes({
+    projectApi: {
+      async getProjectExportArtifact() {
+        return {
+          status: 404,
+          contentType: 'application/json',
+          stream: Readable.toWeb(Readable.from([Buffer.from('{"msg":"导出不存在"}')])),
+          controller: { abort() {} },
+        };
+      },
+    },
+  });
+  const res = await withServer(router, '/1/exports/7/artifact');
+  assert.equal(res.status, 404);
+  assert.match(res.headers.get('content-type') || '', /^application\/json/);
+  assert.equal(await res.text(), '{"msg":"导出不存在"}');
 });
 
 test('createProjectRoutes rejects a malformed original imagery download job id', async () => {
