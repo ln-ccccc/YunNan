@@ -1,5 +1,5 @@
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 def get_storage_root():
@@ -17,6 +17,28 @@ def resolve_storage_path(storage_root, relative_path):
     except ValueError as exc:
         raise ValueError("空间资源路径越界") from exc
     return candidate
+
+
+def resolve_stored_file(storage_root, stored_path):
+    """数据集/记录类存储键（ProjectDataset.file_path 等）的统一双形态解析
+    （2026-10-24 契约 B）：唯一规范形态是 storage 根相对键；legacy 绝对路径
+    仅在位于当前 storage 根内时兼容接受。越界/穿越抛 ValueError，由调用方
+    决定对客户端的错误语义。"""
+    text = str(stored_path or "")
+    raw = Path(text).expanduser()
+    windows_path = PureWindowsPath(text)
+    if (
+        ".." in raw.parts
+        or ".." in windows_path.parts
+        or ((windows_path.is_absolute() or windows_path.drive) and not raw.is_absolute())
+    ):
+        raise ValueError("存储路径越界")
+    if raw.is_absolute():
+        try:
+            raw = raw.resolve().relative_to(Path(storage_root).expanduser().resolve())
+        except ValueError as exc:
+            raise ValueError("存储路径越界") from exc
+    return resolve_storage_path(storage_root, raw)
 
 
 def ensure_storage_layout(storage_root=None):

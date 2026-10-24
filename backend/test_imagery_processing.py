@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,10 @@ from applications import create_app
 from applications.extensions import db
 from applications.models.project import Project, ProjectDataset
 from applications.models.project_spatial import ProjectSpatialResource
+from applications.project_hub.inference_inputs import (
+    ProjectInferenceInputError,
+    _resolve_registered_tif,
+)
 from test_project_api import TestProjectAPI
 
 
@@ -226,6 +231,77 @@ class TestImagerySlice(ImageryProcessingBase):
         ):
             response = self._slice(body)
             self.assertEqual(response.status_code, 400, body)
+
+
+class TestFilePathContract(ImageryProcessingBase):
+    """契约 B（2026-10-24 审查 P1-1）：ProjectDataset.file_path 唯一规范形态
+    是 storage 根相对键——clip/slice 曾写绝对路径，而推理输入校验只认受控相对
+    键，产物永远无法推理；legacy 绝对路径仅根内双形态兼容读。"""
+
+    def _clip_by_polygon(self, source):
+        geometry = {
+            "type": "Polygon",
+            "coordinates": [[[100.1, 25.95], [100.2, 25.95], [100.2, 25.99], [100.1, 25.99], [100.1, 25.95]]],
+        }
+        return self._clip({"source": source, "geometry": geometry, "buffer_meters": 0})
+
+    def test_clip_registers_relative_key_passing_inference_input_check(self):
+        response = self._clip_by_polygon(self.source_key)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        dataset = db.session.get(ProjectDataset, response.get_json()["data"]["dataset_id"])
+        key = dataset.file_path
+        self.assertFalse(Path(key).is_absolute())
+        self.assertTrue(key.startswith(f"projects/{self.project_id}/inputs/imagery/"))
+        # P1-1 核心断言：裁剪产物直接通过推理输入校验（修前此处必抛错）
+        tif = _resolve_registered_tif(self.storage_root, key, self.project_id)
+        self.assertTrue(tif.is_file())
+
+    def test_slice_registers_relative_keys(self):
+        response = self._slice({"source": self.source_key, "mode": "grid_pixels", "tile_pixels": 512})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        items = response.get_json()["data"]["items"]
+        self.assertTrue(items)
+        for item in items:
+            dataset = db.session.get(ProjectDataset, item["dataset_id"])
+            self.assertFalse(Path(dataset.file_path).is_absolute())
+            _resolve_registered_tif(self.storage_root, dataset.file_path, self.project_id)
+
+    def test_inference_input_check_rejects_foreign_project_keys(self):
+        with self.assertRaises(ProjectInferenceInputError):
+            _resolve_registered_tif(
+                self.storage_root,
+                f"projects/{self.project_id + 1}/inputs/imagery/x.tif",
+                self.project_id,
+            )
+
+    def test_inference_input_check_still_accepts_incoming_keys(self):
+        incoming = _make_raster(self.storage_root / "incoming" / "upload.tif", width=64, height=64)
+        tif = _resolve_registered_tif(self.storage_root, "incoming/upload.tif", self.project_id)
+        self.assertEqual(tif, incoming.resolve())
+
+    def test_legacy_absolute_dataset_path_resolves_inside_root(self):
+        # 迁移前存量行（绝对路径且根内）：按 dataset_id 裁剪仍可用（双形态兼容读）
+        dataset = ProjectDataset(
+            project_id=self.project_id, dataset_kind="imagery",
+            display_name="legacy绝对路径", file_path=str(self.source), source_format="tif",
+        )
+        db.session.add(dataset)
+        db.session.commit()
+        response = self._clip_by_polygon(str(dataset.id))
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+
+    def test_legacy_absolute_dataset_path_outside_root_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = _make_raster(Path(tmp) / "outside.tif", width=64, height=64)
+            dataset = ProjectDataset(
+                project_id=self.project_id, dataset_kind="imagery",
+                display_name="根外绝对路径", file_path=str(outside), source_format="tif",
+            )
+            db.session.add(dataset)
+            db.session.commit()
+            response = self._clip_by_polygon(str(dataset.id))
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("不合法", response.get_json()["msg"])
 
 
 if __name__ == "__main__":

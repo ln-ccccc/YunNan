@@ -191,6 +191,27 @@ class TestBackupImport(ProjectManageBase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("不在本项目存储内", response.get_json()["msg"])
 
+    def test_import_rebases_incoming_and_foreign_project_dataset_keys(self):
+        """契约 B（2026-10-24 审查 P2-3）：incoming/ 与他项目键跨环境导入不再
+        整批 422 死路，统一重定位到目标项目 inputs/imagery/ 相对键落库。"""
+        self.login_as_admin()
+        target = self._create_project("重定位目标")
+        manifest = self._build_manifest(999)
+        manifest["datasets"] = [
+            {"dataset_kind": "imagery", "display_name": "上传件", "file_path": "incoming/upload.tif"},
+            {"dataset_kind": "imagery", "display_name": "他项目裁剪", "file_path": "projects/999/inputs/imagery/clip_x.tif"},
+        ]
+        response = self.client.post(
+            f"/api/projects/{target}/backups/import",
+            json={"manifest": manifest},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        paths = sorted(d.file_path for d in db.session.get(Project, target).datasets)
+        self.assertEqual(paths, [
+            f"projects/{target}/inputs/imagery/clip_x.tif",
+            f"projects/{target}/inputs/imagery/upload.tif",
+        ])
+
     def test_import_rejects_malformed_manifest(self):
         self.login_as_admin()
         target = self._create_project("坏清单目标")

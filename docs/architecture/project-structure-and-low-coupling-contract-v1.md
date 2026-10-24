@@ -315,7 +315,8 @@ PROJECT_STORAGE_ROOT/projects/{project_id}/
 2. 服务端由项目 ID、导出 ID 或快照 ID 生成目标目录，并用 allowlist/路径解析保证结果仍在项目 sandbox 内。目录的每个既有层级以及制品、清单文件本身都不得是 symlink、junction 或其他 reparse point；不得仅因目标仍位于总存储根下而跨项目跟随链接。
 3. 每个导出写入 `manifest.json`，至少包含 `project_id`、创建时间、来源资产 ID、版本和可用校验值。
 4. 每个项目配置快照写入 `snapshots/{snapshot_id}/manifest.json`，清单必须包含 `snapshot_version`、`project_id` 和 `backup_id`。恢复仅接受与当前项目和快照记录精确匹配、状态为 completed 且 restorable 的普通清单文件；旧的无身份字段清单需要重新生成快照后才能恢复。
-5. 页面把当前元数据备份称作“项目配置快照”；完整灾备仍由数据库、原始数据、瓦片和成果文件的运维恢复流程负责。
+5. `ProjectDataset.file_path` 的唯一写入形态是 **storage 根相对键**（如 `incoming/a.tif`、`projects/42/inputs/imagery/clip_xxx.tif`）；任何写入端不得再落绝对路径（2026-10-24 审查 P1-1：clip/slice 曾写绝对路径，导致推理输入校验与跨环境快照导入两处死路）。读取端必须走统一双形态解析器：相对键拼 storage 根；legacy 绝对路径仅在位于当前 storage 根内时兼容接受，根外一律拒绝。推理输入校验接受 `incoming/` 与 `projects/<本项目id>/inputs/imagery/` 两种受控前缀下的受支持栅格。快照 manifest 对外输出的 `file_path` 一律为相对键；跨环境导入时 `incoming/` 与他项目键重定位为目标项目 `projects/<目标id>/inputs/imagery/` 下的相对键（物理影像由运维另行搬运，导入成功不代表文件就位）。
+6. 页面把当前元数据备份称作“项目配置快照”；完整灾备仍由数据库、原始数据、瓦片和成果文件的运维恢复流程负责。
 
 ## 10. 实施顺序与门禁
 

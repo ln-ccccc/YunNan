@@ -20,7 +20,11 @@ from rasterio.windows import Window, from_bounds
 
 from applications.extensions import db
 from applications.models.project import Project, ProjectDataset
-from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+from applications.project_hub.spatial_storage import (
+    get_storage_root,
+    resolve_storage_path,
+    resolve_stored_file,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,7 +61,12 @@ def _resolve_source(project, source_key):
             raise ImageryProcessingError(f"数据集不存在: {text}")
         if not dataset.file_path:
             raise ImageryProcessingError("数据集未登记文件路径")
-        path = Path(dataset.file_path).expanduser().resolve()
+        # 统一双形态解析（契约 B）：相对键拼 storage 根，legacy 绝对路径仅在
+        # 根内兼容——替代按进程 cwd 的 Path().resolve()（隐式环境耦合）
+        try:
+            path = resolve_stored_file(get_storage_root(), dataset.file_path)
+        except ValueError:
+            raise ImageryProcessingError("数据集影像路径不合法") from None
     else:
         if not text:
             raise ImageryProcessingError("缺少影像来源")
@@ -83,7 +92,12 @@ def list_imagery_candidates(project_id):
     project = _project_or_404(project_id)
     items = []
     for dataset in ProjectDataset.query.filter_by(project_id=project.id, dataset_kind="imagery"):
-        path = Path(dataset.file_path).expanduser().resolve() if dataset.file_path else None
+        path = None
+        if dataset.file_path:
+            try:
+                path = resolve_stored_file(get_storage_root(), dataset.file_path)
+            except ValueError:
+                path = None
         summary = _raster_summary(path)
         items.append({
             "dataset_id": dataset.id,
@@ -141,6 +155,16 @@ def _storage_key(path):
         return Path(path).resolve().relative_to(get_storage_root()).as_posix()
     except ValueError:
         return None
+
+
+def _dataset_key(out_path):
+    """登记库 file_path 的唯一规范形态：storage 根相对键（契约 B）。
+    绝对路径会让推理输入校验（仅认受控相对键）与跨环境快照导入同时死路
+    （2026-10-24 审查 P1-1 的写入端病根）。"""
+    key = _storage_key(out_path)
+    if key is None:
+        raise ImageryProcessingError("裁剪产物未落在受控项目存储内")
+    return key
 
 
 def _raster_summary(path):
@@ -224,7 +248,7 @@ def clip_imagery(project_id, payload):
         project_id=project.id,
         dataset_kind="imagery",
         display_name=f"裁剪 {payload.get('display_name') or source_path.name} (+{buffer_meters:g}m)",
-        file_path=str(out_path),
+        file_path=_dataset_key(out_path),
         source_format="tif",
         slice_config_json='{"origin":"clip"}',
     )
@@ -302,7 +326,7 @@ def slice_imagery(project_id, payload):
                     project_id=project.id,
                     dataset_kind="imagery",
                     display_name=f"切片 r{row}c{col} {window.width}×{window.height}",
-                    file_path=str(out_path),
+                    file_path=_dataset_key(out_path),
                     source_format="tif",
                     slice_config_json='{"origin":"slice"}',
                 )

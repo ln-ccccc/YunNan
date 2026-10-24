@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 import re
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from rasterio.errors import RasterioError
 
@@ -36,7 +36,9 @@ def _positive_integer(value, field_name):
     return result
 
 
-def _resolve_registered_tif(storage_root, file_path):
+def _resolve_registered_tif(storage_root, file_path, project_id):
+    """受控相对键校验（契约 B）：incoming/ 上传件或本项目
+    projects/<id>/inputs/imagery/ 裁剪/切片产物；绝对路径一律拒绝。"""
     storage_key = str(file_path or "").strip()
     path = Path(storage_key)
     windows_path = PureWindowsPath(storage_key)
@@ -48,13 +50,21 @@ def _resolve_registered_tif(storage_root, file_path):
         or windows_path.is_absolute()
         or windows_path.drive
     ):
-        raise ProjectInferenceInputError("数据集影像路径必须是 incoming/ 下的相对 TIFF 文件")
+        raise ProjectInferenceInputError("数据集影像路径必须是受控的相对栅格文件")
+    posix_parts = PurePosixPath(storage_key).parts
+    allowed_prefix = (
+        posix_parts[:1] == ("incoming",)
+        or posix_parts[:4] == ("projects", str(project_id), "inputs", "imagery")
+    )
+    if not allowed_prefix:
+        raise ProjectInferenceInputError(
+            "数据集影像路径必须位于 incoming/ 或本项目 inputs/imagery/ 目录"
+        )
     try:
         tif_path = resolve_storage_path(storage_root, storage_key)
-        incoming_root = resolve_storage_path(storage_root, "incoming")
-        tif_path.relative_to(incoming_root)
+        tif_path.relative_to(storage_root)
     except ValueError as exc:
-        raise ProjectInferenceInputError("数据集影像路径必须位于 incoming/ 目录") from exc
+        raise ProjectInferenceInputError("数据集影像路径不合法") from exc
     if tif_path.suffix.lower().lstrip(".") not in SUPPORTED_INCOMING_RASTER_FORMATS:
         raise ProjectInferenceInputError(
             "数据集影像必须是受支持的栅格格式（tif/tiff/img/jp2）"
@@ -127,7 +137,7 @@ def resolve_project_inference_inputs(
     normalized_year = _resolve_inference_year(year, dataset)
 
     storage_root = get_storage_root()
-    tif_path = _resolve_registered_tif(storage_root, dataset.file_path)
+    tif_path = _resolve_registered_tif(storage_root, dataset.file_path, project.id)
     overview = get_project_overview(project.id)
     if not bool((overview.get("capabilities") or {}).get("can_start_inference")):
         raise ProjectInferenceInputError("项目当前不满足启动推理条件")

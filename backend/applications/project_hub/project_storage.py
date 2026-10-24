@@ -5,7 +5,11 @@ import stat
 import tempfile
 from pathlib import Path, PureWindowsPath
 
-from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+from applications.project_hub.spatial_storage import (
+    get_storage_root,
+    resolve_storage_path,
+    resolve_stored_file,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -147,23 +151,11 @@ def resolve_project_record_file(project_id, area, record_id, filename, require_e
 
 
 def _resolve_storage_file(path):
-    storage_root = get_storage_root()
-    raw_path = Path(path).expanduser()
-    windows_path = PureWindowsPath(str(path or ""))
-    if (
-        ".." in raw_path.parts
-        or ".." in windows_path.parts
-        or ((windows_path.is_absolute() or windows_path.drive) and not raw_path.is_absolute())
-    ):
-        raise ProjectStorageValidationError("项目存储路径越界")
-    if raw_path.is_absolute():
-        try:
-            relative_path = raw_path.relative_to(storage_root)
-        except ValueError as exc:
-            raise ProjectStorageValidationError("项目存储路径越界") from exc
-    else:
-        relative_path = raw_path
-    return storage_root / relative_path
+    # 双形态语义单源在 spatial_storage.resolve_stored_file（2026-10-24 契约 B）
+    try:
+        return resolve_stored_file(get_storage_root(), path)
+    except ValueError as exc:
+        raise ProjectStorageValidationError("项目存储路径越界") from exc
 
 
 def _ensure_safe_storage_parent(target_path):

@@ -47,11 +47,24 @@ from applications.project_hub.spatial_storage import get_storage_root, resolve_s
 LOGGER = logging.getLogger(__name__)
 
 
+def _relative_storage_key(raw):
+    """manifest 对外只输出 storage 相对键（契约 B）：legacy 绝对路径在根内
+    则收敛为相对键（消除内部物理路径随快照下载外泄），根外异常值原样保留
+    由迁移脚本报告处置。"""
+    text = str(raw or "").strip()
+    if not text or not Path(text).expanduser().is_absolute():
+        return raw
+    try:
+        return Path(text).expanduser().resolve().relative_to(get_storage_root()).as_posix()
+    except ValueError:
+        return raw
+
+
 def _serialize_internal_dataset(dataset):
     return {
         "dataset_kind": dataset.dataset_kind,
         "display_name": dataset.display_name,
-        "file_path": dataset.file_path,
+        "file_path": _relative_storage_key(dataset.file_path),
         "source_format": dataset.source_format,
         "mine_fid": dataset.mine_fid,
         "year_start": dataset.year_start,
@@ -62,7 +75,7 @@ def _serialize_internal_dataset(dataset):
 def _serialize_internal_export(record):
     return {
         "format": record.format,
-        "file_path": record.file_path,
+        "file_path": _relative_storage_key(record.file_path),
         "status": record.status,
         "request_params": _json_load(record.request_params_json, {}),
     }
@@ -298,29 +311,41 @@ def import_backup_manifest(project_id, manifest, actor="system"):
                     sort_order=item.get("sort_order") or 0,
                 )
             )
-        # 导入数据集的 file_path 只允许落在本项目根内（2026-09-22 收官审查 S1：
-        # manifest 直传任意路径曾被原样入库，间接读取服务器任意栅格）
-        project_root = resolve_storage_path(
-            get_storage_root(), Path("projects") / str(project.id)
-        )
+        # 导入数据集的 file_path 统一收敛为目标项目内相对键（2026-10-24 契约 B）：
+        # 跨环境导入时 incoming/ 是源环境全局暂存区、projects/<他项目id>/ 是源项目
+        # 沙箱，都不可原样落地——一律重定位到本项目 inputs/imagery/，物理文件由
+        # 运维另行搬运；绝对/穿越路径仍然拒绝（2026-09-22 收官审查 S1 的防线保留）
 
         def _safe_dataset_path(raw):
             text = str(raw or "").strip()
             if not text:
                 raise ProjectStorageValidationError("导入的数据集缺少路径")
             candidate = Path(text).expanduser()
-            # 相对路径按 storage 根解析（导出快照里就是 projects/<id>/... 形态）；
-            # 绝对路径直接 resolve——两者最终都必须落在本项目根内
-            if not candidate.is_absolute():
-                candidate = get_storage_root() / candidate
-            candidate = candidate.resolve()
-            try:
-                candidate.relative_to(project_root)
-            except ValueError:
+            if candidate.is_absolute():
+                # legacy 形态：仅接受源环境 storage 根内的绝对路径，先收敛为相对键
+                try:
+                    candidate = Path(candidate.resolve().relative_to(get_storage_root()).as_posix())
+                except ValueError:
+                    raise ProjectStorageValidationError(
+                        "导入的数据集路径不在本项目存储内，已拒绝"
+                    ) from None
+            if ".." in candidate.parts:
+                raise ProjectStorageValidationError("导入的数据集路径不合法")
+            parts = candidate.parts
+            if parts[:1] == ("incoming",):
+                rebased = Path("projects") / str(project.id) / "inputs" / "imagery" / candidate.name
+            elif parts[:1] == ("projects",) and len(parts) >= 2:
+                # 他项目或本项目旧键：剥掉源项目 id 段，落回目标项目根下
+                rebased = Path("projects") / str(project.id) / Path(*parts[2:])
+            else:
                 raise ProjectStorageValidationError(
                     "导入的数据集路径不在本项目存储内，已拒绝"
-                ) from None
-            return str(candidate)
+                )
+            try:
+                resolve_storage_path(get_storage_root(), rebased)
+            except ValueError:
+                raise ProjectStorageValidationError("导入的数据集路径不合法") from None
+            return rebased.as_posix()
 
         for item in manifest["datasets"]:
             db.session.add(
