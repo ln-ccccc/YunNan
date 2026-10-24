@@ -1,7 +1,5 @@
 import traceback
-from datetime import timedelta
 
-from flask import session
 from flask_migrate import Migrate
 from werkzeug.exceptions import HTTPException
 
@@ -11,12 +9,6 @@ from applications.extensions import db
 
 debug_mode = False
 app = create_app()
-
-
-@app.before_request
-def before():
-    session.permanent = True
-    app.permanent_session_lifetime = timedelta(minutes=20)
 
 
 @app.errorhandler(Exception)

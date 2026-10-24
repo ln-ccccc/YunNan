@@ -182,6 +182,18 @@ class TestAuthAPI(unittest.TestCase):
         actual = self.client.post("/api/analysis/kml_roi_inference", json={})
         self.assertEqual(actual.status_code, 401)
 
+    def test_session_lifetime_is_seven_days(self):
+        # app.py 曾有 before_request 每请求把寿命覆盖为 20 分钟，架空
+        # applications/__init__.py 的 7 天配置（2026-10-24 审查 P2-4）；
+        # 此处锁定唯一来源：登录后 permanent 会话按 7 天滚动刷新
+        from datetime import timedelta
+
+        expected = timedelta(days=7)
+        self.assertEqual(self.app.config["PERMANENT_SESSION_LIFETIME"], expected)
+        # 请求前后寿命不被任何钩子改写
+        self.client.get("/api/auth/session")
+        self.assertEqual(self.app.config["PERMANENT_SESSION_LIFETIME"], expected)
+
 
 if __name__ == "__main__":
     unittest.main()
