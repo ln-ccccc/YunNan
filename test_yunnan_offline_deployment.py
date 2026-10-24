@@ -200,7 +200,6 @@ exit 1
                 ("yunnan_miner_outputs", "yunnan_miner_outputs.tar"),
                 ("yunnan_miner_uploads", "yunnan_miner_uploads.tar"),
                 ("yunnan_inference_runtime", "yunnan_inference_runtime.tar"),
-                ("yunnan_miner_tiles", "yunnan_miner_tiles.tar"),
             ],
         )
 
@@ -787,6 +786,8 @@ function Start-Sleep {
         self.assertIn("STUB_OK inspect=2", result.stdout)
 
     def test_windows_deploy_restores_all_yunnan_volumes(self):
+        # 卷清单与 docker-compose.prod.yml 声明一致（6 卷）；
+        # yunnan_miner_tiles 是旧栈孤儿卷，不得再进迁移包（2026-10-24 审查 P1-9）
         for volume_name in (
             "yunnan_mysql_data",
             "yunnan_backend_static",
@@ -794,9 +795,9 @@ function Start-Sleep {
             "yunnan_miner_outputs",
             "yunnan_miner_uploads",
             "yunnan_inference_runtime",
-            "yunnan_miner_tiles",
         ):
             self.assertIn(volume_name, self.windows_deploy_script)
+        self.assertNotIn("yunnan_miner_tiles", self.windows_deploy_script)
 
     def test_windows_deploy_uses_dotenv_and_current_health_endpoints(self):
         self.assertIn('"--env-file", $EnvFile', self.windows_deploy_script)

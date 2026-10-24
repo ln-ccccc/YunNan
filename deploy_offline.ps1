@@ -49,8 +49,7 @@ $Volumes = @(
     @{ Name = 'yunnan_hf_cache'; Archive = 'yunnan_hf_cache.tar' },
     @{ Name = 'yunnan_miner_outputs'; Archive = 'yunnan_miner_outputs.tar' },
     @{ Name = 'yunnan_miner_uploads'; Archive = 'yunnan_miner_uploads.tar' },
-    @{ Name = 'yunnan_inference_runtime'; Archive = 'yunnan_inference_runtime.tar' },
-    @{ Name = 'yunnan_miner_tiles'; Archive = 'yunnan_miner_tiles.tar' }
+    @{ Name = 'yunnan_inference_runtime'; Archive = 'yunnan_inference_runtime.tar' }
 )
 
 $ContainerNames = @(

@@ -110,9 +110,8 @@ docker load -i images/mysql_8.0.30-8.6.tar
 
 - 应用镜像标签：`yunnan-runtime:current`
 - 推理镜像标签：`yunnan-inference-worker:current`
-- 数据卷：`yunnan_backend_static`、`yunnan_mysql_data`、`yunnan_hf_cache`、`yunnan_miner_outputs`、`yunnan_miner_uploads`、`yunnan_inference_runtime`
-- `yunnan_miner_tiles` 仅作为完整迁移归档恢复，不由当前 Compose 挂载。
-- 项目空间数据目录：宿主机 `project_storage/`（按项目 ID 和资源 ID 隔离，不使用全局瓦片卷）
+- 数据卷：`yunnan_backend_static`、`yunnan_mysql_data`、`yunnan_hf_cache`、`yunnan_miner_outputs`、`yunnan_miner_uploads`、`yunnan_inference_runtime`（与 `docker-compose.prod.yml` 声明一致）
+- 项目空间数据目录：宿主机 `project_storage/`（按项目 ID 和资源 ID 隔离，不使用全局瓦片卷）。旧全局瓦片卷 `yunnan_miner_tiles` 已于 2026-10-24 从迁移包卷清单移除（无任何 Compose 服务声明它，携带即孤儿数据；老环境中若仍残留该卷，不属于部署冲突）。
 
 旧 `geoview_*` 数据卷，以及 `geoview-runtime:split-clean`、`geoview-inference-worker:current`、`geoview-jiangxi:gpu` 等旧镜像标签，均属于江西保留环境。云南部署不得挂载这些旧卷，也不得删除或覆盖这些旧资源。
 
@@ -162,8 +161,7 @@ for volume in \
   yunnan_hf_cache \
   yunnan_miner_outputs \
   yunnan_miner_uploads \
-  yunnan_inference_runtime \
-  yunnan_miner_tiles; do
+  yunnan_inference_runtime; do
   if docker volume inspect "$volume" >/dev/null 2>&1; then
     echo "ERROR: volume already exists: $volume" >&2
     exit 1
@@ -217,7 +215,6 @@ docker volume inspect yunnan_hf_cache 2>/dev/null || true
 docker volume inspect yunnan_miner_outputs 2>/dev/null || true
 docker volume inspect yunnan_miner_uploads 2>/dev/null || true
 docker volume inspect yunnan_inference_runtime 2>/dev/null || true
-docker volume inspect yunnan_miner_tiles 2>/dev/null || true
 ```
 
 以上查询任意一条有输出都表示资源冲突，不要继续执行 `docker compose ... up`；不要停止或删除已有资源。
