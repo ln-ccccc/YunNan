@@ -43,14 +43,14 @@
             </span>
           </div>
           <button
-            v-if="editorTargets.get(`${row.data?.fid}:${row.data?.year ?? ''}`)?.editable"
+            v-if="resolveRowTarget(row)?.editable"
             class="edit-btn"
             type="button"
             title="自动筛查细碎图斑等疑似误判线索"
             @click="openReview(row)"
           >智能复核</button>
           <button
-            v-if="editorTargets.get(`${row.data?.fid}:${row.data?.year ?? ''}`)?.editable"
+            v-if="resolveRowTarget(row)?.editable"
             class="edit-btn"
             type="button"
             title="在 GeoView 编辑器中打开"
@@ -122,7 +122,10 @@ let editorTargetsSeq = 0;
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
 
-// 成果映射：fid+year → 可编辑的 result_id（供解译记录一键转编辑）
+// 成果映射：fid+year → 可编辑的 result_id。仅作回退——解译记录行优先用
+// 自身携带的 result_id（同年多任务两行成果各指各的，2026-10-24 审查 P2-7），
+// 旧记录/缺 result_id 时按溯源口径取同年最新成功成果（对齐后端
+// mine_traceability：id 倒序首个非 vector_failed）
 const editorTargets = ref(new Map());
 const EDITABLE_STATUS = new Set(['ready', 'ready_empty']);
 
@@ -143,11 +146,16 @@ const loadEditorTargets = async () => {
     const map = new Map();
     for (const item of Array.isArray(items) ? items : []) {
       if (!item?.result_id) continue;
-      map.set(`${item.mine_fid}:${item.year ?? ''}`, {
-        resultId: item.result_id,
-        editable: EDITABLE_STATUS.has(item.vector_status),
-        vectorStatus: item.vector_status || '',
-      });
+      const key = `${item.mine_fid}:${item.year ?? ''}`;
+      const existing = map.get(key);
+      // 清单按年份+id 倒序：首个即最新；矢量化失败的最新行不抹掉既有好成果
+      if (!existing || (existing.vectorStatus === 'vector_failed' && item.vector_status !== 'vector_failed')) {
+        map.set(key, {
+          resultId: item.result_id,
+          editable: EDITABLE_STATUS.has(item.vector_status),
+          vectorStatus: item.vector_status || '',
+        });
+      }
     }
     editorTargets.value = map;
   } catch (_) {
@@ -156,24 +164,32 @@ const loadEditorTargets = async () => {
   }
 };
 
-const openEditor = (row) => {
+const resolveRowTarget = (row) => {
   const fid = row.data?.fid;
   const year = row.data?.year ?? '';
-  const target = editorTargets.value.get(`${fid}:${year}`);
+  if (row.data?.result_id) {
+    const status = row.data.vector_status || '';
+    return { fid, year, resultId: row.data.result_id, editable: EDITABLE_STATUS.has(status), vectorStatus: status };
+  }
+  const fallback = editorTargets.value.get(`${fid}:${year}`);
+  if (!fallback) return null;
+  return { fid, year, resultId: fallback.resultId, editable: fallback.editable, vectorStatus: fallback.vectorStatus };
+};
+
+const openEditor = (row) => {
+  const target = resolveRowTarget(row);
   if (!target?.editable) return;
-  openEditorTarget({ fid, year, resultId: target.resultId });
+  openEditorTarget(target);
 };
 
 // 智能复核（优化建议三.3）：细碎图斑线索筛查 + 一键转编辑器修订
 const reviewTarget = ref(null);
 const openReview = (row) => {
-  const fid = row.data?.fid;
-  const year = row.data?.year ?? '';
-  const target = editorTargets.value.get(`${fid}:${year}`);
+  const target = resolveRowTarget(row);
   if (!target) return;
   reviewTarget.value = {
-    fid,
-    year,
+    fid: target.fid,
+    year: target.year,
     resultId: target.resultId,
     editable: Boolean(target.editable),
     vectorStatus: target.vectorStatus || '',

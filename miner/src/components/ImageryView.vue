@@ -189,6 +189,8 @@ const loadProjects = async () => {
   }
 };
 
+let candidatesSeq = 0;
+
 const loadCandidates = async () => {
   setSelectedProjectId(Number(selectedProjectId.value) || null); // 用户手选同步共享上下文
   // 刷新后按稳定标识回填选中（收官审查 P1：切片成功后清空选中曾使工具卡与"去解译"自毁）
@@ -198,13 +200,19 @@ const loadCandidates = async () => {
   mineFids.value = [];
   clipMineFid.value = null;
   if (!selectedProjectId.value) return;
+  // 竞态门控：快速切换项目时旧项目的候选清单不得覆盖新项目的——否则 A 项目的
+  // dataset_id 留在 B 项目页上，裁剪/切片引用跨项目资产（2026-10-24 审查 P2-6）。
+  // 独立计数器——不得复用其他请求的计数器（并发触发时共用会让先发响应被后发作废）
+  const seq = (candidatesSeq = (candidatesSeq || 0) + 1);
+  const projectIdAtRequest = selectedProjectId.value;
   candidatesLoading.value = true;
   error.value = '';
   try {
     const [candRes, geoRes] = await Promise.all([
-      axios.get(`${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/imagery/candidates`),
-      axios.get(`${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/geojson`).catch(() => null),
+      axios.get(`${MINER_API_BASE_URL}/api/projects/${projectIdAtRequest}/imagery/candidates`),
+      axios.get(`${MINER_API_BASE_URL}/api/projects/${projectIdAtRequest}/geojson`).catch(() => null),
     ]);
+    if (seq !== candidatesSeq || projectIdAtRequest !== selectedProjectId.value) return;
     const items = candRes.data?.data?.items || [];
     candidates.value = items.map((item, index) => ({
       ...item,
@@ -226,9 +234,10 @@ const loadCandidates = async () => {
     mineFids.value = Array.from(fids).sort((a, b) => a - b).slice(0, 500);
     if (mineFids.value.length && clipMineFid.value === null) clipMineFid.value = mineFids.value[0];
   } catch (e) {
+    if (seq !== candidatesSeq || projectIdAtRequest !== selectedProjectId.value) return;
     error.value = e?.response?.data?.msg || '影像清单读取失败';
   } finally {
-    candidatesLoading.value = false;
+    if (seq === candidatesSeq) candidatesLoading.value = false;
   }
 };
 

@@ -275,6 +275,40 @@ class TestChunkedUploadLifecycle(ChunkedUploadBase):
             )
         self.assertIn("无权", str(ctx.exception))
 
+    def test_api_level_owner_isolation_between_logged_in_sessions(self):
+        """API 级属主隔离（2026-10-24 审查 P2-9）：file.py 曾读 session['username']
+        （登录实际写 admin_username），owner 恒为 None——直调模块层测不出该断键
+        （上方用例的盲区），必须走 HTTP 双登录会话：A 建、B 写块须 400，A 续传不受影响。"""
+        from werkzeug.security import generate_password_hash
+
+        from applications.extensions import db
+        from applications.models import AdminUser
+
+        self.login_as_admin()
+        init = self._init().get_json()["data"]
+
+        db.session.add(AdminUser(
+            username="operator",
+            password_hash=generate_password_hash("Secret123!"),
+            is_active=True,
+        ))
+        db.session.commit()
+        other = self.app.test_client()
+        login = other.post("/api/auth/login", json={"username": "operator", "password": "Secret123!"})
+        self.assertEqual(login.status_code, 200)
+
+        block = self.payload[:init["chunk_size"]]
+        hijack = other.post(
+            f"/api/file/upload/chunk/{self.key}/0",
+            data=block,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        self.assertEqual(hijack.status_code, 400, hijack.get_data(as_text=True))
+        self.assertIn("无权", hijack.get_json()["msg"])
+
+        own = self._put_chunk(0, block)
+        self.assertEqual(own.status_code, 200)
+
     def test_session_id_with_trailing_newline_rejected(self):
         """fullmatch：原 `$` 放行尾部 \\n（URL %0A 可达），可建含换行的目录名。"""
         self.login_as_admin()

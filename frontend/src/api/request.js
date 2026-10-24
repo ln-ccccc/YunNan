@@ -48,11 +48,12 @@ export function request(config) {
 
   instance.interceptors.response.use(
     (response) => {
-      hideFullScreenLoading();
-
       // silent 轮询/后台请求：失败也不弹 toast——轮询断线自愈期间每秒一条提示会刷屏，
       // 终态/断链由调用方（waitForInferenceJob 等）统一给出结论
       const silent = Boolean(response.config?.silent);
+      // 与请求拦截器的 show 对称：silent 请求未计数却 hide 会把并发可见请求的
+      // loading 计数提前扣掉，全屏加载提前消失（2026-10-24 审查计数失衡）
+      if (!silent) hideFullScreenLoading();
 
       if (response.data.code === 401) {
         redirectToLegacyLogin("expired");
@@ -66,13 +67,14 @@ export function request(config) {
       return response;
     },
     (error) => {
-      hideFullScreenLoading();
+      const silent = Boolean(error?.config?.silent);
+      // 同上：silent 请求未 show 则不 hide，保持计数对称
+      if (!silent) hideFullScreenLoading();
 
       // 主动取消（上传 AbortController）：不弹错误提示，由调用方给出友好文案
       if (isCancelledRequest(error)) {
         return Promise.reject(createRequestError("aborted", "请求已取消", error));
       }
-      const silent = Boolean(error?.config?.silent);
       if (error?.response?.status === 401) {
         redirectToLegacyLogin("expired");
         return Promise.reject(createRequestError("auth", error?.response?.data?.msg || "登录已失效"));

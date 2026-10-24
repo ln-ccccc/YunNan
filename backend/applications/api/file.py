@@ -104,7 +104,7 @@ def upload_session_init_api():
             total_size=payload.get('total_size'),
             mime=payload.get('mime') or 'application/octet-stream',
             chunk_size=payload.get('chunk_size'),
-            owner=session.get('username'),
+            owner=session.get('admin_username'),
         )
     except upload_sessions.UploadSessionError as error:
         return fail_api(str(error)), 400
@@ -120,7 +120,7 @@ def upload_session_chunk_api(session_id, index):
             index,
             request.stream,
             declared_sha256=request.headers.get('X-Chunk-Sha256'),
-            owner=session.get('username'),
+            owner=session.get('admin_username'),
         )
     except upload_sessions.UploadSessionError as error:
         return fail_api(str(error)), 400
