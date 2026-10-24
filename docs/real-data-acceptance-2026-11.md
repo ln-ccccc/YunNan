@@ -49,12 +49,20 @@
 | A-1 GB 下载 >30s 不中断 | 限速客户端完整下载不中断、字节一致、BFF 存活 | ✅ 573M 原片（项目1 任务 55361cb4）经 BFF `mines/original-imagery/<jobId>/download` 限速 4MiB/s 下载 **143.4s** 完整收毕（旧 `AbortSignal.timeout(30000)` 此场景 30s 必断）：600,060,974B、md5 `1fd7139c…` 与服务端逐字节一致、Content-Length/attachment 头正确，下载后 BFF `/api/auth/session` 200 仍可服务 | 容器内 h2_download.py 输出 A1_REALSTACK_PASS |
 | 分片上传 573M | 断点续传精确、合并不损坏 | ✅ 见步骤 5：10 片暂停→重 init 报 received=[0..9]→剩余 26 片 6.2s→合并 8.2s | bu0teg2x8 输出 |
 | 快照链 | 生成/恢复/导入可用 | ✅ 生成 0.11s、同环境恢复 0.36s、跨环境导入 0.34s（见步骤 14） | h2_snapshot.py / h2_snapshot_db.py |
+| GB 级上传分片 vs 单发对照 | 分片通道明显占优（设计分流阈值正确） | ✅ 同一 573M 真实 TIFF、同参数（keepRawTiff 快速路径纯传输）：**单发 multipart 570.5s（1.0 MiB/s）、backend 内存峰值 1.78GiB**（werkzeug 解析全量内存缓冲）vs **分片 16MiB×36 全量 9.9s（58.0 MiB/s，init 0.00s+传片 6.1s+complete 合并 3.7s）、内存峰值 0.29GiB**——57× 速度差、6× 内存差。前端 >512MB 分流分片的设计被真实数据证实必要；风险见 R5 | h2_upload_compare2.py / h2_upload_phaseb.py + docker stats 采样 |
+| 推理端到端（1 tile，上手绘 clip 产物） | 明确 GPU/CPU 真实耗时 | ✅ CPU 路径 86s（任务 b9af125f，effective_device=cpu，R1 宿主内存不足所致）；**GPU 恢复后 32s（任务 80034f77，effective_device=cuda:0）**，提速 2.7× | 任务记录 + worker 日志 |
+| 推理期峰值资源 | worker 内存与 GPU 显存峰值 | ✅ GPU 常驻路径：任务期 worker 2.32GiB、VRAM 3304MiB；CPU 冷加载路径：worker 峰值 **4.09GiB/5.79GiB**（贴近 Docker VM 上限，与 R1 宿主内存紧张互证）；启动探测期 VRAM 峰 3967MiB | drill1_res.log 3s 采样（docker stats + nvidia-smi） |
 
-待补：GB 上传（分片 vs 单发对照）、推理端到端、看板加载、地图连续进出 20 次、峰值 RAM/VRAM。
+待补：看板加载、地图连续进出 20 次（归 H-3 浏览器实测）。
 
 ## 3. 韧性演练
 
-待补：任务运行中 docker restart、kill worker、并发 409、慢网络下载中断恢复。
+| 演练 | 结果 | 证据 |
+| --- | --- | --- |
+| 1. 任务运行中 kill worker（docker restart） | ✅（**发现并修复 R6**） | 载体：dataset 56（573M 原片）+ device=cpu（冷加载 60s+，形成稳定 kill 窗口；GPU 常驻后 1-tile 任务 3-4s 完成，此前两次尝试 kill 均追不上）。任务 5a84bafc 运行中 worker 被 restart → **R6 实测**：任务永久孤儿（running 卡 10 分钟、update_time 冻结、新 worker 同 worker_id 正常心跳但不回收）→ 修复 7a59afe 重启后即时回收：`failed/WORKER_RESTARTED`（worker 日志"已将 1 个遗留任务标记为失败"）→ 同载荷新建任务 e6f591aa 51s succeeded（CPU 路径含矢量发布）。附带发现：**推理任务无 retry API**（POST /jobs/:id/retry 404；api/inference.py 仅 create/get/cancel/capabilities），失败后只能人工重建任务（进 I-1） | drill1_run.log + inference_jobs DB + worker 日志 |
+| 2. 任务运行中重启 backend | ✅ | 任务 dd03e354（device=cpu）运行中 `docker restart yunnan-backend` → 任务不受影响：48s succeeded（saw_running_again=True，backend 恢复后任务仍在跑）——worker 直连 DB 认领/执行/发布（R2 修复后审计链同样不经过 backend），backend 重启仅影响 API 短暂不可用窗口（客户端轮询重试覆盖） | drill2_run.log |
+| 3. 慢网络下载中断恢复 | ✅ | 573M 原片经 BFF 限速 4MiB/s 下载至 240MiB（60.5s）强制断连 → BFF 探活 `/api/auth/session` 200（A-1 修复的流管道 abort 未拖死进程）→ 完整重下 600,060,974B、4.9s、md5 `1fd7139c…` 与服务端一致 | h2_download_interrupt.py 输出 |
+| 4. 并发双会话修订 409 | ✅ | 已在步骤 11 完成（B 持旧 base 保存 409 → 刷新 current 重试成功） | 见步骤 11 |
 
 ## 4. 真实数据发现（验收期间新查明）
 
@@ -64,6 +72,8 @@
 | R2 | **worker 镜像缺 marshmallow → 成果发布审计链断裂**：发布管线 `publish_project_inference_result` → `from applications.project_hub.service import _append_activity` → service 顶层 import schemas → `from marshmallow import fields` → `ModuleNotFoundError`。有 try 兜底（成果不受影响），但 `inference_result_published` 活动记录全部丢失。`docker/requirements/inference-worker.txt` 无 marshmallow（backend/requirements.txt 有 3.18.0） | 部署缺陷（依赖清单） | worker 日志 WARNING + traceback |
 | R3 | 项目 1 激活底图 tiles/2 全空（各 zoom 0 张 PNG）但任务记录 succeeded——历史成果瓦片被清理或丢失，地图实际无底图可渲染 | 存量数据问题（见步骤 3） | find 逐 zoom 计数 |
 | R4 | **自动矢量化产物无法通过自身保存校验（人工编辑保存链从未走通）**：保存校验 `roi.covers(geometry)` 无容差，矢量化坐标与 ROI 边界浮点相切（~1e-9 度）被拒——真实成果 62 共 146 要素中 40 个越界丝米级，GeoView 打开后任何保存必 422"几何必须完全位于成果 ROI 内"。佐证：classification_revisions 全表 source=auto（rev 0），**无任何 manual 修订**。修复（已入库）：covers 加 1e-9 度（亚毫米）容差，只吸收浮点误差，像素级真实越界仍拒；回归用例（ROI 边界相切 sliver 可存 / 大越界仍拒） | 代码缺陷（P1 级数据链断裂） | 诊断脚本 40/146 计数+buffer(1e-9) 全通过；修复后真实栈 146 要素保存成功 rev0→6 |
+| R5 | **单发 multipart 上传通道对大文件既慢又吃内存**：573M 单发实测 570.5s（1.0 MiB/s）+ backend 内存峰值 1.78GiB（werkzeug multipart 解析全量内存缓冲）；分片通道同文件 9.9s + 0.29GiB。前端 >512MB 分流分片掩盖了此路径，但 API 层 `MAX_UPLOAD_TIFF_SIZE_MB`=8GB 的硬上限远超实际可承受（5.79GiB Docker VM 下 ~2GB 单发即近 OOM，8GB 必 OOM） | 性能/资源风险（建议 I-1：下调单发上限至 ~1GB 或单发路径也改流式解析） | §2 对照实测 + docker stats 采样 |
+| R6 | **worker 重启遗留任务永久孤儿**：`recover_abandoned_jobs` 的 `worker_id != current` 排除条件在唯一部署形态（worker=容器入口进程，PID 恒 1，重启前后 worker_id 相同）下恰好把前任进程遗留的 running 任务排除在回收之外——任务永久卡 running（无超时、无 reaper、UI 永显运行中）。§3 演练 1 实测：被杀任务卡 running 10 分钟无人回收，新 worker 同 id 正常心跳。修复（已入库 7a59afe）：回收仅在启动、首次认领前调用，此刻 own-id 名下 running 只可能来自已死前任进程，直接回收同主机前缀全部 running 任务；单测覆盖同 id/异 id/异主机三形态（35/35），真实栈修复版重启后孤儿任务即时置 `failed/WORKER_RESTARTED` | 代码缺陷（P1 级韧性） | §3 演练 1 全链 + inference_jobs DB + worker 日志 |
 
 R1 建议（进 I-1 设计文档）：①设备探测/加载失败记录原始异常与分类码；②`Cannot allocate memory`/Errno 12 单独分类 `HOST_MEMORY_EXHAUSTED`，与 GPU 问题区分；③CPU 回退后在空闲期卸载 CPU 模型重试 GPU，打破"回退一次永远 CPU"的恶性循环；④部署文档标注推理机 RAM 底线（1.97GB fp32 模型加载需 ≥8GB，推荐 16GB）。R2 修复（已入库 8ef0c93）：审计 import 直连 `_foundation`，不再依赖 worker 镜像补装 schemas/osgeo 依赖链。
 
