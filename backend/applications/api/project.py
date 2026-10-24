@@ -573,6 +573,22 @@ def project_imagery_candidates_api(project_id):
         )
 
 
+@project_api.get("/<int:project_id>/imagery/preview")
+@login_required
+def project_imagery_preview_api(project_id):
+    """影像预览（S3）：降采样 RGB PNG + 4326 bounds，影像上手绘的地理绑定底图。"""
+    try:
+        from applications.project_hub.imagery_processing import ImageryProcessingError, preview_imagery
+
+        return success_api(data=preview_imagery(
+            project_id, request.args.get("source"), request.args.get("max_size", type=int)
+        ))
+    except ImageryProcessingError as exc:
+        return fail_api(str(exc)), 400
+    except Exception as exc:
+        return business_or_server_failure(exc, "影像预览生成失败", logger=LOGGER)
+
+
 @project_api.post("/<int:project_id>/imagery/clip")
 @login_required
 def project_imagery_clip_api(project_id):

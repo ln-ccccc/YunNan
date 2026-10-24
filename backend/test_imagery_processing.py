@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """S3 影像裁剪与切片契约测试：候选清单/多边形裁剪地理参考/矿山边界+外扩/
 固定像素与固定面积网格/边片丢弃/上限防护/数据集登记回读。"""
+import base64
+import io
 import json
 import os
 import sys
@@ -10,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+from PIL import Image
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
@@ -366,6 +369,76 @@ class TestNodataMaskPreservation(ImageryProcessingBase):
                     # 无效带在源左 1/4：该片的第 0 列必须整列无效
                     self.assertFalse(valid[:, 0].any())
         self.assertTrue(invalid_tile_seen, "左带切片应携带无效掩膜（修前掩膜带丢失）")
+
+
+class TestImageryPreview(ImageryProcessingBase):
+    """影像上手绘底图（2026-10-24 审查 P1-8）：降采样 PNG + 4326 bounds + 有效域 alpha。"""
+
+    def _preview(self, source=None, **params):
+        query = {"source": source or self.source_key}
+        query.update(params)
+        return self.client.get(
+            f"/api/projects/{self.project_id}/imagery/preview", query_string=query
+        )
+
+    def test_preview_returns_downsampled_png_with_geographic_bounds(self):
+        response = self._preview(max_size=300)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()["data"]
+        self.assertNotIn("file_path", data)
+        bounds = data["bounds"]
+        # 源 960×640 @0.0005°：west=100.0 north=26.0 east=100.48 south=25.68
+        self.assertAlmostEqual(bounds["west"], 100.0, delta=1e-4)
+        self.assertAlmostEqual(bounds["north"], 26.0, delta=1e-4)
+        self.assertAlmostEqual(bounds["east"], 100.48, delta=1e-3)
+        self.assertAlmostEqual(bounds["south"], 25.68, delta=1e-3)
+        self.assertEqual((data["width"], data["height"]), (300, 200))
+        self.assertEqual((data["source_width"], data["source_height"]), (960, 640))
+        image = Image.open(io.BytesIO(base64.b64decode(data["png_base64"])))
+        self.assertEqual(image.mode, "RGBA")
+        self.assertEqual(image.size, (300, 200))
+
+    def test_preview_clamps_max_size_and_never_upsamples(self):
+        clamped = self._preview(max_size=50).get_json()["data"]
+        self.assertEqual(clamped["width"], 256, "max_size 下限 256")
+        passthrough = self._preview(max_size=10000).get_json()["data"]
+        self.assertEqual(
+            (passthrough["width"], passthrough["height"]), (960, 640), "小于上限的影像不得被放大"
+        )
+
+    def test_preview_rejects_absolute_and_cross_project_source(self):
+        self.assertEqual(self._preview(source=str(self.source)).status_code, 400)
+        self.assertEqual(
+            self._preview(source="projects/999999/inputs/imagery/source_full.tif").status_code, 400
+        )
+
+    def test_preview_requires_login(self):
+        fresh = self.app.test_client()
+        response = fresh.get(
+            f"/api/projects/{self.project_id}/imagery/preview",
+            query_string={"source": self.source_key},
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_preview_marks_masked_pixels_transparent(self):
+        # P1-4 口径：nodata 区不得伪装成真实地物——预览透传为 alpha=0
+        masked_key = f"projects/{self.project_id}/inputs/imagery/source_masked.tif"
+        masked_path = self.storage_root / masked_key
+        profile = {
+            "driver": "GTiff", "height": 200, "width": 200, "count": 3, "dtype": "uint8",
+            "crs": "EPSG:4326", "nodata": 0,
+            "transform": rasterio.transform.from_origin(101.0, 27.0, 0.0005, 0.0005),
+        }
+        with rasterio.open(masked_path, "w", **profile) as dst:
+            block = np.zeros((3, 200, 200), dtype=np.uint8)
+            block[:, :, :100] = 120  # 左半有效，右半保持 nodata=0
+            dst.write(block)
+
+        data = self._preview(source=masked_key).get_json()["data"]
+        image = Image.open(io.BytesIO(base64.b64decode(data["png_base64"])))
+        alpha = np.array(image.split()[-1])
+        self.assertTrue((alpha[:, :100] == 255).all(), "有效区不透明")
+        self.assertTrue((alpha[:, 100:] == 0).all(), "nodata 区必须透明")
 
 
 if __name__ == "__main__":

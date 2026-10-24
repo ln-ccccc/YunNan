@@ -49,10 +49,15 @@
         <div v-if="selectedCandidate" class="tool-grid">
           <article class="tool-card">
             <h3>范围裁剪</h3>
+            <div class="map-shell">
+              <div ref="clipMapRef" class="clip-map"></div>
+              <p v-if="previewLoading" class="map-hint">影像预览生成中…</p>
+              <p v-else-if="previewError" class="error-text map-hint">{{ previewError }}</p>
+            </div>
             <div class="tool-row">
               <label>范围来源</label>
               <select v-model="clipSource">
-                <option value="draw">地图手绘多边形</option>
+                <option value="draw">影像上手绘多边形</option>
                 <option value="mine">矿山边界</option>
               </select>
               <select v-if="clipSource === 'mine'" v-model="clipMineFid">
@@ -60,18 +65,11 @@
                 <option v-for="fid in mineFids" :key="fid" :value="fid">矿山 {{ fid }}</option>
               </select>
             </div>
-            <div v-if="clipSource === 'draw'" class="draw-area" ref="drawAreaRef">
-              <div class="draw-hint">在图上点击添加顶点，双击闭合多边形</div>
-              <div class="draw-ops">
-                <button class="secondary-btn" type="button" @click="clearDraw">清除重画</button>
-                <span class="muted-text">{{ drawPoints.length }} 个顶点{{ polygonClosed ? '（已闭合）' : '' }}</span>
-              </div>
-              <svg class="draw-svg" :viewBox="svgViewBox" preserveAspectRatio="none" @click="handleDrawClick" @dblclick="handleDrawDblClick">
-                <polygon v-if="polygonClosed" :points="svgPoints" class="draw-polygon" />
-                <polyline v-else :points="svgPoints" class="draw-polyline" />
-                <circle v-for="(p, i) in drawPoints" :key="i" :cx="p.x" :cy="p.y" r="4" class="draw-dot" />
-              </svg>
+            <div v-if="clipSource === 'draw'" class="draw-ops">
+              <button class="secondary-btn" type="button" @click="clearDraw">清除重画</button>
+              <span class="muted-text">{{ drawLatLngs.length }} 个顶点{{ polygonClosed ? '（已闭合）' : '，双击闭合' }}</span>
             </div>
+            <p class="draw-hint muted-text">在影像上点击添加顶点，双击闭合多边形；范围来源为矿山边界时叠加所选矿山辅助定位</p>
             <div class="tool-row">
               <label>边界外扩（米）</label>
               <input v-model.number="clipBuffer" type="number" min="0" max="5000" step="50" />
@@ -125,7 +123,9 @@
 
 <script setup>
 import axios from 'axios';
-import { computed, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
 import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
 
@@ -147,8 +147,6 @@ const busy = ref(null);
 const clipSource = ref('draw');
 const clipMineFid = ref(null);
 const clipBuffer = ref(0);
-const drawPoints = ref([]);
-const polygonClosed = ref(false);
 const mineFids = ref([]);
 const clipResult = ref('');
 
@@ -161,8 +159,6 @@ const sliceResult = ref('');
 const sliceItems = ref([]);
 const sliceSummary = ref(false);
 const savedPresetHint = ref('');
-
-const drawAreaRef = ref(null);
 
 const formatBytes = (bytes) => {
   if (bytes === null || bytes === undefined) return '—';
@@ -227,9 +223,13 @@ const loadCandidates = async () => {
     }
     const features = geoRes?.data?.data?.features || [];
     const fids = new Set();
+    mineFeatures.clear();
     for (const feature of features) {
       const fid = Number(feature?.properties?.FID_1);
-      if (Number.isSafeInteger(fid) && fid > 0) fids.add(fid);
+      if (Number.isSafeInteger(fid) && fid > 0) {
+        fids.add(fid);
+        if (feature.geometry) mineFeatures.set(fid, feature.geometry);
+      }
     }
     mineFids.value = Array.from(fids).sort((a, b) => a - b).slice(0, 500);
     if (mineFids.value.length && clipMineFid.value === null) clipMineFid.value = mineFids.value[0];
@@ -241,38 +241,150 @@ const loadCandidates = async () => {
   }
 };
 
-// ===== 手绘多边形（SVG 归一化坐标 0-100，提交时换算经纬度） =====
-const RASTER_BBOX = { minLon: 100.0, maxLon: 100.5, minLat: 25.8, maxLat: 26.1 };
+// ===== 影像上手绘（Leaflet 地理绑定，2026-10-24 审查 P1-8）=====
+// 旧实现：SVG 归一化坐标 × 硬编码假想 bbox 换算经纬度——画在哪张影像上全凭
+// 假想范围，与所选影像零地理关联。现为所选影像拉降采样预览 PNG 叠加成底图，
+// 多边形顶点直接是点击处的真实经纬度，所见即所得。
 
-const svgViewBox = '0 0 100 100';
-const svgPoints = computed(() => drawPoints.value.map((p) => `${p.x},${p.y}`).join(' '));
+let clipMap = null;          // L.Map：裁剪卡片内嵌迷你地图
+let overlayLayer = null;     // L.ImageOverlay：当前选中影像预览
+let drawLayerGroup = null;   // 手绘多边形（顶点/边线）
+let mineOverlayLayer = null; // 矿山边界辅助层
+const clipMapRef = ref(null);
+const drawLatLngs = ref([]); // [lat, lng] 顶点序列
+const polygonClosed = ref(false);
+const previewError = ref('');
+const previewLoading = ref(false);
+const mineFeatures = new Map(); // fid -> GeoJSON geometry（矿山边界辅助）
 
-const handleDrawClick = (event) => {
-  if (polygonClosed.value) return;
-  const svg = event.currentTarget;
-  const rect = svg.getBoundingClientRect();
-  const x = ((event.clientX - rect.left) / rect.width) * 100;
-  const y = ((event.clientY - rect.top) / rect.height) * 100;
-  drawPoints.value.push({ x, y });
+const ensureClipMap = () => {
+  if (clipMap || !clipMapRef.value) return;
+  clipMap = L.map(clipMapRef.value, {
+    center: [26.0, 100.2],
+    zoom: 12,
+    attributionControl: false,
+    doubleClickZoom: false, // 双击保留给“闭合多边形”
+  });
+  clipMap.on('click', (event) => {
+    if (clipSource.value !== 'draw' || polygonClosed.value) return;
+    drawLatLngs.value = [...drawLatLngs.value, [event.latlng.lat, event.latlng.lng]];
+    renderDrawLayer();
+  });
+  clipMap.on('dblclick', () => {
+    if (clipSource.value === 'draw' && drawLatLngs.value.length >= 3) {
+      polygonClosed.value = true;
+      renderDrawLayer();
+    }
+  });
 };
-const handleDrawDblClick = () => {
-  if (drawPoints.value.length >= 3) polygonClosed.value = true;
+
+const destroyClipMap = () => {
+  if (!clipMap) return;
+  clipMap.remove();
+  clipMap = null;
+  overlayLayer = null;
+  drawLayerGroup = null;
+  mineOverlayLayer = null;
 };
+
+const renderDrawLayer = () => {
+  if (drawLayerGroup) {
+    drawLayerGroup.remove();
+    drawLayerGroup = null;
+  }
+  if (!clipMap || !drawLatLngs.value.length) return;
+  drawLayerGroup = L.layerGroup().addTo(clipMap);
+  const points = drawLatLngs.value;
+  // 图层纯展示（interactive:false）：点击/双击穿透到地图本体，顶点与线上也能继续落笔
+  if (polygonClosed.value) {
+    L.polygon(points, { color: '#2f6f61', weight: 2, fillColor: '#4ecdcd', fillOpacity: 0.25, interactive: false }).addTo(drawLayerGroup);
+  } else {
+    L.polyline(points, { color: '#2f6f61', weight: 2, dashArray: '6 6', interactive: false }).addTo(drawLayerGroup);
+  }
+  for (const point of points) {
+    L.circleMarker(point, { radius: 4, color: '#2f6f61', fillColor: '#2f6f61', fillOpacity: 1, interactive: false }).addTo(drawLayerGroup);
+  }
+};
+
 const clearDraw = () => {
-  drawPoints.value = [];
+  drawLatLngs.value = [];
   polygonClosed.value = false;
+  renderDrawLayer();
 };
 
 const drawGeometry = computed(() => {
-  if (!polygonClosed.value || drawPoints.value.length < 3) return null;
-  const ring = drawPoints.value.map((p) => {
-    const lon = RASTER_BBOX.minLon + (p.x / 100) * (RASTER_BBOX.maxLon - RASTER_BBOX.minLon);
-    const lat = RASTER_BBOX.maxLat - (p.y / 100) * (RASTER_BBOX.maxLat - RASTER_BBOX.minLat);
-    return [Number(lon.toFixed(6)), Number(lat.toFixed(6))];
-  });
+  if (!polygonClosed.value || drawLatLngs.value.length < 3) return null;
+  // [lat, lng] → GeoJSON [lng, lat]，保留 6 位小数与旧实现对齐
+  const ring = drawLatLngs.value.map(([lat, lng]) => [Number(lng.toFixed(6)), Number(lat.toFixed(6))]);
   ring.push(ring[0]);
   return { type: 'Polygon', coordinates: [ring] };
 });
+
+let previewSeq = 0; // 预览竞态计数器——不得复用其他请求的计数器（惯例同 loadCandidates）
+
+const loadPreview = async () => {
+  const candidate = selectedCandidate.value;
+  if (overlayLayer) {
+    overlayLayer.remove();
+    overlayLayer = null;
+  }
+  previewError.value = '';
+  if (!candidate) return;
+  // 契约（AGENTS §6）：浏览器不提交服务器物理路径；dataset_id 优先，输入目录候选用相对 storage_key
+  const source = candidate.dataset_id ? String(candidate.dataset_id) : candidate.storage_key;
+  const seq = (previewSeq = (previewSeq || 0) + 1);
+  previewLoading.value = true;
+  try {
+    const res = await axios.get(
+      `${MINER_API_BASE_URL}/api/projects/${selectedProjectId.value}/imagery/preview`,
+      { params: { source } },
+    );
+    if (seq !== previewSeq) return;
+    const data = res.data?.data || {};
+    const { west, south, east, north } = data.bounds || {};
+    if (![west, south, east, north].every(Number.isFinite)) throw new Error('预览缺少有效范围');
+    ensureClipMap();
+    if (!clipMap) return;
+    overlayLayer = L.imageOverlay(
+      `data:image/png;base64,${data.png_base64}`,
+      [[south, west], [north, east]],
+    ).addTo(clipMap);
+    clipMap.fitBounds([[south, west], [north, east]]);
+    clipMap.invalidateSize();
+  } catch (e) {
+    if (seq !== previewSeq) return;
+    previewError.value = e?.response?.data?.msg || '影像预览生成失败，无法在此影像上手绘（可改用矿山边界裁剪）';
+  } finally {
+    if (seq === previewSeq) previewLoading.value = false;
+  }
+};
+
+const updateMineOverlay = () => {
+  if (mineOverlayLayer) {
+    mineOverlayLayer.remove();
+    mineOverlayLayer = null;
+  }
+  if (!clipMap || clipSource.value !== 'mine' || clipMineFid.value == null) return;
+  const geometry = mineFeatures.get(Number(clipMineFid.value));
+  if (!geometry) return;
+  mineOverlayLayer = L.geoJSON(geometry, { style: { color: '#e67e22', weight: 2, fillOpacity: 0.08 } }).addTo(clipMap);
+};
+
+watch(selectedCandidate, async () => {
+  clearDraw(); // 换影像后旧多边形与新底图无地理关联
+  await nextTick();
+  if (!selectedCandidate.value) {
+    destroyClipMap();
+    return;
+  }
+  ensureClipMap();
+  await loadPreview();
+  updateMineOverlay();
+});
+
+watch([clipSource, clipMineFid], () => updateMineOverlay());
+
+onBeforeUnmount(() => destroyClipMap());
 
 const clipReady = computed(() => {
   if (!selectedCandidate.value) return false;
@@ -451,16 +563,18 @@ h3 { font-size: 14px; color: #2f6f61; margin: 12px 0 8px; }
 .tool-row label { font-size: 13px; min-width: 110px; }
 .tool-row input { width: 130px; }
 
-.draw-area {
-  border: 1px dashed rgba(47, 111, 97, 0.4); border-radius: 8px;
-  padding: 8px; margin-bottom: 10px;
-}
 .draw-hint { font-size: 12px; color: #5a7d75; margin-bottom: 6px; }
 .draw-ops { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.draw-svg { width: 100%; height: 180px; background: rgba(38, 75, 69, 0.05); border-radius: 6px; cursor: crosshair; }
-.draw-polygon { fill: rgba(78, 205, 196, 0.25); stroke: #2f6f61; stroke-width: 0.8; }
-.draw-polyline { fill: none; stroke: #2f6f61; stroke-width: 0.8; stroke-dasharray: 2 2; }
-.draw-dot { fill: #2f6f61; }
+
+.map-shell { position: relative; margin-bottom: 10px; }
+.clip-map {
+  width: 100%; height: 320px; border-radius: 8px;
+  border: 1px solid rgba(38, 75, 69, 0.2); background: #e8efec; cursor: crosshair;
+}
+.map-hint {
+  position: absolute; top: 8px; left: 8px; margin: 0;
+  background: rgba(255, 255, 255, 0.88); border-radius: 6px; padding: 4px 10px; font-size: 12px;
+}
 
 .primary-btn { background: #2f6f61; color: #fff; border: none; border-radius: 6px; padding: 8px 18px; cursor: pointer; font-size: 13px; }
 .primary-btn:hover { background: #264b45; }

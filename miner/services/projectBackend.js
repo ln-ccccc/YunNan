@@ -160,6 +160,15 @@ export const projectApi = {
     const safeProjectId = positiveRouteId(projectId, '项目');
     return requestJson('GET', `/api/projects/${safeProjectId}/imagery/candidates`, { cookie });
   },
+  imageryPreview(projectId, source, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    // 降采样读（GB 级源走金字塔），放宽到 5 分钟防慢存储误报
+    return requestJson('GET', `/api/projects/${safeProjectId}/imagery/preview`, {
+      cookie,
+      query: { source },
+      timeoutMs: 300000,
+    });
+  },
   clipImagery(projectId, body, cookie) {
     const safeProjectId = positiveRouteId(projectId, '项目');
     // GB 级影像全窗读+LZW 写与 slice 同为长请求（收官审查 C4：15s 默认曾致误报）

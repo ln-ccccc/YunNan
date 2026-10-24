@@ -8,6 +8,8 @@
 
 口径：外扩距离（米）按影像中心纬度换算为度，再换算像素窗口外扩。
 """
+import base64
+import io
 import logging
 import math
 import uuid
@@ -16,7 +18,8 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from rasterio.warp import transform_geom
+from PIL import Image
+from rasterio.warp import transform_bounds, transform_geom
 from rasterio.windows import Window, from_bounds
 
 from applications.extensions import db
@@ -182,6 +185,60 @@ def _raster_summary(path):
             }
     except Exception:
         return None
+
+
+def preview_imagery(project_id, source_key, max_size=None):
+    """降采样 RGB 预览 + EPSG:4326 bounds（2026-10-24 审查 P1-8：影像上手绘底图）。
+
+    手绘多边形必须叠在所选影像本身上（真实地理绑定），替代前端按假想 bbox 换算的
+    归一化坐标。仅受控来源（_resolve_source），长边 ≤2048 px 的 PNG（base64），
+    降采样读不整读源影像；nodata/掩膜透传为 alpha，无效区不伪装成真实地物（P1-4 口径）。
+    """
+    project = _project_or_404(project_id)
+    source_path = _resolve_source(project, source_key)
+    try:
+        max_px = int(max_size or 2048)
+    except (TypeError, ValueError):
+        max_px = 2048
+    max_px = max(256, min(max_px, 2048))
+
+    from applications.common.utils.tiff_processor import extract_rgb_from_multiband, normalize_array
+
+    with rasterio.open(source_path) as src:
+        if src.crs is None:
+            raise ImageryProcessingError("影像缺少坐标系，无法生成地理绑定预览")
+        band_count = src.count
+        source_width, source_height = src.width, src.height
+        scale = min(1.0, max_px / max(src.width, src.height))
+        out_w = max(1, round(src.width * scale))
+        out_h = max(1, round(src.height * scale))
+        # decimated read：带 overview 的源由 GDAL 自动走金字塔，GB 级影像不整读
+        data = src.read(out_shape=(src.count, out_h, out_w))
+        masks = src.read_masks(out_shape=(src.count, out_h, out_w))
+        west, south, east, north = transform_bounds(
+            src.crs, "EPSG:4326", *src.bounds, densify_pts=21
+        )
+
+    rgb = extract_rgb_from_multiband(np.transpose(data, (1, 2, 0)), band_count)
+    if np.issubdtype(rgb.dtype, np.floating):
+        rgb = np.nan_to_num(rgb, nan=0.0, posinf=0.0, neginf=0.0)
+    if rgb.dtype != np.uint8:
+        rgb = normalize_array(rgb)
+    if masks.size and not bool(np.all(masks > 0)):
+        valid = np.all(masks > 0, axis=0)
+        alpha = np.where(valid, 255, 0).astype(np.uint8)
+    else:
+        alpha = np.full((out_h, out_w), 255, dtype=np.uint8)
+    buffer = io.BytesIO()
+    Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA").save(buffer, format="PNG", optimize=True)
+    return {
+        "bounds": {"west": west, "south": south, "east": east, "north": north},
+        "width": out_w,
+        "height": out_h,
+        "source_width": source_width,
+        "source_height": source_height,
+        "png_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }
 
 
 def clip_imagery(project_id, payload):

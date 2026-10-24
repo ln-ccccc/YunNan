@@ -182,6 +182,19 @@ export function createProjectRoutes({
       res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
     }
   });
+  // 影像上手绘底图（2026-10-24 审查 P1-8）：降采样 PNG + 4326 bounds，浏览器据此做地理绑定绘制
+  router.get('/:projectId/imagery/preview', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.imageryPreview(
+        req.params.projectId,
+        typeof req.query.source === 'string' ? req.query.source : '',
+        requestCookie(req),
+      ));
+    } catch (error) {
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
   router.post('/:projectId/imagery/clip', async (req, res) => {
     try {
       relayJson(res, await projectApi.clipImagery(req.params.projectId, req.body || {}, requestCookie(req)));
