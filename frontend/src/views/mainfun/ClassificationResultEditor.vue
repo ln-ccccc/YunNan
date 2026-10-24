@@ -12,8 +12,8 @@
         </p>
       </div>
       <div class="header-actions">
-        <el-button plain @click="goBack">返回分类结果</el-button>
-        <el-button :loading="loading" plain @click="reloadResult">重新加载</el-button>
+        <el-button :disabled="saving" plain @click="goBack">返回分类结果</el-button>
+        <el-button :loading="loading" :disabled="saving" plain @click="reloadResult">重新加载</el-button>
       </div>
     </div>
 
@@ -273,16 +273,45 @@ export default {
   },
   mounted() {
     document.addEventListener('keydown', this.handleKeydown);
+    window.addEventListener('beforeunload', this.handleBeforeUnload);
     this.reloadResult();
   },
   beforeUnmount() {
     document.removeEventListener('keydown', this.handleKeydown);
+    window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.destroyMap();
     // 组件销毁后丢弃在途响应（route query 变化会复用实例并发起第二次 reload）
     this.reloadSeq = -1;
   },
+  // 审校几十个图斑的误触保护：isDirty 时离开路由必须显式确认（P1-7，
+  // geoview-glass-smoke 在案 knownBug 的反转目标）
+  async beforeRouteLeave(to, from, next) {
+    if (!(await this.confirmDiscardUnsaved())) {
+      next(false);
+      return;
+    }
+    next();
+  },
   methods: {
+    // 三处未保存丢弃防线共用（P1-7）：重新加载 / 路由切换 / 浏览器关闭或刷新
+    confirmDiscardUnsaved() {
+      if (!this.isDirty) return Promise.resolve(true);
+      return this.$confirm(
+        '当前存在未保存的编辑，继续将丢弃这些修改（撤销栈也会一并清空）。',
+        '未保存提醒',
+        { confirmButtonText: '丢弃修改并继续', cancelButtonText: '继续编辑', type: 'warning' },
+      )
+        .then(() => true)
+        .catch(() => false);
+    },
+    handleBeforeUnload(event) {
+      if (!this.isDirty) return;
+      // 浏览器约定：preventDefault + returnValue 才会弹原生离开确认
+      event.preventDefault();
+      event.returnValue = '';
+    },
     async reloadResult() {
+      if (!(await this.confirmDiscardUnsaved())) return;
       // 竞态守卫：两次 reload 并发时（前进/后退、重复进入），先发后至的旧响应
       // 会把 A 成果的数据装进 B 成果的 context，保存时即写错对象
       const seq = (this.reloadSeq = (this.reloadSeq || 0) + 1);
@@ -294,6 +323,8 @@ export default {
       this.isDirty = false;
       this.selectedDrawIds = [];
       this.loading = true;
+      // 切换成果时复位：在途旧保存的 finally 不再清理新上下文的 saving 标志
+      this.saving = false;
       if (!this.context) {
         this.loading = false;
         this.loadError = '缺少有效的 project_id 或 result_id，无法打开分类成果。';
@@ -591,12 +622,20 @@ export default {
         this.$message.error(error?.message || '待保存的矢量数据无效');
         return;
       }
+      // 保存腿上下文守卫（P1-6，与加载腿 reloadSeq 同构）：保存 A 期间切到 B，
+      // A 的响应回来不得覆盖 B 的基准版本号/画布/编辑基线；服务端已写入 A 是
+      // 合法状态（按 base_revision_no 乐观锁提交），只是不再动本地 UI
+      const seq = this.reloadSeq;
+      const savedResultId = this.context.resultId;
       this.saving = true;
+      const stillOwnsState = () =>
+        this.reloadSeq === seq && this.context?.resultId === savedResultId;
       try {
-        const saved = await saveClassificationRevision(this.context.projectId, this.context.resultId, {
+        const saved = await saveClassificationRevision(this.context.projectId, savedResultId, {
           base_revision_no: this.result.current_revision_no,
           feature_collection: featureCollection,
         });
+        if (!stillOwnsState()) return;
         this.result.current_feature_collection = saved.feature_collection;
         this.result.current_revision_no = saved.current_revision_no;
         this.draw.set(saved.feature_collection || emptyFeatureCollection());
@@ -606,6 +645,7 @@ export default {
         await this.loadRevisions();
         this.$message.success(`已保存为 V${saved.current_revision_no}`);
       } catch (error) {
+        if (!stillOwnsState()) return;
         if (error?.status === 409) {
           this.$message.error('该成果已有新版本，请重新加载后再编辑；系统不会自动覆盖他人的修改。');
         } else if (error?.status === 422) {
@@ -615,7 +655,10 @@ export default {
           this.$message.error(error?.message || '保存分类成果失败');
         }
       } finally {
-        this.saving = false;
+        // 上下文已被更新的 reload 接管时 saving 由该 reload 复位，这里不动
+        if (stillOwnsState() || this.reloadSeq === -1) {
+          this.saving = false;
+        }
       }
     },
     async loadRevisions() {

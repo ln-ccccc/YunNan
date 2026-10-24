@@ -156,11 +156,20 @@ async function main() {
     await page.locator('.selection-count').waitFor();
     await page.locator('.class-option').first().click();
     await page.getByText('存在未保存编辑', { exact: false }).waitFor();
-    const beforeReloadDialogs = dialogs;
+    // P1-7 修复反转：isDirty 下点重新加载必须先过 ElMessageBox 确认。
+    // 取消腿：确认框出现→点继续编辑→脏状态保留，未确认不得丢弃
     await page.getByRole('button', { name: '重新加载', exact: true }).click();
+    const discardGuard = page.locator('.el-message-box');
+    await discardGuard.waitFor();
+    assert.ok(await discardGuard.getByText('未保存提醒').isVisible(), '未保存确认框未出现（P1-7 回归）');
+    await page.getByRole('button', { name: '继续编辑', exact: true }).click();
+    await discardGuard.waitFor({ state: 'detached' });
+    await page.getByText('存在未保存编辑', { exact: false }).waitFor();
+    // 确认腿：丢弃修改并继续→重载完成回到已保存态
+    await page.getByRole('button', { name: '重新加载', exact: true }).click();
+    await page.getByRole('button', { name: '丢弃修改并继续', exact: true }).click();
     await page.getByText('当前版本已保存', { exact: false }).waitFor();
-    if (dialogs === beforeReloadDialogs) knownBugs.push('未保存矢量改类后点击重新加载，未确认即丢弃；既有数据保护缺陷，已GUI复现');
-    checks.push('WebGL画布真实点选、改类；编辑器三种尺寸；既有丢弃编辑缺陷取证（未保存服务器）');
+    checks.push('WebGL画布真实点选、改类；编辑器三种尺寸；未保存丢弃双向确认（取消保留/确认丢弃后重载）');
     await page.emulateMedia({ reducedMotion: 'reduce' });
     const reduced = await page.locator('.platform-header .icon-menu').evaluate(node => getComputedStyle(node).transitionDuration);
     assert.ok(reduced.split(',').every(value => parseFloat(value) <= 0.00001));
