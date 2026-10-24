@@ -25,3 +25,18 @@ test('mine layer uses canvas renderer with hit tolerance for tiny polygons', () 
     'geoJSON layer must consume the canvas renderer',
   );
 });
+
+test('mine tooltip binds a DOM element instead of raw name string', () => {
+  // 矿山名来自第三方导入，Leaflet 对字符串按 HTML 渲染；bindTooltip 直接传
+  // name 会让 <img onerror> 类恶意名称在悬停时执行（2026-10-24 审查 P1-5）
+  assert.doesNotMatch(
+    mapContainerSource,
+    /bindTooltip\(name/,
+    'bindTooltip must not receive the raw name string',
+  );
+  assert.match(
+    mapContainerSource,
+    /textContent\s*=\s*name/,
+    'tooltip content must flow through textContent',
+  );
+});

@@ -304,7 +304,11 @@ const renderMapMarkers = () => {
     },
     onEachFeature: (feature, layer) => {
       const name = feature.properties.mine_name || feature.properties.name || `ID: ${feature.properties.FID_1}`;
-      layer.bindTooltip(name, { direction: 'top', className: 'map-tooltip' });
+      // 矿山名来自第三方 KML/GeoJSON 导入，Leaflet 对字符串按 HTML 渲染；
+      // 传 DOM 元素走 textContent，恶意名称不会进入 HTML 解析（2026-10-24 审查 P1-5）
+      const tooltipEl = document.createElement('span');
+      tooltipEl.textContent = name;
+      layer.bindTooltip(tooltipEl, { direction: 'top', className: 'map-tooltip' });
 
       layer.on('click', () => {
         const bounds = layer.getBounds();
