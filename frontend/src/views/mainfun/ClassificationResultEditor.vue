@@ -702,6 +702,13 @@ export default {
 </script>
 
 <style scoped>
+/* mapbox-gl-draw 控件沿用旧 mapboxgl-ctrl 前缀类；maplibre-gl.css 只对自身
+   .maplibregl-ctrl 恢复 pointer-events:auto（角容器默认 none），旧前缀组不被
+   匹配 → 绘制/删除按钮可见但真实点击不可命中（H-3 真实栈发现）。此处补桥。 */
+.editor-workspace :deep(.mapboxgl-ctrl-group) {
+  pointer-events: auto;
+}
+
 .classification-editor {
   min-height: calc(100vh - 84px);
   padding: 24px 0 38px;
