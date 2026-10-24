@@ -28,6 +28,7 @@ LOGGER = logging.getLogger(__name__)
 MAX_SAVE_BODY_BYTES = 10 * 1024 * 1024
 MAX_FEATURES = 2_000
 MAX_POSITIONS_PER_FEATURE = 5_000
+ROI_COVER_EPSILON_DEGREES = 1e-9
 MAX_POSITIONS_TOTAL = 100_000
 
 
@@ -345,7 +346,10 @@ def _validate_save_payload(result, payload, *, body_size):
         total_positions += position_count
         if total_positions > MAX_POSITIONS_TOTAL:
             _validation_error("feature_collection", "总坐标位置不能超过 100000", feature_index)
-        if not roi.covers(parsed_geometry):
+        if not roi.covers(parsed_geometry) and not roi.buffer(ROI_COVER_EPSILON_DEGREES).covers(parsed_geometry):
+            # 自动矢量化产物与 ROI 边界浮点相切（~1e-9 度，亚毫米）会被严格
+            # covers 拒绝，导致"未改动自动基线无法保存"；1e-9 容差只吸收浮点
+            # 误差，真实越界（像素级，>=1e-6 度）仍然拒绝
             _validation_error("geometry", "几何必须完全位于成果 ROI 内", feature_index)
         feature_id = submitted_feature_id
         if feature_id is None:

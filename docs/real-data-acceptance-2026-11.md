@@ -33,10 +33,10 @@
 | 7 | 切片 | ✅ 2026-10-25 | grid_pixels 512 → 1 片（394×332 不足两片）：dataset_id=46，相对键 slice_20261024_172541_063a8a_r0c0.tif |
 | 8 | GPU 推理 | ✅ 2026-10-25（succeeded_with_fallback） | `POST /api/inference/jobs` {project 7, dataset 46（**上手绘 clip→slice 产物**）, year 2024, mine_fids [696]}——**P1-1 契约修复的关键验证达成：clip 产物被推理端完整接受**。任务 b9af125f：86s（17:56:03→17:57:29），1/1 tile，effective_device=cpu，fallback_reason=GPU_INFERENCE_FAILED。GPU 失败根因已查明（见 §4 发现 R1）：宿主 RAM 5.93GB 不足以 torch.load 1.97GB checkpoint（需 ~2× 峰值）→ `OSError: [Errno 12] Cannot allocate memory` 被误分类为 GPU_INFERENCE_FAILED |
 | 9 | 矢量化 | ✅ 2026-10-25（发布管线自动完成） | 成果 id=62：fid 696/2024，vector_status=ready，feature_count=146，current_revision_no=0，label_path 与 auto_geojson_path 均落盘；auto_feature_collection 首要素坐标 (100.78387, 26.04445) 与矿山 KML fid696 开采中心吻合 |
-| 10 | 编辑器全功能 | 待执行 | |
-| 11 | 保存 + 双开 409 | 待执行 | |
-| 12 | 质检 | 待执行 | |
-| 13 | 五格式导出逐个校验 | 待执行 | |
+| 10 | 编辑器全功能 | 🔄 归 H-3 | 改类/顶点/增删/undo/合并/simplify 属浏览器交互，随 H-3 GUI 全量验收复跑（4 冒烟 + 编辑器操作流）；本节先以 API 完成保存/冲突/质检/导出链 |
+| 11 | 保存 + 双开 409 | ✅ 2026-10-25 | 双会话（独立 cookie）：A 保存自动基线 146 要素成功（rev 0→1，**R4 修复后**；修复前严格 covers 拒 40/146 要素，必 422）；B 持旧 base 再存 409"成果已被其他保存更新"（detail 含 base/current revision）；B 刷新 current 后重试成功；revisions 列表 0..6 连续完整（本轮累计 6 次 manual 保存） |
+| 12 | 质检 | ✅ 2026-10-25 | `GET quality-review?small_area_threshold_m2=200`：146 要素 5 类——water 15 块 58.2%（5422.6m²）、grassland 41 块 25.0%、…（真实面积/占比统计） |
+| 13 | 五格式导出逐个校验 | ✅ 2026-10-25 | geojson 1745KiB（JSON 可解析）/ csv 23.9KiB（表头+行）/ shp 545KiB（zip PK 头）/ xlsx 6.0KiB（zip PK 头）/ dxf 3284KiB（SECTION 头），五格式全部 200 且 artifact 下载 Content-Disposition 正确；导出目录 exports/<id>/artifact 落盘 |
 | 14 | 快照生成/恢复/跨环境导入 | 待执行 | |
 | 15 | 归档/删除/恢复 | 待执行 | |
 
@@ -59,11 +59,12 @@
 
 | # | 发现 | 定性 | 证据 |
 | --- | --- | --- | --- |
-| R1 | **GPU 推理从未生效，且失败原因被误报**：宿主机 RAM 仅 5.93GB（Docker VM 5.79GiB），inference-worker 常驻 2.7GB（CPU 模型常驻内存）后，任务前 GPU 路径 `torch.load`（map_location='cpu'）1.97GB checkpoint 需 ~2× 宿主内存峰值 → `OSError: [Errno 12] Cannot allocate memory`。该异常不含 OOM/arch/mmcv 关键词，被 `_classify_gpu_error` 兜底归为 `GPU_INFERENCE_FAILED`，且 resolution 阶段丢弃原始异常不落日志 → 长期呈现为"GPU 能力检查失败"的误导性归因。项目 1 全部历史任务 succeeded_with_fallback 同因。手动复现：MMCV CUDA 算子 smoke 通过、GPU 可见性通过，仅模型加载败于宿主内存 | 环境约束 + 可观测性缺陷（代码） | gpu_repro.py 完整 traceback；`docker stats`/`free -m` |
+| R1 | **GPU 推理从未生效，且失败原因被误报**：宿主机 RAM 仅 5.93GB（Docker VM 5.79GiB），inference-worker 常驻 2.7GB（CPU 模型常驻内存）后，任务前 GPU 路径 `torch.load`（map_location='cpu'）1.97GB checkpoint 需 ~2× 宿主内存峰值 → `OSError: [Errno 12] Cannot allocate memory`。该异常不含 OOM/arch/mmcv 关键词，被 `_classify_gpu_error` 兜底归为 `GPU_INFERENCE_FAILED`，且 resolution 阶段丢弃原始异常不落日志 → 长期呈现为"GPU 能力检查失败"的误导性归因。项目 1 全部历史任务 succeeded_with_fallback 同因。手动复现：MMCV CUDA 算子 smoke 通过、GPU 可见性通过，仅模型加载败于宿主内存。**恶性循环确认**：CPU 回退后 CPU 模型常驻挤占内存，后续任务 GPU 尝试永远失败——重启 worker（清空常驻）后下一任务 80034f77 **真正跑在 cuda:0**（32s，较 CPU 86s 提速 2.7×），审计 inference_result_published 同时落库（R2 修复生效） | 环境约束 + 可观测性缺陷（代码） | gpu_repro.py 完整 traceback；`docker stats`/`free -m`；任务 80034f77 终态 |
 | R2 | **worker 镜像缺 marshmallow → 成果发布审计链断裂**：发布管线 `publish_project_inference_result` → `from applications.project_hub.service import _append_activity` → service 顶层 import schemas → `from marshmallow import fields` → `ModuleNotFoundError`。有 try 兜底（成果不受影响），但 `inference_result_published` 活动记录全部丢失。`docker/requirements/inference-worker.txt` 无 marshmallow（backend/requirements.txt 有 3.18.0） | 部署缺陷（依赖清单） | worker 日志 WARNING + traceback |
 | R3 | 项目 1 激活底图 tiles/2 全空（各 zoom 0 张 PNG）但任务记录 succeeded——历史成果瓦片被清理或丢失，地图实际无底图可渲染 | 存量数据问题（见步骤 3） | find 逐 zoom 计数 |
+| R4 | **自动矢量化产物无法通过自身保存校验（人工编辑保存链从未走通）**：保存校验 `roi.covers(geometry)` 无容差，矢量化坐标与 ROI 边界浮点相切（~1e-9 度）被拒——真实成果 62 共 146 要素中 40 个越界丝米级，GeoView 打开后任何保存必 422"几何必须完全位于成果 ROI 内"。佐证：classification_revisions 全表 source=auto（rev 0），**无任何 manual 修订**。修复（已入库）：covers 加 1e-9 度（亚毫米）容差，只吸收浮点误差，像素级真实越界仍拒；回归用例（ROI 边界相切 sliver 可存 / 大越界仍拒） | 代码缺陷（P1 级数据链断裂） | 诊断脚本 40/146 计数+buffer(1e-9) 全通过；修复后真实栈 146 要素保存成功 rev0→6 |
 
-R1 建议（进 I-1 设计文档）：①设备探测/加载失败记录原始异常与分类码；②`Cannot allocate memory`/Errno 12 单独分类 `HOST_MEMORY_EXHAUSTED`，与 GPU 问题区分；③部署文档标注推理机 RAM 底线（1.97GB fp32 模型加载需 ≥8GB，推荐 16GB）。R2 修复：worker requirements 补 `marshmallow==3.18.0` 对齐 backend。
+R1 建议（进 I-1 设计文档）：①设备探测/加载失败记录原始异常与分类码；②`Cannot allocate memory`/Errno 12 单独分类 `HOST_MEMORY_EXHAUSTED`，与 GPU 问题区分；③CPU 回退后在空闲期卸载 CPU 模型重试 GPU，打破"回退一次永远 CPU"的恶性循环；④部署文档标注推理机 RAM 底线（1.97GB fp32 模型加载需 ≥8GB，推荐 16GB）。R2 修复（已入库 8ef0c93）：审计 import 直连 `_foundation`，不再依赖 worker 镜像补装 schemas/osgeo 依赖链。
 
 ## 5. 结论与遗留
 

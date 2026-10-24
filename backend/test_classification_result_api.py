@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
+from shapely.geometry import shape
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
@@ -501,6 +502,40 @@ class TestClassificationResultAPI(unittest.TestCase):
             },
             expected_reason="几何必须完全位于成果 ROI 内",
         )
+
+    def test_save_accepts_submillimeter_roi_boundary_sliver_from_auto_baseline(self):
+        """自动矢量化产物与 ROI 边界浮点相切（~1e-10 度越界）应可保存——真实栈
+        H-2 发现 R4（2026-10-25）：成果 62 共 146 要素中 40 个被严格 covers 拒绝，
+        未改动的自动基线整体无法保存，且全库无任何 manual 修订佐证此链从未走通。
+        1e-9 度（亚毫米）容差只吸收浮点误差，像素级真实越界仍拒（上方用例）。"""
+        roi = shape(json.loads(self.result.roi_geometry_json))
+        min_x, min_y = roi.bounds[0], roi.bounds[1]
+        sliver = 1e-10
+        collection = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"class_code": 2},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [min_x - sliver, min_y],
+                            [min_x + 1.0, min_y],
+                            [min_x + 1.0, min_y + 1.0],
+                            [min_x - sliver, min_y + 1.0],
+                            [min_x - sliver, min_y],
+                        ]],
+                    },
+                }
+            ],
+        }
+        response = self.client.post(
+            self._result_url("/revisions"),
+            json={"base_revision_no": 0, "feature_collection": collection},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["data"]["revision_no"], 1)
 
     def test_save_rejects_duplicate_cross_result_and_cross_base_feature_ids(self):
         collection = self._editable_feature_collection()
