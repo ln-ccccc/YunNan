@@ -2,6 +2,7 @@
 
 日期：2026-10-25 起（进行中）。执行环境：本机 Docker 栈 + GPU 推理 Worker。
 对应计划：docs/fix-plan-20261024.md 批次 H-2；上游审查：docs/code-review-2026-10-24.md。
+配套交付：自包含交互报告 [docs/interactive-report-2026-11.html](interactive-report-2026-11.html)（零外部依赖，离线浏览器直接打开）。
 
 > 状态：本文档随验收推进逐节填写。每步记录操作、证据（ID/版本/来源一致性）与实测耗时。
 
