@@ -20,6 +20,21 @@ RETAINED_BASEMAP_KEEP = 2
 from applications.project_hub.spatial_storage import ensure_storage_layout, resolve_storage_path
 
 
+# 容器健康心跳文件（2026-10-24 审查 P2-12）：DB 的 heartbeat_at 仅任务运行中
+# 存在，空闲 worker 无既有信号，compose healthcheck 以此文件 mtime 判活。
+HEARTBEAT_FILE = Path(
+    os.environ.get("SPATIAL_WORKER_HEARTBEAT_FILE", "/tmp/yunnan_spatial_worker_heartbeat")
+)
+
+
+def _touch_heartbeat(path: Path = HEARTBEAT_FILE) -> None:
+    """空闲循环每 30s、任务轮询每 poll 一次。写入失败只告警不中断服务。"""
+    try:
+        path.touch()
+    except OSError:
+        logger.warning("心跳文件 %s 写入失败", path, exc_info=True)
+
+
 WEB_MERCATOR_MAX_LATITUDE = 85.05112878
 
 
@@ -213,6 +228,7 @@ def _run_gdal2tiles(job, resource, source, tile_dir, poll_seconds):
             _terminate(process)
             raise InterruptedError("任务已取消")
         job.heartbeat_at = datetime.datetime.now()
+        _touch_heartbeat()
         now = time.monotonic()
         if expected_tiles and now >= next_progress_check:
             completed_tiles = sum(1 for _ in tile_dir.rglob("*.png"))
@@ -326,7 +342,13 @@ class SpatialWorker:
 
     def run_forever(self, should_stop):
         recover_running_jobs()
+        last_heartbeat = 0.0
         while not should_stop():
+            now = time.monotonic()
+            if now - last_heartbeat >= 30:
+                # 与推理 worker 的能力心跳同节奏（30s），判活阈值见 compose healthcheck
+                _touch_heartbeat()
+                last_heartbeat = now
             job = claim_next_job(self.worker_id)
             if job is None:
                 time.sleep(self.poll_seconds)

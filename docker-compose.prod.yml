@@ -9,6 +9,9 @@ x-app-env: &app-env
   ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
   ADMIN_PASSWORD: "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}"
   SECRET_KEY: "${SECRET_KEY:?SECRET_KEY is required}"
+  # 会话 Cookie Secure 标记（后端 configs/config.py 经 _bool_env 读取）：
+  # TLS 终止后置 true，默认 false 不破坏 http 内网部署（2026-10-24 审查 P2-12）
+  SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
   FLASK_CONFIG: production
   TRANSFORMERS_OFFLINE: "1"
   HF_DATASETS_OFFLINE: "1"
@@ -74,7 +77,9 @@ services:
       - ./project_storage:/project_storage
       - ${OFFLINE_MAP_DIR:-./maps/dali}:/project_storage/incoming/dali:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5008/api/auth/session >/dev/null || exit 1"]
+      # 深层探针（2026-10-24 审查 P2-12）：DB SELECT 1 + 存储根可写，
+      # 替代仅验证 Flask 存活的 /api/auth/session
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5008/api/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -153,6 +158,15 @@ services:
       - inference-runtime:/app/backend/runtime/inference_jobs
       - hf-cache:/root/.cache/huggingface
       - ./project_storage:/project_storage
+    # 判活依据（2026-10-24 审查 P2-12）：worker 既有的 DB 心跳——空闲期每 ≤30s
+    # publish_worker_capability 刷新 InferenceWorkerState.update_time；CPU 回退下
+    # 单 tile 可达分钟级时以 running 任务的进度心跳兜底（见 worker_healthcheck.py）
+    healthcheck:
+      test: ["CMD-SHELL", "cd /app/backend && /opt/venv/bin/python worker_healthcheck.py"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 300s
 
   spatial-worker:
     <<: *runtime-base
@@ -168,6 +182,14 @@ services:
       - ./backend:/app/backend:ro
       - ./project_storage:/project_storage
       - ${OFFLINE_MAP_DIR:-./maps/dali}:/project_storage/incoming/dali:ro
+    # 判活依据（2026-10-24 审查 P2-12）：DB 的 heartbeat_at 仅任务运行中存在，
+    # 空闲 worker 改用心跳文件 mtime（run_forever 每 30s、任务轮询每秒 touch）
+    healthcheck:
+      test: ["CMD-SHELL", "test $(( $(date +%s) - $(stat -c %Y /tmp/yunnan_spatial_worker_heartbeat) )) -lt 120"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
 
   miner-web:
     <<: *runtime-base

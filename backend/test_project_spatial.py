@@ -982,3 +982,63 @@ class TestBasemapFormatExtension(unittest.TestCase):
                     os.environ.pop("PROJECT_STORAGE_ROOT", None)
                 else:
                     os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
+
+class TestSpatialWorkerHeartbeat(unittest.TestCase):
+    """容器判活心跳（2026-10-24 审查 P2-12）：DB heartbeat_at 仅任务运行中存在，
+    空闲 worker 由 run_forever 每 30s、任务轮询每 poll touch 心跳文件。"""
+
+    def test_touch_heartbeat_writes_file_and_swallows_os_errors(self):
+        from applications.project_hub import spatial_worker
+
+        with tempfile.TemporaryDirectory(prefix="spatial-hb-") as tmp:
+            target = Path(tmp) / "hb"
+            spatial_worker._touch_heartbeat(target)
+            self.assertTrue(target.exists())
+            # 只读目录等 OSError 不得冒泡杀死 worker 循环
+            spatial_worker._touch_heartbeat(Path(tmp) / "no" / "such" / "dir" / "hb")
+
+    def test_run_forever_touches_heartbeat_each_idle_cycle(self):
+        import applications.project_hub.spatial_worker as sw
+
+        heartbeat = Path(tempfile.mkdtemp(prefix="spatial-hb-run-")) / "heartbeat"
+        original = sw.HEARTBEAT_FILE
+        sw.HEARTBEAT_FILE = heartbeat
+        # 默认参数在 def 时绑定，同步替换函数级默认以命中测试路径
+        original_touch = sw._touch_heartbeat
+        sw._touch_heartbeat = lambda path=None: original_touch(
+            heartbeat if path in (None, original) else path
+        )
+        try:
+            with patch.object(sw, "recover_running_jobs"), patch.object(
+                sw, "claim_next_job", return_value=None
+            ), patch.object(sw.time, "sleep"):
+                stop_after_first = iter([False, True])
+
+                def should_stop():
+                    try:
+                        return next(stop_after_first)
+                    except StopIteration:
+                        return True
+
+                sw.SpatialWorker(poll_seconds=0).run_forever(should_stop)
+            self.assertTrue(heartbeat.exists(), "空闲循环必须落心跳文件")
+        finally:
+            sw._touch_heartbeat = original_touch
+            sw.HEARTBEAT_FILE = original
+            shutil.rmtree(heartbeat.parent, ignore_errors=True)
+
+    def test_heartbeat_wired_into_run_forever_and_job_poll_loop(self):
+        source = Path(
+            os.path.join(os.path.dirname(__file__), "applications/project_hub/spatial_worker.py")
+        ).read_text(encoding="utf-8")
+        run_forever = source[source.index("def run_forever"):]
+        self.assertIn("_touch_heartbeat()", run_forever, "空闲循环必须周期 touch")
+        self.assertIn("last_heartbeat", run_forever, "必须为 30s 节奏（非每 poll 一次）")
+        poll = source[source.index("while process.poll() is None:"):]
+        poll = poll[: poll.index("db.session.commit()")]
+        self.assertIn(
+            "_touch_heartbeat()",
+            poll,
+            "任务轮询必须随 heartbeat_at 同步 touch（长任务期间判活不失效）",
+        )

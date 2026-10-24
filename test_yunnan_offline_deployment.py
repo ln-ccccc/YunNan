@@ -569,6 +569,8 @@ exit 1
                 "yunnan-miner-api",
                 "yunnan-miner-web",
                 "yunnan-mysql",
+                "yunnan-inference-worker",
+                "yunnan-spatial-worker",
             ],
         )
 
@@ -804,7 +806,7 @@ function Start-Sleep {
         for endpoint in (
             "http://127.0.0.1:3000/",
             "http://127.0.0.1:4000/",
-            "http://127.0.0.1:5008/api/auth/session",
+            "http://127.0.0.1:5008/api/health",
             "http://127.0.0.1:8000/api/auth/session",
         ):
             self.assertIn(endpoint, self.windows_deploy_script)
@@ -815,6 +817,12 @@ function Start-Sleep {
         self.assertIn('"ps", "-a", "--format", "{{.Names}}"', self.windows_deploy_script)
         self.assertIn('"volume", "ls", "--format", "{{.Name}}"', self.windows_deploy_script)
         self.assertIn("目标电脑已有同名云南资源", self.windows_deploy_script)
+
+    def test_windows_deploy_rejects_local_flaskenv_in_bundle(self):
+        # P2-12（2026-10-24 审查）：backend/.flaskenv 含本地开发口令且生产
+        # gunicorn 直启不加载，不得随迁移包分发（与受控分发的根目录 .env 不同）
+        self.assertIn("Join-Path $RootDir 'backend\\.flaskenv'", self.windows_deploy_script)
+        self.assertIn("不得随迁移包分发", self.windows_deploy_script)
 
     def test_windows_deploy_validates_compose_without_orphan_removal(self):
         self.assertNotIn("--remove-orphans", self.windows_deploy_script)

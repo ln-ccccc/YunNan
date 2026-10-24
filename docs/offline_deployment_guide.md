@@ -8,7 +8,7 @@
 
 当前根目录 `HOST_SHA256SUMS` 固定校验 Compose 使用的宿主输入，包括部署脚本和配置、`docker/`、后端/前端/Miner 源码与模型、`project_storage/`、`maps/dali/` 等，共 42,644 个文件、37.536GiB。它不重复收录 `images/` 和 `volumes/`，这两个目录分别使用自己的 `SHA256SUMS`；根目录敏感文件 `.env` 也不写入宿主清单，但部署脚本会检查其中的必需项。任何已纳入清单的文件发生变化都会使校验失败。
 
-迁移目录还包含 `.env`、`backend/.flaskenv`、数据库卷归档等敏感配置和业务数据。必须通过受控介质或可信链路传输，不要上传到公共网盘或代码仓库。移动硬盘/U 盘应使用 NTFS 或 exFAT，不能使用不支持单个 4GB 以上文件的 FAT32。
+迁移目录还包含 `.env`、数据库卷归档等敏感配置和业务数据。必须通过受控介质或可信链路传输，不要上传到公共网盘或代码仓库。`backend/.flaskenv` 是本地开发文件（含开发口令，生产 gunicorn 直启并不加载），不得打进迁移包：部署脚本预检会直接拒绝包含它的迁移目录。移动硬盘/U 盘应使用 NTFS 或 exFAT，不能使用不支持单个 4GB 以上文件的 FAT32。
 
 从当前电脑复制到空的移动盘目录（示例为 `E:\YunNan`）：
 
@@ -56,10 +56,10 @@ Host data files OK (42644 files)
 VALIDATION OK
 ```
 
-正式部署会加载 `images` 中的三个镜像、恢复七个数据卷，并使用项目根目录的 `.env`。`deploy_offline.ps1` 默认只使用 `docker-compose.prod.yml` 的 CPU 模式，不会自动叠加 `docker-compose.gpu.yml` 或启用 GPU。脚本启动 Compose 后，必须确认全部七个云南容器均为 `running`，且 `yunnan-backend`、`yunnan-frontend`、`yunnan-miner-api`、`yunnan-miner-web`、`yunnan-mysql` 五个容器均为 `healthy`，才会继续做 HTTP 就绪检查；`yunnan-inference-worker` 和 `yunnan-spatial-worker` 只要求处于 `running`。状态门禁成功会输出：
+正式部署会加载 `images` 中的三个镜像、恢复七个数据卷，并使用项目根目录的 `.env`。`deploy_offline.ps1` 默认只使用 `docker-compose.prod.yml` 的 CPU 模式，不会自动叠加 `docker-compose.gpu.yml` 或启用 GPU。脚本启动 Compose 后，必须确认全部七个云南容器均为 `running`，且全部七个容器（含两个 worker）均为 `healthy`，才会继续做 HTTP 就绪检查。判活依据：`yunnan-backend` 为深层探针 `/api/health`（DB `SELECT 1` + 存储根可写）；`yunnan-inference-worker` 为既有数据库心跳（`InferenceWorkerState.update_time`，空闲期 ≤30s 刷新，CPU 长任务以 running 任务进度心跳兜底，见 `backend/worker_healthcheck.py`）；`yunnan-spatial-worker` 为心跳文件 mtime（空闲每 30s、任务轮询每秒 touch `/tmp/yunnan_spatial_worker_heartbeat`）。worker 启动引导各有 `start_period`（推理 300s / 空间 90s）容忍模型与恢复初始化。状态门禁成功会输出：
 
 ```text
-All 7 Yunnan containers are running; 5 healthchecks are healthy.
+All 7 Yunnan containers are running; 7 healthchecks are healthy.
 ```
 
 如果正式部署失败，不要自行删除、重建或覆盖脚本已创建的云南容器和卷。保留完整 PowerShell 错误输出，由运维结合卷上的 `yunnan.offline.restore=<runId>` 标签核对本次恢复归属后再处理，避免误删已恢复的数据。
@@ -136,6 +136,8 @@ export ADMIN_PASSWORD='<管理员强密码>'
 export SECRET_KEY='<随机会话密钥>'
 export MYSQL_PASSWORD='<业务数据库强密码>'
 export MYSQL_ROOT_PASSWORD='<MySQL root 强密码>'
+# 可选：接入 TLS 反向代理后导出，使会话 Cookie 带 Secure 标记（默认 false）
+# export SESSION_COOKIE_SECURE=true
 ```
 
 启动前执行只读冲突检查；以下 7 个容器名和 7 个卷名全部不存在时，才允许继续启动：
@@ -189,7 +191,7 @@ docker exec yunnan-inference-worker python /app/docker/check-inference-runtime.p
 docker compose -f docker-compose.prod.yml ps
 curl -I http://127.0.0.1:3000/
 curl -I http://127.0.0.1:4000/
-curl -I http://127.0.0.1:5008/api/auth/session
+curl -I http://127.0.0.1:5008/api/health
 curl -I http://127.0.0.1:8000/api/auth/session
 curl -I http://127.0.0.1:8000/tiles/projects/{projectId}/{resourceId}/{z}/{x}/{y}.png
 docker exec yunnan-inference-worker python /app/docker/check-inference-runtime.py

@@ -8,9 +8,11 @@ from applications.api.inference import inference_api
 from applications.api.model import model_api
 from applications.api.project import project_api
 from applications.api.stats import stats_api
+from applications.api.system import system_health
 
 
 def system_api(app: Flask):
+    app.register_blueprint(system_health)
     app.register_blueprint(auth_api)
     app.register_blueprint(file_api)
     app.register_blueprint(history_api)

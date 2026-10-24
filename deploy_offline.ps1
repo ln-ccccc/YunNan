@@ -67,7 +67,9 @@ $HealthyContainerNames = @(
     'yunnan-frontend',
     'yunnan-miner-api',
     'yunnan-miner-web',
-    'yunnan-mysql'
+    'yunnan-mysql',
+    'yunnan-inference-worker',
+    'yunnan-spatial-worker'
 )
 
 function Invoke-Docker {
@@ -393,7 +395,7 @@ function Wait-ContainerStates {
             }
         }
         if ($pending.Count -eq 0) {
-            Write-Host 'All 7 Yunnan containers are running; 5 healthchecks are healthy.'
+            Write-Host 'All 7 Yunnan containers are running; 7 healthchecks are healthy.'
             return
         }
 
@@ -444,6 +446,12 @@ Invoke-Docker -Arguments @('compose', 'version') | Out-Null
 Assert-File -Path $ComposeFile
 Assert-File -Path $EnvFile
 Assert-Directory -Path (Join-Path $RootDir 'backend')
+# 敏感文件闸（2026-10-24 审查 P2-12）：backend/.flaskenv 是本地开发文件、含
+# 开发口令；生产由 gunicorn 直启并不加载它。与根目录 .env（受控分发的真实
+# 凭据）不同，它不得随迁移包分发。
+if (Test-Path -LiteralPath (Join-Path $RootDir 'backend\.flaskenv')) {
+    throw "backend/.flaskenv 含本地开发凭据且生产不加载，不得随迁移包分发；请从迁移目录移除该文件并重新生成 HOST_SHA256SUMS 后重试。"
+}
 Assert-Directory -Path (Join-Path $RootDir 'frontend')
 Assert-Directory -Path (Join-Path $RootDir 'miner')
 Assert-Directory -Path (Join-Path $RootDir 'project_storage')
@@ -574,7 +582,7 @@ Wait-ContainerStates -TimeoutSeconds 360
 foreach ($url in @(
     'http://127.0.0.1:3000/',
     'http://127.0.0.1:4000/',
-    'http://127.0.0.1:5008/api/auth/session',
+    'http://127.0.0.1:5008/api/health',
     'http://127.0.0.1:8000/api/auth/session'
 )) {
     Wait-Url -Url $url
@@ -584,5 +592,5 @@ Invoke-Docker -Arguments @('exec', 'yunnan-inference-worker', 'python', '/app/do
 Invoke-Docker -Arguments @("compose", "--env-file", $EnvFile, "-f", $ComposeFile, "ps")
 Write-Host 'Frontend: http://127.0.0.1:3000/'
 Write-Host 'Miner web: http://127.0.0.1:4000/'
-Write-Host 'Backend: http://127.0.0.1:5008/api/auth/session'
+Write-Host 'Backend: http://127.0.0.1:5008/api/health'
 Write-Host 'Miner API: http://127.0.0.1:8000/api/auth/session'
