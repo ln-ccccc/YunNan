@@ -245,6 +245,31 @@ class TestDeleteServiceDirect(ProjectManageBase):
         with self.assertRaises(ProjectDeleteNotAllowed):
             delete_project(project_id)
 
+    def test_storage_restored_when_commit_fails(self):
+        """P2-2（2026-10-24 审查）：目录先移入 trash、DB 软删提交失败时必须把
+        目录移回原位——否则项目在列表里活着、数据却进了回收站（半删除态）。"""
+        from unittest.mock import patch
+
+        self.login_as_admin()
+        project_id = self._create_project("提交失败回滚")
+        project_dir = self._make_project_dir(project_id)
+        self._archive(project_id)
+
+        with patch(
+            "applications.project_hub.service.db.session.commit",
+            side_effect=RuntimeError("db down"),
+        ):
+            response = self.client.delete(f"/api/projects/{project_id}")
+        self.assertEqual(response.status_code, 500)
+
+        self.assertTrue(project_dir.exists(), "目录必须回到 projects/ 原位")
+        self.assertTrue((project_dir / "marker.txt").is_file())
+        self.assertEqual(
+            list((self.storage_root / "trash").glob(f"{project_id}_*")),
+            [], "trash 不得残留半删除目录",
+        )
+        self.assertIsNone(db.session.get(Project, project_id).deleted_at)
+
 
 class TestTimestampSerialization(ProjectManageBase):
     """快照/导出/最新解译时间必须显式带 UTC 标记，与 timeline 口径一致。

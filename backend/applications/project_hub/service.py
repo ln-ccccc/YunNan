@@ -435,7 +435,18 @@ def delete_project(project_id, actor="system"):
         actor=actor,
         target={"type": "project", "id": str(project.id)},
     )
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        # 目录已先移入 trash，DB 软删提交失败必须把目录移回原位——否则项目
+        # 在列表里活着、数据却进了回收站（半删除态，2026-10-24 审查 P2-2；
+        # 照 inference_results 发布的备份+回滚模式）
+        db.session.rollback()
+        if trash_target is not None and trash_target.exists():
+            projects_root = resolve_storage_path(storage_root, Path("projects"))
+            projects_root.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(trash_target), str(project_root))
+        raise
     return {
         "id": project.id,
         "name": project.name,
