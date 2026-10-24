@@ -269,6 +269,49 @@ class TestProjectInferenceResults(unittest.TestCase):
             ProjectActivityLog.query.filter_by(event_type="inference_failed").count(), 1
         )
 
+    def test_worker_audit_imports_survive_worker_runtime_environment(self):
+        """worker 镜像无 marshmallow/flask_marshmallow/osgeo（H-2 真实栈发现 R2，
+        2026-10-25）：推理发布/失败审计的直连 import 不得拉起 service 顶层依赖图，
+        否则 worker 进程内审计写入 ModuleNotFoundError 静默丢失。子进程预置
+        sys.modules=None 模拟缺包，避免污染本测试进程。"""
+        import subprocess
+        import textwrap
+
+        probe = textwrap.dedent(
+            """
+            import sys
+            for name in (
+                "marshmallow",
+                "flask_marshmallow",
+                "marshmallow_sqlalchemy",
+                "osgeo",
+            ):
+                sys.modules[name] = None
+            from applications.project_hub._foundation import (
+                _append_activity,
+                record_inference_failure,
+            )
+            from applications.project_hub.inference_results import (
+                publish_project_inference_result,
+            )
+            import applications.inference.worker
+            print("WORKER_IMPORT_OK")
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"worker 缺包环境下审计 import 失败:\n{result.stderr[-2000:]}",
+        )
+        self.assertIn("WORKER_IMPORT_OK", result.stdout)
+
     def test_project_publication_creates_vector_baseline_without_changing_png_success(self):
         from applications.project_hub.inference_results import publish_project_inference_result
 

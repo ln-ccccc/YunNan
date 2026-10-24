@@ -136,6 +136,27 @@ def _get_project_or_404(project_id):
         raise ValueError(f"项目不存在: {project_id}")
     return project
 
+def record_inference_failure(project_id, payload=None, actor="system"):
+    """推理任务失败的审计事件（推理 worker 失败路径经此公共服务函数写入，
+    推理运行时模块自身不直接操作项目域表）。项目不存在时静默跳过。
+
+    必须留在 _foundation（无项目域横向依赖）：inference worker 进程直连此
+    函数，若绕道 service 顶层 import 会拉起 schemas/exports/osgeo 全依赖图
+    ——worker 镜像无这些包，审计写入会 ModuleNotFoundError 静默丢失。"""
+    try:
+        project = _get_project_or_404(project_id)
+    except ValueError:
+        return None
+    _append_activity(
+        project.id,
+        "inference_failed",
+        payload=payload,
+        actor=actor,
+        result="failure",
+    )
+    db.session.commit()
+    return True
+
 def _write_artifact_atomic(target_path, writer, *args, project_id=None, record_id=None):
     temporary_path = target_path.parent / f".{target_path.name}.{uuid.uuid4().hex}.tmp"
     try:

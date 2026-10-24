@@ -69,6 +69,7 @@ from applications.project_hub._foundation import (
     _validate_incoming_tiff_storage_key,
     _write_artifact_atomic,
     _write_xlsx,
+    record_inference_failure,
 )
 from applications.project_hub.spatial_state import serialize_project_spatial_state
 
@@ -76,24 +77,6 @@ from applications.project_hub.spatial_state import serialize_project_spatial_sta
 ALLOWED_PROJECT_STATUSES = {"draft", "active", "completed", "archived"}
 ALLOWED_DATASET_KINDS = {"imagery", "inference_result", "report", "export_package", "mine_indices"}
 LOGGER = logging.getLogger(__name__)
-
-
-def record_inference_failure(project_id, payload=None, actor="system"):
-    """推理任务失败的审计事件（推理 worker 失败路径经此公共服务函数写入，
-    推理运行时模块自身不直接操作项目域表）。项目不存在时静默跳过。"""
-    try:
-        project = _get_project_or_404(project_id)
-    except ValueError:
-        return None
-    _append_activity(
-        project.id,
-        "inference_failed",
-        payload=payload,
-        actor=actor,
-        result="failure",
-    )
-    db.session.commit()
-    return True
 
 
 def _project_list_features():

@@ -335,7 +335,7 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
     # 推理成果审计事件（此前已知缺口：推理链路无活动记录）：发布成功后按
     # 任务粒度记一条；写失败只告警不回滚成果
     try:
-        from applications.project_hub.service import _append_activity
+        from applications.project_hub._foundation import _append_activity
 
         _append_activity(
             project.id,
