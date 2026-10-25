@@ -19,6 +19,9 @@ _CHECK_REASONS = {
     "REVIEWABLE_RESULT": "NO_REVIEWABLE_RESULT",
 }
 
+# 激活底图记录 ready 但磁盘瓦片缺失（存量数据丢失，切片任务记录无感知）
+ACTIVE_BASEMAP_TILES_MISSING = "ACTIVE_BASEMAP_TILES_MISSING"
+
 _CHECK_ACTIONS = {
     "MINE_BOUNDARY": ("IMPORT_MINE_BOUNDARY", "spatial_resource"),
     "ACTIVE_BASEMAP": ("CONFIGURE_BASEMAP", "spatial_resource"),
@@ -67,12 +70,20 @@ def _check_statuses(readiness):
     }
 
 
-def build_readiness(project, assets):
-    """Build the fixed Project Hub readiness DTO from public asset summaries."""
+def build_readiness(project, assets, active_basemap_tiles_present=None):
+    """Build the fixed Project Hub readiness DTO from public asset summaries.
+
+    active_basemap_tiles_present 是激活底图的数据级巡检结果（磁盘探针，由
+    调用方传入以保持本模块纯规则）：None=未探测（不改变判定）；False=记录
+    ready 但瓦片缺失，ACTIVE_BASEMAP 判 blocked 并给出专属 reason_code，
+    与"从未配置底图"区分（2026-11 验收 R3）。
+    """
+    has_ready_basemap = _has_ready_asset(assets, "basemap")
+    basemap_tiles_missing = has_ready_basemap and active_basemap_tiles_present is False
     passed_by_code = {
         "PROJECT_PROFILE": _has_valid_profile(project),
         "MINE_BOUNDARY": _has_ready_asset(assets, "mine_boundary"),
-        "ACTIVE_BASEMAP": _has_ready_asset(assets, "basemap"),
+        "ACTIVE_BASEMAP": has_ready_basemap and not basemap_tiles_missing,
         "INFERENCE_INPUT": _has_ready_asset(assets, "imagery"),
         "REVIEWABLE_RESULT": _has_ready_asset(
             assets, "inference_result", source_type="classification_result"
@@ -82,7 +93,13 @@ def build_readiness(project, assets):
         {
             "code": code,
             "status": "passed" if passed_by_code[code] else "blocked",
-            "reason_code": None if passed_by_code[code] else _CHECK_REASONS[code],
+            "reason_code": None
+            if passed_by_code[code]
+            else (
+                ACTIVE_BASEMAP_TILES_MISSING
+                if code == "ACTIVE_BASEMAP" and basemap_tiles_missing
+                else _CHECK_REASONS[code]
+            ),
         }
         for code in CHECK_ORDER
     ]

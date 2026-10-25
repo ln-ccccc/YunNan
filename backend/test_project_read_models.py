@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -193,6 +194,12 @@ class TestProjectReadModels(unittest.TestCase):
                 update_time=self._timestamp("2026-09-01T08:15:00Z"),
             )
         )
+        # 概览 readiness 对激活底图做磁盘瓦片巡检（R3），healthy 项目必须
+        # 真实存在 `.active` 标记与至少一张 PNG 瓦片
+        tile_dir = self.storage_root / "projects" / str(self.PROJECT_ID) / "tiles" / "102"
+        (tile_dir / "8" / "0").mkdir(parents=True, exist_ok=True)
+        (tile_dir / ".active").write_text("102", encoding="ascii")
+        (tile_dir / "8" / "0" / "0.png").write_bytes(b"png-tile")
 
     def _seed_reviewable_result(self):
         feature_collection = {"type": "FeatureCollection", "features": []}
@@ -537,6 +544,27 @@ class TestProjectReadModels(unittest.TestCase):
         self._seed_ready_project()
 
         self._assert_overview_fixture("overview-ready.json")
+
+    def test_overview_blocks_when_active_basemap_tiles_missing(self):
+        # R3：激活底图记录 active 但磁盘瓦片丢失（存量数据被清理）时，
+        # ACTIVE_BASEMAP 判 blocked 且 reason_code 与"未配置底图"区分
+        self._seed_ready_project()
+        tile_dir = self.storage_root / "projects" / str(self.PROJECT_ID) / "tiles" / "102"
+        shutil.rmtree(tile_dir)
+
+        response = self.client.get(f"/api/projects/{self.PROJECT_ID}/overview")
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = self.json_body(response)["data"]
+        checks = {check["code"]: check for check in payload["readiness"]["checks"]}
+        self.assertEqual(checks["ACTIVE_BASEMAP"]["status"], "blocked")
+        self.assertEqual(checks["ACTIVE_BASEMAP"]["reason_code"], "ACTIVE_BASEMAP_TILES_MISSING")
+        blocker_codes = {blocker["code"] for blocker in payload["blockers"]}
+        self.assertIn("ACTIVE_BASEMAP_TILES_MISSING", blocker_codes)
+        self.assertEqual(payload["readiness"]["status"], "partial")
+        self.assertFalse(payload["capabilities"]["can_open_map"])
+        action_codes = [action["action_code"] for action in payload["next_actions"]]
+        self.assertIn("CONFIGURE_BASEMAP", action_codes)
 
     def test_archiving_preserves_readiness_but_changes_capabilities(self):
         self._seed_ready_project()

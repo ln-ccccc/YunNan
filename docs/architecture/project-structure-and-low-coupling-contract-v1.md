@@ -69,7 +69,7 @@ blocked | partial | ready
 | --- | --- | --- |
 | `PROJECT_PROFILE` | 项目名称与监测期有效 | `PROJECT_PROFILE_INCOMPLETE` |
 | `MINE_BOUNDARY` | 存在可用矿山边界资源 | `NO_MINE_BOUNDARY` |
-| `ACTIVE_BASEMAP` | 存在已激活且可读的项目底图 | `NO_ACTIVE_BASEMAP` |
+| `ACTIVE_BASEMAP` | 存在已激活且可读的项目底图 | `NO_ACTIVE_BASEMAP`；记录已激活但磁盘瓦片缺失（`.active` 标记或 PNG 瓦片丢失，2026-11 验收 R3 数据级巡检）时为 `ACTIVE_BASEMAP_TILES_MISSING` |
 | `INFERENCE_INPUT` | 存在已验证的相对 `storage_key`，且影像格式为 `tif`、`tiff`、`img` 或 `jp2` | `NO_INFERENCE_INPUT` |
 | `REVIEWABLE_RESULT` | 任一 `ClassificationResult.vector_status` 为 `ready` 或 `ready_empty` | `NO_REVIEWABLE_RESULT` |
 

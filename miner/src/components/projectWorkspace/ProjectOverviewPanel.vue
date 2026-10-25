@@ -151,6 +151,7 @@ function formatBlocker(code) {
     PROJECT_PROFILE_INCOMPLETE: '项目基本信息不完整',
     NO_MINE_BOUNDARY: '缺少矿山边界',
     NO_ACTIVE_BASEMAP: '缺少激活底图',
+    ACTIVE_BASEMAP_TILES_MISSING: '激活底图瓦片缺失，请重新切片激活',
     NO_INFERENCE_INPUT: '缺少推理影像',
     NO_REVIEWABLE_RESULT: '缺少可审阅成果',
   }[code] || code || '待处理';

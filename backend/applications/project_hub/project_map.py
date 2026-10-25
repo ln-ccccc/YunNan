@@ -42,6 +42,16 @@ def _has_available_basemap_tiles(resource):
         return False
 
 
+def has_active_basemap_tiles(project_id):
+    """R3 数据级巡检入口：激活底图的磁盘瓦片是否可用（供 readiness 挂接）。
+
+    存量瓦片可能被清理或丢失而切片任务记录仍为 succeeded（2026-11 验收
+    项目 1 实例），记录级状态对此无感知；此探针按激活资源 tile_path 抽样
+    校验 `.active` 标记与至少一张 PNG。
+    """
+    return _has_available_basemap_tiles(_active_resource(project_id, "basemap"))
+
+
 def get_project_geojson(project_id):
     _project(project_id)
     resource = _active_resource(project_id, "mine_vector")

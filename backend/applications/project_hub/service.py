@@ -21,6 +21,7 @@ from applications.schemas.project import (
     ProjectOverviewViewSchema,
 )
 from applications.project_hub.assets import list_project_assets
+from applications.project_hub.project_map import has_active_basemap_tiles
 from applications.project_hub.project_storage import ProjectStorageValidationError
 from applications.project_hub.readiness import (
     build_capabilities,
@@ -306,7 +307,13 @@ def get_project_assets(project_id, filters=None):
 def get_project_overview(project_id):
     project = _get_project_or_404(project_id)
     assets = list_project_assets(project)
-    readiness, blockers = build_readiness(project, assets)
+    # R3 数据级巡检：激活底图记录 ready 但磁盘瓦片缺失时 ACTIVE_BASEMAP
+    # 判 blocked（专属 reason_code），存量瓦片丢失不再无感知
+    readiness, blockers = build_readiness(
+        project,
+        assets,
+        active_basemap_tiles_present=has_active_basemap_tiles(project.id),
+    )
     return ProjectOverviewViewSchema().dump(
         {
             "project_id": project.id,
