@@ -33,6 +33,7 @@
 ### D5 GB 级上传的进度与失败可解释性
 - 现状：分片通道已实测可用（573M 暂停/续传/幂等复用全过），但单发通道 570s + 1.78GiB 内存峰值（R5），失败时用户只见通用错误；前端 >512MB 自动分流掩盖了单发风险，API 层 8GB 上限远超实际可承受（~2GB 即近 OOM）。
 - 建议：①`MAX_UPLOAD_TIFF_SIZE_MB` 下调至 1GB 或单发路径改流式解析（werkzeug multipart 全量缓冲是根因）；②上传失败时展示已收分片与续传指引；③服务端在接近内存上限时提前拒绝并提示改用分片。
+- **已落地（2026-10-25，53ac439）**：S 档——①上限下调至 1GB（HTTP 层与视图层同源联动）+ 超限文案引导改用分片续传。流式解析（①后半）与②③仍为后续建议。
 - 影响面：`api/file.py`（上限/流式）+ miner 上传组件（错误文案）。
 - 工作量：M（流式）或 S（仅下调上限+文案）。
 
@@ -61,12 +62,14 @@
 ### D9 GPU/推理可观测性（R1 落地项）
 - 现状：宿主 RAM 不足导致 `OSError: [Errno 12] Cannot allocate memory` 被误分类为 `GPU_INFERENCE_FAILED`，且 resolution 阶段丢弃原始异常；CPU 回退后模型常驻挤占内存，后续任务 GPU 永远失败（恶性循环，验收实测重启 worker 后 32s/2.7× 恢复）。
 - 建议：①设备探测/加载失败落原始 traceback + 分类码；②Errno 12 单独分类 `HOST_MEMORY_EXHAUSTED`；③CPU 回退后空闲期卸载 CPU 模型择机重试 GPU；④部署文档标注推理机 RAM 底线（fp32 1.97GB checkpoint 加载需 ≥8GB，推荐 16GB）。
+- **已落地（2026-10-25，286ef70）**：①②③④全部实现——探测/加载失败与任务失败均落完整堆栈日志；Errno 12 独立分类并在任务/能力报文呈现；宿主内存回退的任务结束即卸载常驻 CPU 模型、下个任务重新探测 GPU；部署指南标注 RAM 底线 8GB 推荐 16GB。
 - 影响面：`inference_worker`（错误分类与模型生命周期）；文档。
 - 工作量：M。
 
 ### D10 存量成果瓦片完整性巡检（R3 落地项）
 - 现状：项目 1 激活底图 `tiles/2` 各 zoom 目录 0 张 PNG 但切片任务记录 succeeded——历史瓦片被清理或丢失后系统无感知，地图实际无底图。
 - 建议：healthcheck 已覆盖进程级（G-2 已入库：/api/health SELECT 1 + storage 可写探针 + worker 心跳）。追加数据级巡检：低频任务（每周/启动时）对激活底图抽样 zoom 校验瓦片数 > 0，异常在项目概览 `blockers` 中呈现「激活底图瓦片缺失」。
+- **已落地（2026-10-25，e5a0968）**：比低频定时更直接——项目概览读取时对激活底图实时探针（`.active` 标记 + 抽样 PNG，rglob 早停成本可控），记录 ready 但瓦片缺失时 `ACTIVE_BASEMAP` 判 blocked、专属 reason_code `ACTIVE_BASEMAP_TILES_MISSING` 入 blockers，前端呈现「激活底图瓦片缺失」。
 - 影响面：`spatial_*` 模块 + readiness 计算挂接（后端统一计算原则不变）。
 - 工作量：M。
 
