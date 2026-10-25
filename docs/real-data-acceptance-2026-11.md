@@ -116,6 +116,31 @@
 
 R1 建议（进 I-1 设计文档；①–④ 已于 2026-10-25 落地入库 286ef70，详见 §5 R1 行与设计建议 D9）：①设备探测/加载失败记录原始异常与分类码；②`Cannot allocate memory`/Errno 12 单独分类 `HOST_MEMORY_EXHAUSTED`，与 GPU 问题区分；③CPU 回退后在空闲期卸载 CPU 模型重试 GPU，打破"回退一次永远 CPU"的恶性循环；④部署文档标注推理机 RAM 底线（1.97GB fp32 模型加载需 ≥8GB，推荐 16GB）。R2 修复（已入库 8ef0c93）：审计 import 直连 `_foundation`，不再依赖 worker 镜像补装 schemas/osgeo 依赖链。
 
+## 5.1 修复复测（2026-10-25 下午，真实数据多轮）
+
+**R5 上传双通道三轮复测全过**（53ac439）：
+
+- 超限单发（1.24GiB .ovr）：8.6s 即 HTTP 413——werkzeug 在请求头阶段比对 Content-Length > MAX_CONTENT_LENGTH（1GB）直接拒绝，不读 body；
+- 573M 真实影像单发：606.7s 上传成功（§2 基准 570.5s 同量级）；
+- 分片续传：36 片×16MiB，传 12 片后模拟中断 → 同 upload_key 重新 init 幂等复用会话（received=12）→ 补齐合并 2.1s，全程 14.0s；
+- 复测插曲定案：首轮 573M 单发"停滞 30+ 分钟"为**演练脚本 ChainReader 计数 bug**（`read()` 跨 multipart 边界时 pos 按累计长度多推进，实发字节比 Content-Length 少约 8KB → 服务端按承诺长度等剩余数据、客户端等响应，互等至超时）；修复脚本后同一服务端正常完成，服务端行为符合 HTTP 语义，非产品缺陷。期间观察：此类短 body 客户端可占用 worker 请求线程直至 gunicorn timeout（1800s）释放，浏览器真实客户端不会构造短 body，风险可忽略。
+
+**R3 瓦片巡检正负双向复测全过**（e5a0968）：
+
+- 正向①：项目 1（历史激活底图）概览连续三轮 ACTIVE_BASEMAP passed；
+- 正向②：项目 9 登记真实 10.7G 大理底图（8-12 级切片 succeeded 自动激活）后 ACTIVE_BASEMAP passed；
+- 负向：mv 走激活底图 tiles/16 → 概览三轮 ACTIVE_BASEMAP=blocked + reason_code `ACTIVE_BASEMAP_TILES_MISSING` + blockers 含该码 + can_open_map=false；mv 回后 passed、can_open_map=true 恢复；
+- 端到端：项目 9 走完 KML 导入 → 底图切片激活 → 影像登记 → 裁剪 → 切片 → GPU 推理 → 成果发布全链后 readiness 达 ready 5/5。
+
+**R1 GPU/CPU 分类与自愈复测**（286ef70）：
+
+- 健康轮：真实 573M 影像 → fid696 裁剪 → 512 切片链路推理 succeeded 15.9s，effective_device=cuda:0；
+- 自愈轮：经 cgroup 限压 crash-loop 与宿主内存挤压双重折腾、解除限制重启后，推理 succeeded 10.6s、cuda:0 完全恢复；
+- 单测复跑：test_inference_device + test_inference_runner 40/40 全过（Errno 12 独立分类、禁回退抛 DeviceResolutionError、宿主内存回退任务结束卸载常驻 CPU 模型、CUDA OOM 回退四关键用例）；
+- **Errno 12 真机注入在本验证环境不可安全复现（如实声明）**：①宿主 RAM+swap 挤压路线——Docker 引擎与负载共置同一 5.79GiB VM，压至 mmap 拒绝窗口（free+swap≈2-3G）时 dockerd 先失稳（引擎 API 500、CLI 卡死），需从 WSL 侧强杀 hog 止损；②cgroup `--memory` 硬限路线——超限走 OOM kill（SIGKILL）而非 mmap ENOMEM，Python 层无分类机会，且导致 worker crash-loop。生产裸机部署（引擎独立于推理机）无此耦合；§5 R1 原始实证（torch.load Errno 12 完整 traceback）仍为分类逻辑的真实依据。运维注记：`docker update --memory 0` 不解除既有上限，须显式设置大值。
+
+**复测数据清理**：复测项目 9 已归档 → 删除入 trash（`9_20261025_124625_78208eb4`）；复测上传产物（photo 23/24 两份 573M tif）已删除；项目 1/4 未动。
+
 ## 6. 结论与遗留
 
 **结论（2026-10-25，H-2 + H-3 全部完成）**
@@ -125,5 +150,6 @@ R1 建议（进 I-1 设计文档；①–④ 已于 2026-10-25 落地入库 286e
 3. **验收发现 R1–R7 全部闭环**（§5）：代码缺陷修复并入库 7 项——R1（宿主内存分类与回退自愈 286ef70）、R2（审计链 8ef0c93）、R3（瓦片缺失巡检入 readiness e5a0968）、R4（ROI 容差 83f6e40）、R5（单发上限 1GB+分片引导 53ac439）、R6（孤儿任务回收 7a59afe）、R7（生产构建工具栏 076df8a）。R5 单发路径流式化仍为 I-1 后续建议（D5）。
 4. **韧性**（§3）：kill worker / 重启 backend / 慢网络断连 / 双会话 409 四演练通过，其中演练 1 直接暴露并促成 R6 修复。
 5. **验收数据已清理**：项目 7（11G）与项目 8 均删除入 trash（`7_20261024_203403_961adf5e`、`8_20261024_182346_86df60d3`），trash 手工恢复路径已在步骤 15 演练验证；项目 1 原始数据全程只读未动。
+6. **修复复测通过**（2026-10-25 下午，§5.1）：R1/R3/R5 修复在真实数据上多轮复测通过；R5 首轮停滞定案为演练脚本 bug（非产品缺陷）；R1 的 Errno 12 真机注入受"引擎共置 VM"环境限制不可安全复现，以单测 40/40 + 原始实证覆盖并如实声明。
 
 **遗留与移交（进批次 I-1 设计建议文档）**：R1/R3/R5 修复部分已落地（286ef70 / e5a0968 / 53ac439，标记见 §5）；仍待后续：R5 单发上传流式化、推理任务无 retry API、trash 恢复无受控 API、编辑器绘制无 ROI 事前提示、direct_select 下 trash 无效果缺提示、项目详情业务失败 HTTP 200 语义、登记接口非幂等且无删除 API。
