@@ -1,5 +1,6 @@
 """持久化推理任务 Worker。"""
 
+import gc
 import json
 import logging
 import os
@@ -482,6 +483,12 @@ class InferenceWorker:
                 if str(error) == "INFERENCE_TIMEOUT"
                 else str(error)
             )
+            logger.exception(
+                "推理任务 %s 失败（error_code=%s，effective_device=%s）",
+                getattr(job, "id", "?"),
+                error_code,
+                self.resolution.effective,
+            )
             self._record_project_failure_audit(payload, job, error_code, error_message)
             return self.job_store.finish_job(
                 job,
@@ -498,6 +505,20 @@ class InferenceWorker:
                 self.resolution = process_resolution
                 if hasattr(self.job_store, "publish_worker_capability"):
                     self.job_store.publish_worker_capability(self.worker_id, self.resolution)
+            if (
+                self.model is not None
+                and getattr(self.resolution, "effective", None) == "cpu"
+                and getattr(self.resolution, "fallback_reason", None) == "HOST_MEMORY_EXHAUSTED"
+            ):
+                # 宿主内存耗尽回退后 CPU 模型常驻（GB 级）会持续挤压下次 GPU
+                # 加载所需内存，形成"回退一次永远 CPU"的恶性循环；任务结束即
+                # 卸载，下个任务 initialize 重新探测 GPU——宿主内存释放后自愈
+                logger.warning(
+                    "宿主内存耗尽回退的任务结束，卸载常驻 CPU 模型以便下个任务重试 GPU"
+                )
+                self.model = None
+                self.cpu_model = None
+                gc.collect()
             self.active_job = None
             self.job_deadline = None
 

@@ -1,8 +1,11 @@
 """与 NVIDIA 具体型号无关的 CUDA 能力探测和 CPU 降级。"""
 
+import logging
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
+
+logger = logging.getLogger(__name__)
 
 GPU_ERROR_MESSAGES = {
     "GPU_NOT_VISIBLE": "未检测到容器可见的 NVIDIA CUDA GPU",
@@ -10,6 +13,7 @@ GPU_ERROR_MESSAGES = {
     "GPU_ARCH_UNSUPPORTED": "当前 PyTorch/CUDA 构建不支持该 GPU 计算架构",
     "MMCV_CUDA_OP_UNAVAILABLE": "MMCV CUDA 算子不可用",
     "MODEL_GPU_LOAD_FAILED": "模型无法在 GPU 加载",
+    "HOST_MEMORY_EXHAUSTED": "宿主内存不足，无法分配模型加载所需内存",
     "CUDA_OUT_OF_MEMORY": "CUDA 显存不足",
     "GPU_INFERENCE_FAILED": "GPU 能力检查失败",
 }
@@ -62,6 +66,10 @@ def run_mmcv_cuda_smoke_test(device: str, *, op_runner=None) -> None:
 
 def _classify_gpu_error(error: Exception) -> str:
     message = str(error).lower()
+    # 宿主 RAM 不足（torch.load 分配失败）先于显存判断：误归为 GPU 问题会
+    # 掩盖"加内存即可恢复 GPU"的真相（2026-11 验收 R1 根因）
+    if "cannot allocate memory" in message or "[errno 12]" in message:
+        return "HOST_MEMORY_EXHAUSTED"
     if "out of memory" in message:
         return "CUDA_OUT_OF_MEMORY"
     if "no kernel image" in message or "invalid device function" in message or "compute capability" in message:
@@ -140,6 +148,9 @@ class DeviceResolver:
             raise
         except Exception as error:
             code = _classify_gpu_error(error)
+            # 原始异常与堆栈必须落日志：真实根因（如宿主内存耗尽）不能被
+            # 分类码兜底吞掉，否则运维只能看到"GPU 能力检查失败"
+            logger.exception("GPU 设备探测或加载失败，分类码 %s（回退 CPU=%s）", code, allow_cpu_fallback)
             return self._fallback_or_raise(normalized, code, allow_cpu_fallback)
 
         return DeviceResolution(

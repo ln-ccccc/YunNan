@@ -77,6 +77,7 @@ docker exec cugrs-inference-worker \
 | `GPU_ARCH_UNSUPPORTED` | 当前 Torch/CUDA 构建不支持 GPU 计算架构 |
 | `MMCV_CUDA_OP_UNAVAILABLE` | MMCV CUDA 算子缺失或不匹配 |
 | `MODEL_GPU_LOAD_FAILED` | 模型无法在 GPU 加载 |
+| `HOST_MEMORY_EXHAUSTED` | 宿主（RAM）内存不足，模型加载分配失败（`Errno 12`），允许时回退 CPU；任务结束后卸载回退模型以便内存释放后重试 GPU |
 | `CUDA_OUT_OF_MEMORY` | GPU 显存不足，允许时用 CPU 重跑 |
 | `GPU_INFERENCE_FAILED` | 其他 GPU 推理失败 |
 | `WORKER_RESTARTED` | Worker 进程重启，上一进程中的运行任务已明确置为失败 |

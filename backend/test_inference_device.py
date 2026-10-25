@@ -134,6 +134,32 @@ class TestDeviceResolver(unittest.TestCase):
         self.assertEqual(result.effective, "cpu")
         self.assertEqual(result.fallback_reason, "MODEL_GPU_LOAD_FAILED")
 
+    def test_host_memory_exhausted_is_classified_separately(self):
+        # 验收 R1：torch.load 触发 Errno 12 时不得误归 GPU_INFERENCE_FAILED
+        module = load_device_module()
+        resolver = module.DeviceResolver(
+            torch_loader=lambda: FakeTorch(FakeCuda()),
+            smoke_test=Mock(side_effect=OSError("[Errno 12] Cannot allocate memory")),
+        )
+
+        result = resolver.resolve(requested="auto", allow_cpu_fallback=True)
+
+        self.assertEqual(result.effective, "cpu")
+        self.assertEqual(result.fallback_reason, "HOST_MEMORY_EXHAUSTED")
+        self.assertIn("宿主内存", result.warnings[0])
+
+    def test_host_memory_exhausted_raises_when_fallback_disabled(self):
+        module = load_device_module()
+        resolver = module.DeviceResolver(
+            torch_loader=lambda: FakeTorch(FakeCuda()),
+            smoke_test=Mock(side_effect=OSError("[Errno 12] Cannot allocate memory")),
+        )
+
+        with self.assertRaises(module.DeviceResolutionError) as context:
+            resolver.resolve(requested="auto", allow_cpu_fallback=False)
+
+        self.assertEqual(context.exception.code, "HOST_MEMORY_EXHAUSTED")
+
     def test_force_cpu_does_not_probe_cuda(self):
         module = load_device_module()
         torch_loader = Mock(side_effect=AssertionError("must not load torch"))

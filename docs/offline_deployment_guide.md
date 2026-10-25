@@ -98,6 +98,8 @@ test -f backend/model/mmseg_config/model.inference.pth
 
 根目录 `.env` 含数据库账号和会话密钥，属于敏感文件，必须妥善保管。
 
+**推理机内存要求**：启用 GPU 推理的宿主机 RAM 底线 **8GB，推荐 16GB**（Docker Desktop/WSL2 环境指分配给 VM 的内存）。fp32 checkpoint 约 2GB，`torch.load` 加载峰值约为其 2 倍，叠加模型常驻与瓦片缓存后低于 8GB 会触发 `[Errno 12] Cannot allocate memory` 并回退 CPU（错误码 `HOST_MEMORY_EXHAUSTED`，错误码表见 `docs/inference_gpu_compatibility.md`）。
+
 ### 2. 加载镜像
 
 ```bash

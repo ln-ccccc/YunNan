@@ -637,6 +637,73 @@ class TestInferenceRunner(unittest.TestCase):
         self.assertEqual(finish_args["effective_device"], "cpu")
         self.assertEqual(finish_args["fallback_reason"], "CUDA_OUT_OF_MEMORY")
 
+    def test_worker_unloads_cpu_model_after_host_memory_fallback(self):
+        # 验收 R1：宿主内存耗尽回退后任务结束必须卸载常驻 CPU 模型，
+        # 否则 GB 级常驻内存持续挤压下次 GPU 加载空间，形成永远 CPU 的恶性循环
+        worker_module = load_worker_module()
+
+        def make_resolution(fallback_reason):
+            return types.SimpleNamespace(
+                requested="auto",
+                effective="cpu",
+                fallback_reason=fallback_reason,
+                warnings=("fallback",),
+            )
+
+        def make_job(job_id):
+            return types.SimpleNamespace(
+                id=job_id,
+                status="running",
+                cancel_requested=False,
+                request_payload_json=json.dumps(
+                    {
+                        "old_tif_path": "old.tif",
+                        "new_tif_path": "new.tif",
+                        "kml_path": "roi.kml",
+                        "output_root": "outputs",
+                    }
+                ),
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            resolver = Mock()
+            resolver.resolve.return_value = make_resolution("HOST_MEMORY_EXHAUSTED")
+            model_loader = Mock(side_effect=["cpu-model-1", "cpu-model-2"])
+            worker = worker_module.InferenceWorker(
+                device_resolver=resolver,
+                model_loader=model_loader,
+                inference_fn=Mock(),
+                pipeline_runner=Mock(return_value={"status": "succeeded", "written_fids": 1}),
+                job_store=Mock(),
+                runtime_root=Path(temp_dir),
+            )
+            worker.run_job(make_job("job-hostmem"))
+
+            self.assertIsNone(worker.model)
+            self.assertIsNone(worker.cpu_model)
+
+            # 下个任务重新 initialize → 重新探测设备（宿主内存释放后可回到 GPU）
+            worker.run_job(make_job("job-hostmem-2"))
+
+            self.assertEqual(resolver.resolve.call_count, 2)
+            self.assertEqual(model_loader.call_count, 2)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # 其他回退原因（GPU 不可见）保持常驻模型行为不变
+            resolver_stay = Mock()
+            resolver_stay.resolve.return_value = make_resolution("GPU_NOT_VISIBLE")
+            worker_stay = worker_module.InferenceWorker(
+                device_resolver=resolver_stay,
+                model_loader=Mock(return_value="cpu-model"),
+                inference_fn=Mock(),
+                pipeline_runner=Mock(return_value={"status": "succeeded", "written_fids": 1}),
+                job_store=Mock(),
+                runtime_root=Path(temp_dir),
+            )
+            worker_stay.run_job(make_job("job-stay"))
+
+            self.assertIs(worker_stay.model, "cpu-model")
+
     def test_worker_records_cancelled_when_pipeline_stops_at_tile_boundary(self):
         worker_module = load_worker_module()
         resolution = types.SimpleNamespace(
