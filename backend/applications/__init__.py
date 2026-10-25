@@ -74,10 +74,11 @@ def create_app(config_name=None):
 
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-    # 上传上限与 8GB 大影像闸门（tiff_processor.MAX_UPLOAD_TIFF_SIZE_MB）保持
-    # 同源：Werkzeug 在表单解析阶段按该值抛 413，若小于视图内闸门会把
-    # 大文件功能在 HTTP 层拦死（2026-09-20 审查 P1）。视图内仍保留逐文件
-    # 硬上限校验与 500MB 预处理闸门。
+    # 上传上限与单发大影像闸门（tiff_processor.MAX_UPLOAD_TIFF_SIZE_MB，
+    # 2026-11 验收 R5 起 1GB）保持同源：Werkzeug 在表单解析阶段按该值抛
+    # 413，若小于视图内闸门会把大文件功能在 HTTP 层拦死（2026-09-20 审查
+    # P1）。视图内仍保留逐文件硬上限校验与 500MB 预处理闸门；GB 级大文件
+    # 走分片续传通道（UPLOAD_SESSION_MAX_TOTAL_MB=100GB）。
     from applications.common.utils.tiff_processor import MAX_UPLOAD_TIFF_SIZE_MB
 
     app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_TIFF_SIZE_MB * 1024 * 1024

@@ -2,7 +2,7 @@
 """大文件影像上传支持（移植江西 2026-09-19 验收需求）。
 
 覆盖项：
-- 上传硬上限 8GB（MAX_UPLOAD_TIFF_SIZE_MB），500MB 仅保留为切片预览闸门
+- 上传硬上限 1GB（MAX_UPLOAD_TIFF_SIZE_MB，2026-11 验收 R5 下调），500MB 仅保留为切片预览闸门
 - 地物分类 keep_tiff_raw 快速路径：不切片、不生成预览 PNG，直传原始 tif
 - 切片预览失败时优雅降级：保留原始文件，不再拒绝上传
 """
@@ -67,8 +67,10 @@ class LargeTiffUploadBase(unittest.TestCase):
 
 
 class TestUploadSizeConstants(LargeTiffUploadBase):
-    def test_upload_hard_limit_is_8gb_and_preview_gate_stays_500mb(self):
-        self.assertEqual(MAX_UPLOAD_TIFF_SIZE_MB, 8192)
+    def test_upload_hard_limit_is_1gb_and_preview_gate_stays_500mb(self):
+        # 单发上限 2026-11 验收 R5 下调至 1GB（werkzeug multipart 全量内存
+        # 缓冲，573MB 实测峰值 1.78GiB）；GB 级走分片续传通道
+        self.assertEqual(MAX_UPLOAD_TIFF_SIZE_MB, 1024)
         # 切片预览/整图读内存路径的闸门保留，不被上传放宽连带抬高
         self.assertEqual(MAX_TIFF_SIZE_MB, 500)
 
@@ -89,6 +91,8 @@ class TestUploadSizeGate(LargeTiffUploadBase):
         body = response.get_json()
         self.assertFalse(body.get("success"))
         self.assertIn("硬上限", body.get("msg", ""))
+        # R5：超限提示必须引导用户改走分片续传通道
+        self.assertIn("分片", body.get("msg", ""))
 
     def test_tiff_within_hard_limit_passes_gate(self):
         self.login_as_admin()
@@ -109,7 +113,7 @@ class TestUploadSizeGate(LargeTiffUploadBase):
 
     def test_request_body_over_60mb_passes_http_layer(self):
         """回归：MAX_CONTENT_LENGTH 曾固定 60MB，>60MB 的上传在 Werkzeug 表单
-        解析阶段即 413，视图内 8GB 闸门与 keep_tiff_raw 路径完全不可达。"""
+        解析阶段即 413，视图内单发闸门与 keep_tiff_raw 路径完全不可达。"""
         self.login_as_admin()
         payload = io.BytesIO(b"\x00" * (61 * 1024 * 1024))
         with patch("applications.api.file.upload_curd") as mock_upload:

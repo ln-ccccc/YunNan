@@ -30,10 +30,11 @@ from PIL import Image
 # 配置常量
 MAX_TIFF_SIZE_MB = 500  # 切片预览/整图读内存路径的最大文件大小 (MB)
 MAX_TIFF_SIZE_BYTES = MAX_TIFF_SIZE_MB * 1024 * 1024
-# 上传硬上限（8GB，移植江西 2026-09-19 大文件支持）：地物分类推理按矿山
-# 图斑 bbox 窗口裁剪，内存与影像大小解耦；MAX_TIFF_SIZE_MB 仅约束
-# process_uploaded_tiff（切片+预览渲染整图读内存）等预处理环节
-MAX_UPLOAD_TIFF_SIZE_MB = 8192
+# 单发 multipart 上传硬上限（1GB，2026-11 验收 R5 下调）：werkzeug 解析
+# multipart 时全量内存缓冲，实测 573MB 单发即峰值 1.78GiB、耗时 570s，
+# 8GB 上限在 5.79GiB Docker VM 下必 OOM；大文件必须走分片续传通道。
+# MAX_TIFF_SIZE_MB 仅约束 process_uploaded_tiff 等整图读内存的预处理环节
+MAX_UPLOAD_TIFF_SIZE_MB = 1024
 # 分片续传通道的总量上限（100GB，2026-09-22）：单发 multipart 通道仍受
 # MAX_UPLOAD_TIFF_SIZE_MB 约束（gunicorn 单请求超时不适合小时级长传），
 # 超过前端阈值（512MB）的文件走 init/chunk/complete 三端点分片续传

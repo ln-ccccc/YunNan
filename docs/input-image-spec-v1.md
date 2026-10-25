@@ -23,7 +23,7 @@
 
 | 链路 | 上限 | 行为 |
 | --- | --- | --- |
-| 浏览器上传（`/api/file/upload`） | 硬上限 **8GB**（`MAX_UPLOAD_TIFF_SIZE_MB=8192`，HTTP 层与视图层同源） | 超限 413/业务失败 |
+| 浏览器上传（`/api/file/upload`） | 单发硬上限 **1GB**（`MAX_UPLOAD_TIFF_SIZE_MB=1024`，HTTP 层与视图层同源；2026-11 验收 R5 下调，werkzeug multipart 全量内存缓冲所致）；GB 级影像走分片续传（`/api/file/upload/init` 等，总量上限 100GB） | 超限 413/业务失败并提示改用分片 |
 | 切片预览/整图读内存预处理 | **500MB**（`MAX_TIFF_SIZE_MB`） | 超限优雅降级：保留原始文件，不拒绝上传 |
 | 服务端目录投递 | 无代码上限；登记时做**磁盘预检**（可用空间 ≥ max(2×源文件, 100MB)） | 不足即拒绝登记 |
 

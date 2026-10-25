@@ -44,13 +44,15 @@ def upload_api():
             size_bytes = photo.tell()
             photo.seek(0)
             size_mb = size_bytes / (1024 * 1024)
-            # 上限放宽至 8GB（移植江西 2026-09-19）：地物分类推理按图斑窗口
-            # 裁剪，内存与影像大小解耦；500MB 限制仅保留在切片预览/整图读
-            # 内存的预处理环节（process_uploaded_tiff 内部闸门）。
-            # 超过该上限（前端阈值 512MB 以上即分流）请走分片续传通道：
+            # 单发 multipart 上限 1GB（2026-11 验收 R5）：werkzeug 解析全量
+            # 内存缓冲，实测 573MB 即峰值 1.78GiB/570s，大文件必走分片。
+            # 前端 >512MB 已自动分流分片续传通道：
             # /api/file/upload/init|chunk/<sid>/<idx>|complete/<sid>
             if size_mb > MAX_UPLOAD_TIFF_SIZE_MB:
-                return fail_api(f"影像文件 '{photo.filename}' 大小 ({size_mb:.1f}MB) 超过硬上限 ({MAX_UPLOAD_TIFF_SIZE_MB}MB)")
+                return fail_api(
+                    f"影像文件 '{photo.filename}' 大小 ({size_mb:.1f}MB) 超过单发上传硬上限 "
+                    f"({MAX_UPLOAD_TIFF_SIZE_MB}MB)，请改用分片续传上传"
+                )
 
     data = []
     is_slice_str = request.form.get('isSlice', 'false')

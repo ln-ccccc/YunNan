@@ -218,8 +218,8 @@ class TestChunkedUploadLifecycle(ChunkedUploadBase):
         self.assertIsNone(body["data"][0]["raw_tiff_path"])
 
     def test_caps_parity_with_frontend_channel_design(self):
-        # 单发通道 8GB 不动；分片通道 100GB
-        self.assertEqual(MAX_UPLOAD_TIFF_SIZE_MB, 8192)
+        # 单发通道 1GB（R5 下调，werkzeug 全量内存缓冲）；分片通道 100GB
+        self.assertEqual(MAX_UPLOAD_TIFF_SIZE_MB, 1024)
         self.assertEqual(UPLOAD_SESSION_MAX_TOTAL_MB, 102400)
 
     def _complete_payload(self):
