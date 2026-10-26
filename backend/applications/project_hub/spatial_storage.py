@@ -22,10 +22,17 @@ def resolve_storage_path(storage_root, relative_path):
 def resolve_stored_file(storage_root, stored_path):
     """数据集/记录类存储键（ProjectDataset.file_path 等）的统一双形态解析
     （2026-10-24 契约 B）：唯一规范形态是 storage 根相对键；legacy 绝对路径
-    仅在位于当前 storage 根内时兼容接受。越界/穿越抛 ValueError，由调用方
-    决定对客户端的错误语义。"""
-    text = str(stored_path or "")
-    raw = Path(text).expanduser()
+    仅在位于当前 storage 根内时兼容接受。越界/穿越/非法输入抛 ValueError，
+    由调用方决定对客户端的错误语义。"""
+    text = str(stored_path or "").strip()
+    if not text:
+        raise ValueError("存储路径为空")
+    try:
+        raw = Path(text).expanduser()
+    except RuntimeError as exc:
+        # pathlib 对 '~0' 等畸形家目录前缀抛 RuntimeError（Python 3.10），
+        # 按本函数契约统一转为 ValueError
+        raise ValueError("存储路径非法") from exc
     windows_path = PureWindowsPath(text)
     if (
         ".." in raw.parts

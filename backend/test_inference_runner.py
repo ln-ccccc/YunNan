@@ -580,6 +580,88 @@ class TestInferenceRunner(unittest.TestCase):
         self.assertEqual(job_store.finish_job.call_args.kwargs["effective_device"], "cpu")
         self.assertIs(worker.model, "gpu-model")
         self.assertIs(worker.resolution, resolution)
+        # 显式 cpu 任务按需加载的 CPU 模型任务结束即卸载：常驻会挤压后续
+        # GPU 任务加载内存（与宿主内存回退同款恶性循环）
+        self.assertIsNone(worker.cpu_model)
+
+    def test_worker_classifies_runtime_host_memory_error_on_cuda(self):
+        """运行期（非加载期）宿主内存耗尽不得按设备前缀误归
+        GPU_INFERENCE_FAILED——error_code 必须是 HOST_MEMORY_EXHAUSTED。"""
+        worker_module = load_worker_module()
+        resolution = types.SimpleNamespace(
+            requested="auto",
+            effective="cuda:0",
+            fallback_reason=None,
+            warnings=(),
+        )
+        resolver = Mock()
+        resolver.resolve.return_value = resolution
+        pipeline_runner = Mock(
+            side_effect=RuntimeError(
+                "DefaultCPUAllocator: can't allocate memory: You tried to allocate 2147483648 bytes."
+            )
+        )
+        job_store = Mock()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = worker_module.InferenceWorker(
+                device_resolver=resolver,
+                model_loader=Mock(return_value="gpu-model"),
+                inference_fn=Mock(),
+                pipeline_runner=pipeline_runner,
+                job_store=job_store,
+                runtime_root=Path(temp_dir),
+            )
+            worker.initialize()
+            job = types.SimpleNamespace(
+                id="job-runtime-hostmem",
+                status="running",
+                cancel_requested=False,
+                request_payload_json=json.dumps(
+                    {
+                        "old_tif_path": "old.tif",
+                        "new_tif_path": "new.tif",
+                        "kml_path": "roi.kml",
+                        "output_root": "outputs",
+                    }
+                ),
+            )
+            worker.run_job(job)
+
+        finish_args = job_store.finish_job.call_args.kwargs
+        self.assertEqual(finish_args["status"], "failed")
+        self.assertEqual(finish_args["error_code"], "HOST_MEMORY_EXHAUSTED")
+
+    def test_switch_to_cpu_after_oom_replaces_resolution_before_load(self):
+        """OOM 回退必须先替换 resolution 再加载 CPU 模型：加载自身因宿主
+        内存耗尽失败时，归因与能力上报不能仍停留在 cuda。"""
+        worker_module = load_worker_module()
+        resolution = types.SimpleNamespace(
+            requested="auto",
+            effective="cuda:0",
+            fallback_reason=None,
+            warnings=(),
+        )
+        resolver = Mock()
+        resolver.resolve.return_value = resolution
+        job_store = Mock()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = worker_module.InferenceWorker(
+                device_resolver=resolver,
+                model_loader=Mock(side_effect=["gpu-model", RuntimeError("[Errno 12] Cannot allocate memory")]),
+                inference_fn=Mock(),
+                pipeline_runner=Mock(),
+                job_store=job_store,
+                runtime_root=Path(temp_dir),
+            )
+            worker.initialize()
+
+            with self.assertRaises(RuntimeError):
+                worker._switch_to_cpu_after_oom()
+
+        self.assertEqual(worker.resolution.effective, "cpu")
+        self.assertEqual(worker.resolution.fallback_reason, "CUDA_OUT_OF_MEMORY")
+        published = job_store.publish_worker_capability.call_args_list[-1].args[1]
+        self.assertEqual(published.effective, "cpu")
 
     def test_worker_falls_back_to_cpu_after_cuda_out_of_memory(self):
         worker_module = load_worker_module()

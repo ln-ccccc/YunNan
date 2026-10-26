@@ -1,5 +1,6 @@
 """与 NVIDIA 具体型号无关的 CUDA 能力探测和 CPU 降级。"""
 
+import errno
 import logging
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
@@ -64,11 +65,35 @@ def run_mmcv_cuda_smoke_test(device: str, *, op_runner=None) -> None:
         raise RuntimeError(f"MMCV CUDA op smoke failed: {error}") from error
 
 
+def _host_memory_signature(message: str) -> bool:
+    """宿主内存耗尽的报错特征。torch DefaultCPUAllocator 的真实文案是
+    "can't allocate memory" / "couldn't allocate memory"（撇号形态随版本），
+    与 glibc 的 "cannot allocate memory" 统一去撇号匹配。"""
+    normalized = message.replace("'", "")
+    return (
+        "cannot allocate memory" in normalized
+        or "cant allocate memory" in normalized
+        or "couldnt allocate memory" in normalized
+        or "[errno 12]" in message
+    )
+
+
+def classify_runtime_error(error: Exception) -> Optional[str]:
+    """运行期错误分类（供 worker 在任务执行 except 路径复用）。
+
+    返回 "HOST_MEMORY_EXHAUSTED" 表示宿主内存耗尽；None 表示无宿主内存
+    特征，由调用方按设备归类。errno=ENOMEM（12）的 OSError 即使报错文案
+    未命中串特征也判定为宿主内存耗尽。"""
+    if _host_memory_signature(str(error).lower()) or getattr(error, "errno", None) == errno.ENOMEM:
+        return "HOST_MEMORY_EXHAUSTED"
+    return None
+
+
 def _classify_gpu_error(error: Exception) -> str:
     message = str(error).lower()
     # 宿主 RAM 不足（torch.load 分配失败）先于显存判断：误归为 GPU 问题会
     # 掩盖"加内存即可恢复 GPU"的真相（2026-11 验收 R1 根因）
-    if "cannot allocate memory" in message or "[errno 12]" in message:
+    if _host_memory_signature(message) or getattr(error, "errno", None) == errno.ENOMEM:
         return "HOST_MEMORY_EXHAUSTED"
     if "out of memory" in message:
         return "CUDA_OUT_OF_MEMORY"

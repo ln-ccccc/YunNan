@@ -111,6 +111,22 @@ class TestProjectSpatialState(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "必须使用相对路径"):
                 resolve_storage_path(temp_dir, os.path.abspath("outside.tif"))
 
+    def test_resolve_stored_file_rejects_empty_and_malformed_home_prefix(self):
+        """契约 B：非法输入统一抛 ValueError——空键不得静默返回 storage 根
+        （后续拼接会作用于整个 project_storage），'~0' 等畸形家目录前缀的
+        pathlib RuntimeError 也要转为 ValueError（property-based 实验发现）。"""
+        from applications.project_hub.spatial_storage import resolve_stored_file
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for malformed in ("", "   ", None):
+                with self.subTest(malformed=malformed):
+                    with self.assertRaises(ValueError):
+                        resolve_stored_file(temp_dir, malformed)
+            with self.assertRaises(ValueError):
+                resolve_stored_file(temp_dir, "~0")
+            resolved = resolve_stored_file(temp_dir, "projects/a.tif")
+            self.assertEqual(resolved, Path(temp_dir, "projects", "a.tif"))
+
     def test_geojson_preview_detects_fields_and_reports_invalid_suggested_fid(self):
         from applications.project_hub.spatial_service import (
             preview_mine_vector,

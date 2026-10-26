@@ -131,6 +131,28 @@ class TestUploadSizeGate(LargeTiffUploadBase):
         self.assertNotEqual(response.status_code, 413)
         self.assertTrue(body.get("success"), msg=str(body))
 
+    def test_payload_too_large_returns_json_with_chunked_guidance(self):
+        """Werkzeug 解析阶段 413 默认是英文 HTML；必须转 JSON 业务响应并
+        保留"请改用分片续传"引导（含绕过前端直连 API 的消费者）。"""
+        self.login_as_admin()
+        self.app.config["MAX_CONTENT_LENGTH"] = 1024
+        try:
+            response = self.client.post(
+                "/api/file/upload",
+                data={
+                    "files": (io.BytesIO(b"\x00" * 4096), "big.tif"),
+                    "type": "地物分类",
+                },
+                content_type="multipart/form-data",
+            )
+        finally:
+            self.app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_TIFF_SIZE_MB * 1024 * 1024
+
+        self.assertEqual(response.status_code, 413)
+        body = response.get_json()
+        self.assertFalse(body.get("success"))
+        self.assertIn("分片续传", body.get("msg", ""))
+
 
 class TestUploadOneFastPath(LargeTiffUploadBase):
     """keep_tiff_raw=True 的地物分类快速路径与失败优雅降级。"""

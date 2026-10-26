@@ -265,6 +265,17 @@ class InferenceWorker:
 
     def _switch_to_cpu_after_oom(self):
         self.model = None
+        # 先替换 resolution 再加载 CPU 模型：若加载本身因宿主内存耗尽失败，
+        # 归因与能力上报不能仍停留在 cuda（否则失败被误记 GPU 问题）
+        warning = "CUDA 显存不足，已回退 CPU 并重试当前任务"
+        self.resolution = SimpleNamespace(
+            requested=self.resolution.requested,
+            effective="cpu",
+            fallback_reason="CUDA_OUT_OF_MEMORY",
+            warnings=tuple(self.resolution.warnings) + (warning,),
+        )
+        if hasattr(self.job_store, "publish_worker_capability"):
+            self.job_store.publish_worker_capability(self.worker_id, self.resolution)
         try:
             import torch
 
@@ -277,15 +288,6 @@ class InferenceWorker:
         if self.cpu_model is None:
             self.cpu_model = self.model_loader("cpu")
         self.model = self.cpu_model
-        warning = "CUDA 显存不足，已回退 CPU 并重试当前任务"
-        self.resolution = SimpleNamespace(
-            requested=self.resolution.requested,
-            effective="cpu",
-            fallback_reason="CUDA_OUT_OF_MEMORY",
-            warnings=tuple(self.resolution.warnings) + (warning,),
-        )
-        if hasattr(self.job_store, "publish_worker_capability"):
-            self.job_store.publish_worker_capability(self.worker_id, self.resolution)
 
     def _record_project_failure_audit(self, payload, job, error_code, error_message):
         """项目任务失败的审计事件（走项目域公共服务函数；审计故障不影响失败终态）。"""
@@ -473,11 +475,22 @@ class InferenceWorker:
                     fallback_reason=self.resolution.fallback_reason,
                     warnings=self.resolution.warnings,
                 )
-            error_code = (
-                "JOB_TIMEOUT"
-                if str(error) == "INFERENCE_TIMEOUT"
-                else ("GPU_INFERENCE_FAILED" if self.resolution.effective.startswith("cuda") else "INFERENCE_FAILED")
-            )
+            if str(error) == "INFERENCE_TIMEOUT":
+                error_code = "JOB_TIMEOUT"
+            else:
+                from applications.inference.device import classify_runtime_error
+
+                # 运行期同样可能宿主内存耗尽（Errno 12 / DefaultCPUAllocator
+                # "can't allocate memory"），不能只按设备前缀二分误归 GPU 失败
+                host_code = classify_runtime_error(error)
+                if host_code:
+                    error_code = host_code
+                else:
+                    error_code = (
+                        "GPU_INFERENCE_FAILED"
+                        if self.resolution.effective.startswith("cuda")
+                        else "INFERENCE_FAILED"
+                    )
             error_message = (
                 f"推理任务超过 {self._effective_job_timeout_seconds} 秒时限"
                 if str(error) == "INFERENCE_TIMEOUT"
@@ -503,12 +516,19 @@ class InferenceWorker:
             if restore_process_device:
                 self.model = process_model
                 self.resolution = process_resolution
+                if self.cpu_model is not None:
+                    # 显式 cpu 任务按需加载的 CPU 模型（GB 级）任务结束同样
+                    # 卸载：与宿主内存回退同款挤压问题，常驻会让后续 GPU 任务
+                    # 加载内存不足；下个显式 cpu 任务按需重载
+                    logger.warning("显式 CPU 任务结束，卸载按需加载的 CPU 模型")
+                    self.cpu_model = None
+                    gc.collect()
                 if hasattr(self.job_store, "publish_worker_capability"):
                     self.job_store.publish_worker_capability(self.worker_id, self.resolution)
             if (
                 self.model is not None
-                and getattr(self.resolution, "effective", None) == "cpu"
-                and getattr(self.resolution, "fallback_reason", None) == "HOST_MEMORY_EXHAUSTED"
+                and self.resolution.effective == "cpu"
+                and self.resolution.fallback_reason == "HOST_MEMORY_EXHAUSTED"
             ):
                 # 宿主内存耗尽回退后 CPU 模型常驻（GB 级）会持续挤压下次 GPU
                 # 加载所需内存，形成"回退一次永远 CPU"的恶性循环；任务结束即
@@ -518,6 +538,7 @@ class InferenceWorker:
                 )
                 self.model = None
                 self.cpu_model = None
+                process_model = None
                 gc.collect()
             self.active_job = None
             self.job_deadline = None

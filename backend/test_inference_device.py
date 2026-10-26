@@ -148,6 +148,39 @@ class TestDeviceResolver(unittest.TestCase):
         self.assertEqual(result.fallback_reason, "HOST_MEMORY_EXHAUSTED")
         self.assertIn("宿主内存", result.warnings[0])
 
+    def test_host_memory_matches_torch_cpu_allocator_wording(self):
+        """torch DefaultCPUAllocator 的真实文案是 "can't/couldn't allocate
+        memory"（撇号形态随版本），必须命中宿主内存分类而非兜底 GPU 失败。"""
+        module = load_device_module()
+
+        for message in (
+            "DefaultCPUAllocator: can't allocate memory: You tried to allocate 2147483648 bytes.",
+            "DefaultCPUAllocator: couldn't allocate memory: wrong alignment",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    module._classify_gpu_error(RuntimeError(message)),
+                    "HOST_MEMORY_EXHAUSTED",
+                )
+
+    def test_classify_runtime_error_distinguishes_host_memory(self):
+        """运行期分类助手（worker except 路径复用）：宿主内存特征返回专属码，
+        其它错误返回 None 交由调用方按设备归类。"""
+        module = load_device_module()
+
+        self.assertEqual(
+            module.classify_runtime_error(OSError("[Errno 12] Cannot allocate memory")),
+            "HOST_MEMORY_EXHAUSTED",
+        )
+        self.assertEqual(
+            module.classify_runtime_error(
+                RuntimeError("can't allocate memory: You tried to allocate 2GiB")
+            ),
+            "HOST_MEMORY_EXHAUSTED",
+        )
+        self.assertIsNone(module.classify_runtime_error(RuntimeError("CUDA error: out of memory")))
+        self.assertIsNone(module.classify_runtime_error(ValueError("bad tile")))
+
     def test_host_memory_exhausted_raises_when_fallback_disabled(self):
         module = load_device_module()
         resolver = module.DeviceResolver(

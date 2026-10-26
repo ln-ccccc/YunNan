@@ -1,7 +1,8 @@
 // 上传/断链守卫纯函数（对照江西 F2/F4/083985f 改进落地云南 GeoView）。
 // 上限对齐后端分片通道 UPLOAD_SESSION_MAX_TOTAL_MB=102400（100GB）：
-// 单发 multipart 通道仍受后端 MAX_CONTENT_LENGTH(8GB) 约束，但前端阈值
-// （512MB，见 uploadChunking.mjs）以上自动分流分片，单发请求永远不会超限。
+// 单发 multipart 通道受后端 MAX_CONTENT_LENGTH(1GB，2026-11 验收 R5) 约束
+// （作用于整个请求体=批总量）；前端阈值（512MB，见 uploadChunking.mjs）以上
+// 按单文件或批总量自动分流分片，单发请求永远不会超限。
 export const MAX_UPLOAD_FILE_BYTES = 100 * 1024 * 1024 * 1024;
 export const MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024 * 1024;
 

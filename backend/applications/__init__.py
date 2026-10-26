@@ -82,6 +82,18 @@ def create_app(config_name=None):
     from applications.common.utils.tiff_processor import MAX_UPLOAD_TIFF_SIZE_MB
 
     app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_TIFF_SIZE_MB * 1024 * 1024
+
+    # Werkzeug 在表单解析阶段即抛 413（默认英文 HTML），视图内"请改用分片
+    # 续传"引导完全不可达（含绕过前端直连 API 的消费者）；统一转 JSON 业务
+    # 响应，保留可行动的中文引导
+    from applications.common.utils.http import fail_api
+
+    @app.errorhandler(413)
+    def _payload_too_large(_error):
+        return fail_api(
+            f"请求体超过单发上传上限 {MAX_UPLOAD_TIFF_SIZE_MB}MB，请改用分片续传上传"
+        ), 413
+
     app.config['JSON_AS_ASCII'] = False
     allowed_origins = _build_allowed_origins(app)
     CORS(

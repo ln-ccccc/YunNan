@@ -344,7 +344,7 @@ class TestInferenceJobAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-    def seed_ready_project(self, *, status="active", include_basemap=True):
+    def seed_ready_project(self, *, status="active", include_basemap=True, tiles_on_disk=True):
         from applications.models.project import Project, ProjectDataset, ProjectMineBinding
         from applications.models.project_spatial import ProjectSpatialResource
 
@@ -374,6 +374,15 @@ class TestInferenceJobAPI(unittest.TestCase):
         self.db.session.add(ProjectMineBinding(project_id=project.id, mine_fid=101))
         self.db.session.add(ProjectMineBinding(project_id=project.id, mine_fid=102))
         if include_basemap:
+            # R3 起概览 readiness 对激活底图做磁盘瓦片巡检（.active 标记 +
+            # 至少一张 PNG）：healthy 播种必须落真实瓦片，否则任务创建被
+            # ACTIVE_BASEMAP_TILES_MISSING 误拦
+            basemap_tile_rel = f"projects/{project.id}/tiles/1"
+            if tiles_on_disk:
+                tile_dir = self.storage_root / "projects" / str(project.id) / "tiles" / "1"
+                (tile_dir / "8" / "0").mkdir(parents=True, exist_ok=True)
+                (tile_dir / ".active").write_text("1", encoding="ascii")
+                (tile_dir / "8" / "0" / "0.png").write_bytes(b"png-tile")
             self.db.session.add(
                 ProjectSpatialResource(
                     project_id=project.id,
@@ -382,6 +391,7 @@ class TestInferenceJobAPI(unittest.TestCase):
                     status="active",
                     source_path=f"projects/{project.id}/basemap/base.tif",
                     normalized_path=f"projects/{project.id}/basemap/base.tif",
+                    tile_path=basemap_tile_rel,
                     source_format="tif",
                 )
             )
@@ -610,6 +620,19 @@ class TestInferenceJobAPI(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("推理", json.loads(response.data.decode("utf-8"))["msg"])
                 self.assertEqual(self.job_count(), 0)
+
+    def test_create_job_rejects_when_active_basemap_tiles_missing(self):
+        """R3 能力收紧守护：激活底图记录在但磁盘瓦片缺失时必须拒绝启动推理。
+        该门槛（can_start_inference 含 ACTIVE_BASEMAP）此前无任何正向断言，
+        手工变异实验（CHECK_ORDER[:4]→[:3]）在全套件下存活。"""
+        self.login()
+        seed = self.seed_ready_project(tiles_on_disk=False)
+
+        response = self.post_safe_job(seed)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("推理", json.loads(response.data.decode("utf-8"))["msg"])
+        self.assertEqual(self.job_count(), 0)
 
     def test_create_job_rejects_invalid_dataset_storage_keys_without_creating_job(self):
         self.login()

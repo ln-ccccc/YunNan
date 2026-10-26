@@ -111,12 +111,17 @@ function upload(type, funUrl) {
   const hasEnviMember = rawFiles.some((file) => ['dat', 'bin', 'hdr'].includes(
     (file.name || '').split('.').pop().toLowerCase(),
   ));
-  const oversizedEnvi = hasEnviMember && rawFiles.some((file) => shouldUseChunkedUpload(file.size));
+  // 分流看单文件也看批总量：后端单发上限 1GB 作用于整个 multipart 请求体，
+  // 批量小文件（如 3×400MB）无单文件超限时若走单发，解析阶段即 413
+  const totalBytes = rawFiles.reduce((sum, file) => sum + (Number(file?.size) || 0), 0);
+  const oversizedMember = rawFiles.some((file) => shouldUseChunkedUpload(file.size));
+  const oversizedBatch = shouldUseChunkedUpload(totalBytes);
+  const oversizedEnvi = hasEnviMember && (oversizedMember || oversizedBatch);
   if (oversizedEnvi) {
-    this.$message.error('ENVI 影像暂不支持分片续传（单文件需 8GB 内），请压缩或分批上传');
+    this.$message.error('ENVI 影像暂不支持分片续传（单发批次总量需 512MB 内），请压缩或分批上传');
     return;
   }
-  const useResumable = !hasEnviMember && rawFiles.some((file) => shouldUseChunkedUpload(file.size));
+  const useResumable = !hasEnviMember && (oversizedMember || oversizedBatch);
 
   // 上传进度 + 可暂停（S2 升级：百分比·已传/总量·预计剩余时长；暂停后可续传）
   const controller = new AbortController();
@@ -153,8 +158,8 @@ function upload(type, funUrl) {
   });
   uploadInFlight = true;
 
-  // 通道分流：任一文件超过阈值（512MB）整批走分片续传（100GB 上限、失败重传单块、
-  // 页面重开自动续传）；小文件批次保持原单发 multipart，行为零回归
+  // 通道分流：任一文件或批总量超过阈值（512MB）整批走分片续传（100GB 上限、
+  // 失败重传单块、页面重开自动续传）；小文件批次保持原单发 multipart，行为零回归
   const uploadPromise = useResumable
     ? uploadFilesResumable(
         rawFiles.map((file) => ({ file, name: file.name, size: file.size, mime: file.type || 'image/tiff' })),

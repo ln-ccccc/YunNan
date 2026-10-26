@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -535,3 +536,59 @@ class TestAggregateLandTypeList(unittest.TestCase):
     def test_integer_values_stay_int_in_output(self):
         rows = self._agg([{"name": "草地", "value": 3}])
         self.assertIs(rows[0]["value"], int(rows[0]["value"]))
+
+
+class TestBasemapTileProbe(unittest.TestCase):
+    """激活底图瓦片巡检探针：限额早停与正常/缺失判定（挂概览热路径）。"""
+
+    def setUp(self):
+        from applications.project_hub.project_map import _has_available_basemap_tiles
+
+        self._probe = _has_available_basemap_tiles
+        self._previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        self._temp = tempfile.TemporaryDirectory()
+        os.environ["PROJECT_STORAGE_ROOT"] = self._temp.name
+        self._resource = types.SimpleNamespace(tile_path="projects/1/tiles/1")
+
+    def tearDown(self):
+        if self._previous_root is None:
+            os.environ.pop("PROJECT_STORAGE_ROOT", None)
+        else:
+            os.environ["PROJECT_STORAGE_ROOT"] = self._previous_root
+        self._temp.cleanup()
+
+    def _make_tile_dir(self):
+        tile_dir = Path(self._temp.name, "projects", "1", "tiles", "1")
+        tile_dir.mkdir(parents=True, exist_ok=True)
+        (tile_dir / ".active").write_text("1", encoding="ascii")
+        return tile_dir
+
+    def test_probe_true_when_png_present(self):
+        tile_dir = self._make_tile_dir()
+        (tile_dir / "8" / "0").mkdir(parents=True)
+        (tile_dir / "8" / "0" / "0.png").write_bytes(b"png")
+
+        self.assertTrue(self._probe(self._resource))
+
+    def test_probe_false_when_tiles_missing(self):
+        self._make_tile_dir()
+
+        self.assertFalse(self._probe(self._resource))
+        self.assertFalse(self._probe(types.SimpleNamespace(tile_path=None)))
+        self.assertFalse(self._probe(None))
+
+    def test_scan_stops_at_entry_budget_without_unbounded_walk(self):
+        """目录在但 PNG 全缺时不得无界遍历整棵树——超限额即判缺失。"""
+        from applications.project_hub.project_map import (
+            _TILE_SCAN_MAX_ENTRIES,
+            _scan_tile_dir_for_png,
+        )
+
+        tile_dir = self._make_tile_dir()
+        # 造超过限额的非 PNG 条目；若实现退化为无界 rglob，大目录会拖挂热路径
+        bulk = tile_dir / "bulk"
+        bulk.mkdir()
+        for index in range(_TILE_SCAN_MAX_ENTRIES + 50):
+            (bulk / f"f{index}.txt").write_bytes(b"x")
+
+        self.assertFalse(_scan_tile_dir_for_png(tile_dir))

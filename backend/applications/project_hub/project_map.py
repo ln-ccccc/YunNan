@@ -1,4 +1,6 @@
 import json
+import logging
+import os
 import re
 from pathlib import Path
 
@@ -9,6 +11,24 @@ from applications.project_hub.spatial_service import sanitize_public_geojson_val
 from applications.project_hub.spatial_state import serialize_project_spatial_state
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 from applications.common.utils.utc_time import to_utc_z
+
+
+logger = logging.getLogger(__name__)
+
+# 瓦片目录按 zoom/x/y 分层，正常树很小；探针挂概览热路径，"目录在但 PNG
+# 全缺"时无界 rglob 会遍历整棵目录树——限额内未找到即判瓦片缺失
+_TILE_SCAN_MAX_ENTRIES = 2000
+
+
+def _scan_tile_dir_for_png(tile_dir, max_entries=_TILE_SCAN_MAX_ENTRIES):
+    scanned = 0
+    for _root, dirs, files in os.walk(tile_dir):
+        scanned += len(dirs) + len(files)
+        if any(name.lower().endswith(".png") for name in files):
+            return True
+        if scanned > max_entries:
+            break
+    return False
 
 
 def _project(project_id):
@@ -37,8 +57,16 @@ def _has_available_basemap_tiles(resource):
         tile_dir = resolve_storage_path(get_storage_root(), resource.tile_path)
         if not tile_dir.is_dir() or not (tile_dir / ".active").is_file():
             return False
-        return next(tile_dir.rglob("*.png"), None) is not None
-    except (OSError, ValueError):
+        return _scan_tile_dir_for_png(tile_dir)
+    except (OSError, ValueError) as error:
+        # 瞬时 IO 故障（挂载抖动）与瓦片真实丢失都判"不可用"，但必须留
+        # 日志区分二者：前者通常自愈，按后者排查会走重新切片的弯路
+        logger.warning(
+            "激活底图瓦片巡检异常（按瓦片缺失处理）: tile_path=%s error=%s",
+            getattr(resource, "tile_path", None),
+            error,
+            exc_info=True,
+        )
         return False
 
 

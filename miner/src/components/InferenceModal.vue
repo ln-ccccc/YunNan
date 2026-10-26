@@ -37,7 +37,7 @@
             <div>任务状态：{{ result.status || '--' }}</div>
             <div v-if="result.progress">进度：{{ result.progress.current || 0 }} / {{ result.progress.total || 0 }}</div>
             <div v-if="result.effective_device">实际设备：{{ result.effective_device }}</div>
-            <div v-if="result.fallback_reason" class="fallback-msg">降级原因：{{ result.fallback_reason }}</div>
+            <div v-if="result.fallback_reason" class="fallback-msg">降级原因：{{ formatFallbackReason(result.fallback_reason) }}</div>
           </div>
           <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
           <div v-if="successMsg" class="success-msg">{{ successMsg }}</div>
@@ -105,6 +105,21 @@ function formatAssetLabel(asset) {
   const dates = [temporal.start, temporal.end].filter(Boolean);
   const timeLabel = dates.length ? ` · ${dates.join(' - ')}` : '';
   return `${asset?.name || '未命名影像'}${timeLabel} · ${asset?.format || '格式未知'}`;
+}
+
+// 后端语义码本地化为中文（AGENTS §5：action_code/error_code 由前端映射，
+// 不得把英文蛇形码直接透出给用户）
+function formatFallbackReason(code) {
+  return {
+    HOST_MEMORY_EXHAUSTED: '宿主内存不足，已回退 CPU 执行（释放内存后下个任务自动重试 GPU）',
+    CUDA_OUT_OF_MEMORY: 'GPU 显存不足，已回退 CPU 执行',
+    GPU_NOT_VISIBLE: '未检测到可用 GPU，已回退 CPU 执行',
+    GPU_RUNTIME_UNAVAILABLE: 'GPU 运行时不可用，已回退 CPU 执行',
+    GPU_ARCH_UNSUPPORTED: 'GPU 计算架构不受支持，已回退 CPU 执行',
+    MMCV_CUDA_OP_UNAVAILABLE: 'MMCV CUDA 算子不可用，已回退 CPU 执行',
+    MODEL_GPU_LOAD_FAILED: '模型无法在 GPU 加载，已回退 CPU 执行',
+    GPU_INFERENCE_FAILED: 'GPU 能力检查失败，已回退 CPU 执行',
+  }[code] || code || '--';
 }
 
 function handleSubmit() {
