@@ -493,6 +493,97 @@ class TestProjectStatsAreaAggregation(unittest.TestCase):
                 else:
                     os.environ["PROJECT_STORAGE_ROOT"] = previous_root
 
+    def test_trend_report_summary_aggregates_class_ratio_files(self):
+        """趋势报告曾为死接口（trend_reports/ 无生成方）。2026-10-27 起汇总模式
+        现场聚合推理产物的 class_ratio_percent.json：首末年占比、方向计数、过滤。"""
+        from applications.project_hub.project_map import get_project_trend_report
+
+        project = create_project({"name": "趋势聚合", "region": "大理"})
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            try:
+                pid = project["id"]
+                features = []
+                for fid, area in ((801, 1_000_000.0), (802, 2_000_000.0), (803, 500_000.0)):
+                    features.append(
+                        {
+                            "type": "Feature",
+                            "properties": {"FID_1": fid, "Name": f"矿山{fid}", "TBTYMJ": area},
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[[100.0, 25.0], [100.01, 25.0], [100.0, 25.01], [100.0, 25.0]]],
+                            },
+                        }
+                    )
+                mine_dir = os.path.join(temp_dir, "projects", str(pid), "mines", "1")
+                os.makedirs(mine_dir)
+                with open(os.path.join(mine_dir, "mines.geojson"), "w", encoding="utf-8") as stream:
+                    json.dump({"type": "FeatureCollection", "features": features}, stream)
+                db.session.add(
+                    ProjectSpatialResource(
+                        project_id=pid,
+                        resource_type="mine_vector",
+                        version=1,
+                        status="active",
+                        source_path=f"projects/{pid}/mines/1/mines.geojson",
+                        normalized_path=f"projects/{pid}/mines/1/mines.geojson",
+                        source_format="geojson",
+                        bounds_json=json.dumps([100.0, 25.0, 100.01, 25.01]),
+                    )
+                )
+                for fid in (801, 802, 803):
+                    db.session.add(ProjectMineBinding(project_id=pid, mine_fid=fid, sort_order=fid))
+                db.session.commit()
+
+                def write_ratio(fid, years, percents):
+                    target = os.path.join(temp_dir, "projects", str(pid), "outputs", "inference", str(fid))
+                    os.makedirs(target, exist_ok=True)
+                    with open(os.path.join(target, "class_ratio_percent.json"), "w", encoding="utf-8") as stream:
+                        json.dump(
+                            {
+                                "fid": str(fid),
+                                "class_names": ["grassland", "bareground"],
+                                "years": years,
+                                "totals": [100, 100],
+                                "series_percent": {"grassland": percents, "bareground": percents},
+                            },
+                            stream,
+                        )
+
+                write_ratio(801, [2020, 2024], [10.0, 25.0])  # +15 上升
+                write_ratio(802, [2020, 2024], [40.0, 20.0])  # -20 下降
+                # 803 无 ratio 文件 → missing
+
+                report = get_project_trend_report(pid, None, class_name="bareground", direction="all")
+                self.assertTrue(report["available"])
+                self.assertEqual(report["mine_total"], 3)
+                self.assertEqual(report["coverage"], {"matrix_ready_count": 2, "matrix_missing_count": 1})
+                self.assertEqual(
+                    report["class_trends"]["selected_class"],
+                    {"upward_count": 1, "downward_count": 1, "stable_count": 0},
+                )
+                rows = report["tables"]["selected_class_rows"]
+                self.assertEqual([row["fid"] for row in rows], [801, 802])  # delta 降序
+                first = rows[0]
+                self.assertEqual(first["start_year"], 2020)
+                self.assertAlmostEqual(first["delta_percent"], 15.0, places=3)
+                self.assertAlmostEqual(first["start_area_km2"], 0.1, places=3)  # 1e6m²×10%
+                self.assertAlmostEqual(first["delta_area_km2"], 0.15, places=3)
+
+                up_only = get_project_trend_report(pid, None, class_name="bareground", direction="up")
+                self.assertEqual([row["fid"] for row in up_only["tables"]["selected_class_rows"]], [801])
+
+                empty = create_project({"name": "无成果趋势"})
+                empty_report = get_project_trend_report(empty["id"], None, class_name="bareground", direction="all")
+                self.assertFalse(empty_report["available"])
+                self.assertIn("暂无", empty_report["message"])
+            finally:
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
     def test_stats_indices_aggregation_and_short_ttl_cache(self):
         from applications.project_hub.project_map import get_project_stats, invalidate_project_stats_cache
 

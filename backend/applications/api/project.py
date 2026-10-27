@@ -689,7 +689,14 @@ def project_mines_change_matrix_api(project_id):
 @login_required
 def project_mines_trend_report_api(project_id):
     try:
-        return success_api(data=get_project_trend_report(project_id, request.args.get("fid")))
+        return success_api(
+            data=get_project_trend_report(
+                project_id,
+                request.args.get("fid"),
+                class_name=request.args.get("class_name"),
+                direction=request.args.get("direction"),
+            )
+        )
     except Exception as exc:
         return business_or_server_failure(
             exc, "项目数据读取失败", logger=LOGGER, business_status=404

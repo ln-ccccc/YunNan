@@ -372,9 +372,13 @@ def get_project_mine_indices(project_id, fid):
     return _read_project_output(project_id, "indices", f"{fid_value}.json")
 
 
-def get_project_trend_report(project_id, fid):
+def get_project_trend_report(project_id, fid, class_name="bareground", direction="all"):
     if fid in (None, ""):
-        return _read_project_output(project_id, "trend_reports", "summary.json")
+        return _build_trend_report_summary(
+            project_id,
+            class_name=str(class_name or "bareground"),
+            direction=str(direction or "all"),
+        )
     try:
         fid_value = int(fid)
     except (TypeError, ValueError) as exc:
@@ -383,6 +387,149 @@ def get_project_trend_report(project_id, fid):
     if not any(binding.mine_fid == fid_value for binding in project.mines):
         raise ValueError("矿山不属于当前项目")
     return _read_project_output(project_id, "trend_reports", f"{fid_value}.json")
+
+
+    return _read_project_output(project_id, "trend_reports", f"{fid_value}.json")
+
+
+def _build_trend_report_summary(project_id, class_name, direction):
+    """趋势报告汇总（现场聚合）：数据源为推理管线逐矿写出的
+    outputs/inference/<fid>/class_ratio_percent.json（首末年占比/变化）。
+    历史死结：trend_reports/ 目录无任何生成方，接口长期恒不可用——
+    2026-10-27 改为现场聚合后激活；若该目录存在 legacy 文件仍优先。"""
+    legacy = _read_project_output(project_id, "trend_reports", "summary.json")
+    if legacy.get("available") is not False:
+        return legacy
+
+    project = _project(project_id)
+    fid_count = len(project.mines)
+    binding_by_fid = {row.mine_fid: row for row in project.mines}
+
+    mine_meta = {}
+    try:
+        geojson_features = get_project_geojson(project_id).get("features") or []
+    except ValueError:
+        geojson_features = []
+    for feature in geojson_features:
+        properties = feature.get("properties") or {}
+        try:
+            fid = int(properties.get("FID_1", properties.get("FID", properties.get("id"))))
+        except (TypeError, ValueError):
+            continue
+        area = None
+        for key in ("area", "TBTYMJ_1", "TBTYMJ"):
+            try:
+                area = float(properties.get(key))
+                break
+            except (TypeError, ValueError):
+                continue
+        binding = binding_by_fid.get(fid)
+        if area is None and binding is not None and binding.area_snapshot:
+            try:
+                # 快照官方口径为 m²；历史脏数据曾为度²平方量级（<1e-3），
+                # 与 stats 相同只信 >1e-3 的快照
+                snapshot = float(binding.area_snapshot)
+                if snapshot > 1e-3:
+                    area = snapshot
+            except (TypeError, ValueError):
+                area = None
+        mine_meta[fid] = {
+            "name": str(properties.get("Name") or properties.get("mine_name") or f"FID {fid}"),
+            "area_m2": area,
+        }
+
+    storage_root = get_storage_root()
+    try:
+        output_root = resolve_storage_path(storage_root, Path("projects") / str(project_id) / "outputs")
+    except ValueError:
+        output_root = None
+
+    rows = []
+    ready = 0
+    available_classes = set()
+    upward = downward = stable = 0
+    for binding in project.mines:
+        fid = binding.mine_fid
+        doc = None
+        if output_root is not None:
+            try:
+                doc = json.loads(
+                    (output_root / "inference" / str(fid) / "class_ratio_percent.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except (OSError, json.JSONDecodeError, ValueError):
+                doc = None
+        if not doc or len(doc.get("years") or []) < 2:
+            continue
+        ready += 1
+        available_classes.update(doc.get("class_names") or [])
+        series = (doc.get("series_percent") or {}).get(class_name) or []
+        if len(series) < 2:
+            continue
+        years = doc["years"]
+        start_year, end_year = int(years[0]), int(years[-1])
+        start_percent, end_percent = float(series[0]), float(series[-1])
+        delta_percent = end_percent - start_percent
+        if delta_percent > 0.5:
+            upward += 1
+        elif delta_percent < -0.5:
+            downward += 1
+        else:
+            stable += 1
+        if direction == "up" and delta_percent <= 0.5:
+            continue
+        if direction == "down" and delta_percent >= -0.5:
+            continue
+        meta = mine_meta.get(fid) or {"name": f"FID {fid}", "area_m2": None}
+        area_m2 = meta.get("area_m2")
+
+        def class_area_km2(percent):
+            if not area_m2:
+                return None
+            return round(area_m2 * percent / 100.0 / 1e6, 6)
+
+        start_area = class_area_km2(start_percent)
+        end_area = class_area_km2(end_percent)
+        rows.append(
+            {
+                "fid": fid,
+                "mine_name": meta["name"],
+                "start_year": start_year,
+                "end_year": end_year,
+                "start_percent": round(start_percent, 4),
+                "end_percent": round(end_percent, 4),
+                "delta_percent": round(delta_percent, 4),
+                "start_area_km2": start_area,
+                "end_area_km2": end_area,
+                "delta_area_km2": (
+                    round(end_area - start_area, 6)
+                    if start_area is not None and end_area is not None
+                    else None
+                ),
+            }
+        )
+
+    rows.sort(key=lambda row: row["delta_percent"], reverse=True)
+    return {
+        "available": ready > 0,
+        "message": None if ready > 0 else "暂无两期以上推理成果，无法统计趋势",
+        "mine_total": fid_count,
+        "coverage": {
+            "matrix_ready_count": ready,
+            "matrix_missing_count": fid_count - ready,
+        },
+        "class_trends": {
+            "selected_class": {
+                "upward_count": upward,
+                "downward_count": downward,
+                "stable_count": stable,
+            }
+        },
+        "available_classes": sorted(available_classes),
+        "filters": {"class_name": class_name, "direction": direction},
+        "tables": {"selected_class_rows": rows},
+    }
 
 
 def get_project_change_matrix(project_id, fid):
