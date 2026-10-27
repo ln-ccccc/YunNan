@@ -2,15 +2,13 @@ import axios from 'axios';
 import { onScopeDispose, ref } from 'vue';
 
 import { pollInferenceJob } from '../services/inferencePolling.js';
+import { formatInferenceFailure } from '../utils/inferenceFailureText.js';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
 
 const rawMinerApiBase = import.meta.env.VITE_MINER_API_BASE_URL;
 const MINER_API_BASE_URL = rawMinerApiBase ? String(rawMinerApiBase).replace(/\/$/, '') : '';
 const apiUrl = (path) => `${MINER_API_BASE_URL}${path}`;
 
-// M5.3：项目推理编排（发起/轮询/取消/就绪影像加载）从 useMineData 抽出，
-// 地图工作台与智能解译页共用同一实现，避免双份漂移。
-// projectId 支持数值、ref 或 getter，均由调用方保证项目上下文有效。
 export function useProjectInference(resolveProjectId) {
   const getProjectId = () => Number(typeof resolveProjectId === 'function' ? resolveProjectId() : resolveProjectId);
 
@@ -82,7 +80,7 @@ export function useProjectInference(resolveProjectId) {
         // 组件已销毁：不再写状态，静默退出轮询链
         throw e;
       }
-      inferenceError.value = e?.response?.data?.msg || e?.response?.data?.error || e?.message || '推理任务执行失败';
+      inferenceError.value = formatInferenceFailure(e);
       throw e;
     } finally {
       if (!inferencePollCancelled) {

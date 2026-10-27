@@ -16,7 +16,14 @@ from applications.project_hub.spatial_storage import (
 )
 
 class ProjectInferenceInputError(ValueError):
-    """Raised when a project reference cannot safely start an inference job."""
+    """Raised when a project reference cannot safely start an inference job.
+
+    details（可选）携带结构化缺项（如 readiness 失败检查码），供 API 层
+    透传给前端做具体文案，而不是让用户面对一句笼统的"不满足条件"。"""
+
+    def __init__(self, message, details=None):
+        super().__init__(message)
+        self.details = details
 
 
 _YEAR_VALUE = re.compile(r"^\d{4}$")
@@ -140,7 +147,18 @@ def resolve_project_inference_inputs(
     tif_path = _resolve_registered_tif(storage_root, dataset.file_path, project.id)
     overview = get_project_overview(project.id)
     if not bool((overview.get("capabilities") or {}).get("can_start_inference")):
-        raise ProjectInferenceInputError("项目当前不满足启动推理条件")
+        # 门槛四项（档案/矿山/底图/影像）缺哪项逐一带回：can_start_inference
+        # 只由前四项决定，REVIEWABLE_RESULT 不拦推理，不计入
+        checks = (overview.get("readiness") or {}).get("checks") or []
+        failed_checks = [
+            {"code": c.get("code"), "reason_code": c.get("reason_code")}
+            for c in checks
+            if c.get("code") != "REVIEWABLE_RESULT" and c.get("status") != "passed"
+        ]
+        raise ProjectInferenceInputError(
+            "项目当前不满足启动推理条件",
+            details={"failed_checks": failed_checks},
+        )
 
     mine_resource_id, vector_path, matched_fids = _resolve_scope(
         scope_resolver,

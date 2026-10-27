@@ -631,8 +631,15 @@ class TestInferenceJobAPI(unittest.TestCase):
         response = self.post_safe_job(seed)
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("推理", json.loads(response.data.decode("utf-8"))["msg"])
+        body = json.loads(response.data.decode("utf-8"))
+        self.assertIn("推理", body["msg"])
         self.assertEqual(self.job_count(), 0)
+        # 2026-10-27：拒绝原因必须携带具体缺项（语义码），前端据此给中文提示
+        failed_checks = (body.get("data") or {}).get("details", {}).get("failed_checks") or []
+        codes = {item.get("code") for item in failed_checks}
+        self.assertIn("ACTIVE_BASEMAP", codes)
+        reasons = {item.get("reason_code") for item in failed_checks}
+        self.assertIn("ACTIVE_BASEMAP_TILES_MISSING", reasons)
 
     def test_create_job_rejects_invalid_dataset_storage_keys_without_creating_job(self):
         self.login()

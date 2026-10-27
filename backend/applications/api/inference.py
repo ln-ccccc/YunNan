@@ -111,7 +111,11 @@ def create_inference_job_api():
     except InferenceRequestValidationError as error:
         return fail_api(str(error)), 422
     except (ProjectInferenceInputError, ValueError, FileNotFoundError) as error:
-        return fail_api(_safe_create_error_message(error)), 400
+        return fail_api(
+            _safe_create_error_message(error),
+            status=400,
+            details=getattr(error, "details", None),
+        )
     return success_api(data=serialize_job(job)), 201
 
 
