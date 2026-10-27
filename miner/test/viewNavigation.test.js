@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   NAV_ITEMS,
+  PRIMARY_NAV_ITEMS,
+  TOOL_NAV_ITEMS,
   VIEW_HASH,
   buildMapHash,
   parseProjectIdFromHash,
@@ -60,4 +62,28 @@ test('map hash keeps the project context', () => {
   assert.equal(parseProjectIdFromHash('#/map/12'), 12);
   assert.equal(parseProjectIdFromHash('#/map'), null);
   assert.equal(parseProjectIdFromHash('#/map/abc'), null);
+});
+
+// 2026-10-26 布局收敛：侧栏三主入口 + 其余六模块收进"更多工具"组
+test('PRIMARY_NAV_ITEMS holds exactly the three main entries without static hashes', () => {
+  assert.deepEqual(PRIMARY_NAV_ITEMS.map((item) => item.key), ['projects', 'map', 'geoview']);
+  for (const item of PRIMARY_NAV_ITEMS) {
+    assert.equal(item.hash, undefined, `${item.key} 主入口不带静态 hash`);
+    assert.equal(item.implemented, true, item.key);
+  }
+  // projects 主入口与七模块表同源（label/implemented 单一事实来源）
+  const projectsEntry = NAV_ITEMS.find((item) => item.key === 'projects');
+  assert.equal(PRIMARY_NAV_ITEMS[0].key, projectsEntry.key);
+  assert.equal(PRIMARY_NAV_ITEMS[0].label, projectsEntry.label);
+});
+
+test('TOOL_NAV_ITEMS is the remaining six modules referencing NAV_ITEMS entries', () => {
+  assert.deepEqual(TOOL_NAV_ITEMS.map((item) => item.key), [
+    'imagery', 'interpretation', 'editing', 'data', 'search', 'settings',
+  ]);
+  for (const item of TOOL_NAV_ITEMS) {
+    const entry = NAV_ITEMS.find((candidate) => candidate.key === item.key);
+    assert.equal(item, entry, `${item.key} 工具项必须引用 NAV_ITEMS 同一对象`);
+    assert.equal(VIEW_HASH[item.key], item.hash);
+  }
 });

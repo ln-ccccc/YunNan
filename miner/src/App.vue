@@ -14,20 +14,41 @@
       </div>
       <nav class="nav-list" aria-label="主导航">
         <button type="button"
-          v-for="item in navItems"
+          v-for="item in primaryNavItems"
           :key="item.key"
-          :class="{ active: currentView === item.key || (item.key === 'projects' && currentView === 'map') }"
-          :title="navCollapsed ? item.label : null"
+          :class="{ active: isPrimaryActive(item.key) }"
+          :title="navCollapsed ? item.label : (item.key === 'map' && !lastProjectId ? '先在项目工作台打开一个项目' : null)"
           :aria-label="item.label"
-          :aria-current="currentView === item.key || (item.key === 'projects' && currentView === 'map') ? 'page' : undefined"
-          @click="navigateToView(item)"
+          :aria-current="isPrimaryActive(item.key) ? 'page' : undefined"
+          @click="handlePrimaryNav(item)"
         >
           <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path :d="navIconPaths[item.key]" /></svg>
           <span v-if="!navCollapsed" class="nav-label">{{ item.label }}</span>
-          <span v-if="!navCollapsed && !item.implemented" class="nav-badge">规划中</span>
-          <span v-else-if="navCollapsed && !item.implemented" class="nav-badge-dot" />
+          <svg v-if="!navCollapsed && item.key === 'geoview'" class="nav-icon external-hint" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h10v10 M19 5 7 17" /></svg>
         </button>
       </nav>
+      <div class="nav-tools">
+        <button v-if="!navCollapsed" type="button" class="nav-tools-toggle" :aria-expanded="toolsExpanded" @click="toolsExpanded = !toolsExpanded">
+          <span>更多工具</span>
+          <svg class="nav-icon" :class="{ rotated: toolsExpanded }" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+        </button>
+        <div class="nav-tools-list" v-show="navCollapsed || toolsExpanded">
+          <button type="button"
+            v-for="item in toolNavItems"
+            :key="item.key"
+            :class="{ active: currentView === item.key }"
+            :title="navCollapsed ? item.label : null"
+            :aria-label="item.label"
+            :aria-current="currentView === item.key ? 'page' : undefined"
+            @click="navigateToView(item)"
+          >
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path :d="navIconPaths[item.key]" /></svg>
+            <span v-if="!navCollapsed" class="nav-label">{{ item.label }}</span>
+            <span v-if="!navCollapsed && !item.implemented" class="nav-badge">规划中</span>
+            <span v-else-if="navCollapsed && !item.implemented" class="nav-badge-dot" />
+          </button>
+        </div>
+      </div>
       <div v-if="!navCollapsed" class="nav-footer">
         <span class="username">{{ sessionState.username }}</span>
         <button type="button" class="logout-btn" @click="handleLogout">退出</button>
@@ -92,7 +113,8 @@ import SmartInterpretationView from './components/SmartInterpretationView.vue';
 import DataManagerView from './components/DataManagerView.vue';
 import ModulePlaceholder from './components/ModulePlaceholder.vue';
 import ProjectWorkspace from './components/ProjectWorkspace.vue';
-import { NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
+import { NAV_ITEMS, PRIMARY_NAV_ITEMS, TOOL_NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
+import { buildGeoViewUrl } from './navigation/geoviewNavigation.js';
 
 // 占位机制备用：M5.4 起七大模块全部转正，此表清空；后续新增模块可复用
 const PLACEHOLDER_MILESTONES = {};
@@ -107,14 +129,51 @@ const authError = ref('');
 const sessionState = ref({ authenticated: false, username: '' });
 
 const navItems = NAV_ITEMS;
+const primaryNavItems = PRIMARY_NAV_ITEMS;
+const toolNavItems = TOOL_NAV_ITEMS;
+const toolsExpanded = ref(false);
+const lastProjectId = ref(null);
 const navIconPaths = {
   projects: 'M3 7h7l2-3h9v16H3z M3 9h18',
+  map: 'M9 3 3 5v16l6-2 6 2 6-2V3l-6 2-6-2 M9 3v16 M15 5v16',
+  geoview: 'M12 3v3 M12 18v3 M3 12h3 M18 12h3 M8 8h8v8H8z',
   imagery: 'M4 4h16v16H4z M4 16l5-5 4 4 3-3 4 4 M8 8h.01',
   interpretation: 'M12 3v3 M12 18v3 M3 12h3 M18 12h3 M8 8h8v8H8z',
   editing: 'M14 5l5 5 M4 20l5-1L20 8l-4-4L5 15z',
   data: 'M4 6c0-4 16-4 16 0s-16 4-16 0 M4 6v12c0 4 16 4 16 0V6 M4 12c0 4 16 4 16 0',
   search: 'M15 15l6 6 M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0',
   settings: 'M4 7h16 M4 17h16 M8 4v6 M16 14v6',
+};
+
+const isPrimaryActive = (key) => {
+  if (key === 'map') return currentView.value === 'map';
+  return currentView.value === key;
+};
+
+const openGeoView = () => {
+  const configuredUrl = import.meta.env.VITE_GEOVIEW_URL || 'http://localhost:3000/segmentation';
+  window.location.href = buildGeoViewUrl(configuredUrl, window.location, lastProjectId.value);
+};
+
+const handlePrimaryNav = (item) => {
+  if (!sessionState.value.authenticated) {
+    navigateToLogin();
+    return;
+  }
+  if (item.key === 'map') {
+    if (lastProjectId.value) {
+      openMapView(lastProjectId.value);
+    } else {
+      currentView.value = 'projects';
+      syncHash('projects');
+    }
+    return;
+  }
+  if (item.key === 'geoview') {
+    openGeoView();
+    return;
+  }
+  navigateToView(item);
 };
 
 // 侧栏自适应：≤1100px 折叠为图标条（恢复旧版 Home.vue 的响应式行为，AppShell 化时曾丢失）
@@ -173,6 +232,7 @@ const openMapView = async (projectId, mineFid = null, options = {}) => {
   }
   if (!projectId) return;
   selectedProjectId.value = Number(projectId);
+  lastProjectId.value = selectedProjectId.value;
   pendingFocusMineFid.value = mineFid;
   currentView.value = 'map';
   syncHash('map');
@@ -189,6 +249,9 @@ const returnToProjectsView = () => {
 
 const handleHashChange = async () => {
   selectedProjectId.value = parseProjectIdFromHash(window.location.hash);
+  if (selectedProjectId.value !== null) {
+    lastProjectId.value = selectedProjectId.value;
+  }
   currentView.value = sessionState.value.authenticated
     ? resolveViewFromHash(window.location.hash)
     : 'login';
@@ -245,6 +308,9 @@ onMounted(async () => {
   try {
     sessionState.value = await fetchSession();
     selectedProjectId.value = parseProjectIdFromHash(window.location.hash);
+    if (selectedProjectId.value !== null) {
+      lastProjectId.value = selectedProjectId.value;
+    }
     currentView.value = resolveInitialView({
       authenticated: sessionState.value.authenticated,
       hash: window.location.hash,
@@ -298,9 +364,35 @@ onUnmounted(() => {
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.nav-list { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.nav-list { display: flex; flex-direction: column; gap: 4px; }
 
-.nav-list button {
+.nav-tools { display: flex; flex-direction: column; gap: 4px; flex: 1; overflow-y: auto; }
+
+.nav-tools-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: none;
+  color: #9dbfb7;
+  padding: 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.nav-tools-toggle:hover { background: rgba(255, 255, 255, 0.06); }
+
+.nav-tools-toggle .nav-icon { width: 14px; height: 14px; transition: transform 0.15s; }
+.nav-tools-toggle .nav-icon.rotated { transform: rotate(90deg); }
+
+.nav-tools-list { display: flex; flex-direction: column; gap: 2px; }
+
+.external-hint { width: 12px; height: 12px; opacity: 0.55; }
+
+.nav-list button,
+.nav-tools-list button {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -314,9 +406,13 @@ onUnmounted(() => {
   text-align: left;
 }
 
-.nav-list button:hover { background: rgba(255, 255, 255, 0.08); }
+.nav-tools-list button { font-size: 13px; padding: 8px 10px; }
 
-.nav-list button.active {
+.nav-list button:hover,
+.nav-tools-list button:hover { background: rgba(255, 255, 255, 0.08); }
+
+.nav-list button.active,
+.nav-tools-list button.active {
   background: #2f6f61;
   color: #fff;
 }
@@ -331,7 +427,8 @@ onUnmounted(() => {
   text-align: center;
   padding: 4px 0 12px;
 }
-.side-nav.collapsed .nav-list button {
+.side-nav.collapsed .nav-list button,
+.side-nav.collapsed .nav-tools-list button {
   justify-content: center;
   padding: 10px 4px;
   font-size: 13px;

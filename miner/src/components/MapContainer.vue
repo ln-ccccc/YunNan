@@ -30,7 +30,7 @@ const emit = defineEmits(['select-mine']);
 
 const map = ref(null);
 const mineLayer = ref(null);
-let mineRenderer = null; // 见 renderMapMarkers：复用避免 renderer 泄漏
+let mineRenderer = null; // 见 renderMapMarkers：与图斑图层同生命周期重建，不跨渲染复用
 const currentLayer = ref('satellite');
 const mapContainer = ref(null);
 const mapElement = ref(null);
@@ -286,9 +286,15 @@ const renderMapMarkers = () => {
 
   // canvas 渲染器 + 命中容差：矿山多边形是真实尺度（约百米），省级视野下仅 ~2px，
   // SVG 精确命中几乎点不中；tolerance 给点击/悬停各方向 10px 的判定外扩。
-  // 渲染器必须单例复用：Leaflet 对自定义 renderer 隐式 addLayer，图层移除不回收
-  // renderer，每次新建会在 overlay pane 累积空 canvas（数 MB 位图/张，审查 P2-1）。
-  if (!mineRenderer) mineRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
+  // renderer 与图层同生命周期：先显式 removeLayer 回收旧 canvas 位图（防叠加
+  // 空画布累积，原 P2-1），再新建干净实例。跨渲染复用同一 renderer 时，筛选/
+  // 刷新与缩放动画交错会损坏其内部绘制链表，此后所有图斑不再绘制且无法自愈
+  //（2026-10-26 用户实测"图斑消失无法复原"）
+  if (mineRenderer) {
+    map.value.removeLayer(mineRenderer);
+    mineRenderer = null;
+  }
+  mineRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
 
   mineLayer.value = L.geoJSON(geoJsonData, {
     renderer: mineRenderer,
@@ -358,9 +364,11 @@ const invalidateSize = () => {
 // MapContainer 整体不挂载（地图区塌成 <!---->，2026-09-22 实测 P0）
 defineExpose({ flyToMine, fitMineLayerBounds, invalidateSize, toggleGraticule });
 
+// filteredMinesData 是 computed，每次求值返回新数组引用：浅比较必触发；
+// deep 只会放大筛选高频期的重渲染窗口
 watch(() => props.minesData, () => {
   renderMapMarkers();
-}, { deep: true });
+});
 
 onMounted(() => {
   initMap();

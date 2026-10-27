@@ -12,7 +12,7 @@ export const VIEW_HASH = {
 
 // 左侧导航项（顺序即展示顺序）：key 必须与 resolveViewFromHash 的返回值一致
 export const NAV_ITEMS = [
-  { key: 'projects', label: '项目管理', hash: VIEW_HASH.projects, implemented: true },
+  { key: 'projects', label: '项目工作台', hash: VIEW_HASH.projects, implemented: true },
   { key: 'imagery', label: '影像管理', hash: VIEW_HASH.imagery, implemented: true },
   { key: 'interpretation', label: '智能解译', hash: VIEW_HASH.interpretation, implemented: true },
   { key: 'editing', label: '图斑编辑', hash: VIEW_HASH.editing, implemented: true },
@@ -20,6 +20,24 @@ export const NAV_ITEMS = [
   { key: 'search', label: '查询搜索', hash: VIEW_HASH.search, implemented: true },
   { key: 'settings', label: '系统设置', hash: VIEW_HASH.settings, implemented: true },
 ];
+
+// 侧栏布局（2026-10-26 收敛）：主入口只保留三项，其余六模块收进"更多工具"折叠组。
+// 矿山地图与解译平台无静态 hash：前者动态 #/map/:id（无最近项目时回落项目工作台），
+// 后者是 GeoView 外链；两者由 App.vue 专属处理，不走 navigateToView。
+export const PRIMARY_NAV_ITEMS = [
+  { key: 'projects', label: '项目工作台', implemented: true },
+  { key: 'map', label: '矿山地图', implemented: true },
+  { key: 'geoview', label: '解译平台', implemented: true },
+];
+
+export const TOOL_NAV_ITEMS = [
+  'imagery',
+  'interpretation',
+  'editing',
+  'data',
+  'search',
+  'settings',
+].map((key) => NAV_ITEMS.find((item) => item.key === key));
 
 const STATIC_VIEWS = new Set(Object.keys(VIEW_HASH));
 

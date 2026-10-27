@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 
-import { legacySession } from "@/api/auth";
+import { isSessionFresh, legacySession, markSessionFresh } from "@/api/auth";
 
 const Home = () => import("@/views/Home.vue");
 const Login = () => import("@/views/Login.vue");
@@ -54,9 +54,18 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
+  // TTL 内零网络导航：后端忙时 session 探测排队会卡死全部路由跳转
+  //（2026-10-26 实测：多次地物分类上传/推理后切光谱指数无反应）；
+  // 会话中途失效由 request.js 的 401 拦截器兜底重定向
+  if (to.path !== "/login" && isSessionFresh()) {
+    return true;
+  }
   try {
     const response = await legacySession();
     const authenticated = Boolean(response?.data?.data?.authenticated);
+    if (authenticated) {
+      markSessionFresh();
+    }
 
     if (to.path === "/login") {
       if (authenticated) {
