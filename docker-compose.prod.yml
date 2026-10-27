@@ -114,7 +114,10 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - backend
+      # 条件依赖：backend 就绪（含等 MySQL+初始化）前 BFF 不放行，
+      # 消除重启时序 502 窗口（2026-10-27 实测；BFF 另有连接级单次重试兜底）
+      backend:
+        condition: service_healthy
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./docker:/app/docker:ro

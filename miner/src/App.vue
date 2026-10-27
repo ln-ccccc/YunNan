@@ -275,7 +275,13 @@ const handleLogin = async ({ username, password }) => {
     syncHash(currentView.value);
     await applyPendingMineFocus();
   } catch (error) {
-    authError.value = error?.response?.data?.msg || error?.message || '登录失败';
+    // 502 = BFF 转发后端失败：多为后端仍在启动（重启窗口约 40s），
+    // 给出可行动文案而不是笼统"登录失败"（2026-10-27 重启时序实测）
+    if (error?.response?.status === 502) {
+      authError.value = '后端服务正在启动或暂不可用，请约半分钟后重试';
+    } else {
+      authError.value = error?.response?.data?.msg || error?.message || '登录失败';
+    }
   } finally {
     authLoading.value = false;
   }
