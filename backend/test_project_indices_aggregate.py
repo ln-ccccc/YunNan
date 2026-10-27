@@ -139,3 +139,18 @@ class TestProjectIndicesAggregate(TestProjectAPI):
         self.assertAlmostEqual(ndvi_stats["mean"], 0.42, places=3)
         self.assertIn("yearly", ndvi_stats)
         self.assertIn("mk_trend_counter", ndvi_stats)
+
+    def test_mine_analysis_endpoints_require_fid_param(self):
+        """缺 fid 曾返回 404（业务映射把 ValueError 归 404），误导排查；
+        现为显式 400 + 参数名（2026-10-27 实测踩坑后修正）"""
+        self.login_as_admin()
+        project_id = self._create_project("缺参校验项目")
+        for path in (
+            f"/api/projects/{project_id}/mines/indices",
+            f"/api/projects/{project_id}/mines/change-matrix",
+            f"/api/projects/{project_id}/mines/original-imagery",
+        ):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 400, path)
+            body = self._json(response)
+            self.assertIn("fid", str(body.get("msg", "")), path)
