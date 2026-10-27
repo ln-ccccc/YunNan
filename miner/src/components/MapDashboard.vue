@@ -39,6 +39,7 @@
         :tile-url="mapManifest?.tile_url || ''"
         :min-zoom="mapManifest?.min_zoom"
         :max-zoom="mapManifest?.max_zoom"
+        :map-bounds="mapManifest?.bounds || null"
         :leftCollapsed="false"
         :rightCollapsed="false"
         @select-mine="handleSelectMine"

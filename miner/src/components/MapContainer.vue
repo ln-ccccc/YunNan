@@ -16,6 +16,7 @@ import { onMounted, onUnmounted, ref, watch, defineProps, defineEmits, defineExp
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { createTileFallbackState, noteTileError, noteTileLoad } from '../map/tileFallbackPolicy.js';
+import { projectBoundsLimit, normalizeProjectBounds } from '../utils/mapBoundsLimit.js';
 
 const props = defineProps({
   minesData: Array,
@@ -23,7 +24,8 @@ const props = defineProps({
   rightCollapsed: Boolean,
   tileUrl: { type: String, default: '' },
   minZoom: { type: Number, default: 8 },
-  maxZoom: { type: Number, default: 15 }
+  maxZoom: { type: Number, default: 15 },
+  mapBounds: { type: Array, default: null }
 });
 
 const emit = defineEmits(['select-mine']);
@@ -38,6 +40,7 @@ let baseMaps = {};
 let resizeObserver = null;
 let usingOfflineFallback = false;
 let hasFitInitialBounds = false;
+let projectTileCoverageBounds = null;
 const tileFallbackState = createTileFallbackState();
 const mapProvider = (import.meta.env.VITE_MINER_MAP_PROVIDER || 'offline').toLowerCase();
 const tdtKey = String(import.meta.env.VITE_TDT_KEY || '').trim();
@@ -78,13 +81,14 @@ const makeGaodeLayer = (kind) => {
   return L.tileLayer(url, { subdomains: ['1', '2', '3', '4'], maxZoom: 19 });
 };
 
-const makeLocalLayer = (url, minZoom = 0, maxNativeZoom = localTileMaxNativeZoom) => {
+const makeLocalLayer = (url, minZoom = 0, maxNativeZoom = localTileMaxNativeZoom, layerBounds = null) => {
   const value = String(url || '').trim();
   if (!value) return null;
   return L.tileLayer(value, {
     minZoom,
     maxZoom: Math.max(maxNativeZoom, 15),
     maxNativeZoom,
+    bounds: layerBounds || undefined,
     crossOrigin: true,
     tms: localTileTms
   });
@@ -148,6 +152,15 @@ const initMap = () => {
   const useGaode = provider === 'gaode';
   if (provider === 'local' || provider === 'project') {
     map.value.setMaxZoom(provider === 'project' ? Math.max(props.maxZoom, 15) : localTileDisplayMaxZoom);
+    if (provider === 'project') {
+      applyProjectViewLimit();
+      // 瓦片层用「未外扩的原始底图覆盖」过滤请求（Leaflet bounds=overlaps）：
+      // 外扩值只该用于视野夹持；若层也用外扩 bounds，会请求外扩环内不存在的瓦片
+      const coverage = normalizeProjectBounds(props.mapBounds);
+      if (coverage) {
+        projectTileCoverageBounds = L.latLngBounds([coverage.south, coverage.west], [coverage.north, coverage.east]);
+      }
+    }
   }
 
   const offlineMaps = {
@@ -179,9 +192,9 @@ const initMap = () => {
     };
   } else if (provider === 'project') {
     baseMaps = {
-      base: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom),
-      satellite: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom),
-      terrain: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom)
+      base: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom, projectTileCoverageBounds),
+      satellite: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom, projectTileCoverageBounds),
+      terrain: makeLocalLayer(props.tileUrl, props.minZoom, props.maxZoom, projectTileCoverageBounds)
     };
   } else if (provider === 'local') {
     const fallback = localTileUrl || '/tiles/{z}/{x}/{y}.png';
@@ -278,6 +291,29 @@ const fitMineLayerBounds = () => {
   });
 };
 
+// 项目瓦片视野硬夹持：底图 bounds ∪ 矿山 bounds（矿山可局部越出底图），
+// 拖出覆盖区即被弹回，消除边缘瓦片整屏 404；矿山层首次渲染后再并集一次
+const applyProjectViewLimit = () => {
+  if (!map.value || !props.tileUrl) return;
+  const mineBounds = mineLayer.value && mineLayer.value.getBounds
+    ? mineLayer.value.getBounds()
+    : null;
+  const limit = projectBoundsLimit(
+    props.mapBounds,
+    mineBounds && mineBounds.isValid()
+      ? {
+          west: mineBounds.getWest(),
+          south: mineBounds.getSouth(),
+          east: mineBounds.getEast(),
+          north: mineBounds.getNorth()
+        }
+      : null
+  );
+  if (!limit) return;
+  map.value.setMaxBounds(L.latLngBounds([limit.south, limit.west], [limit.north, limit.east]));
+  map.value.options.maxBoundsViscosity = 1.0;
+};
+
 const renderMapMarkers = () => {
   if (!map.value) return;
   if (mineLayer.value) map.value.removeLayer(mineLayer.value);
@@ -333,6 +369,7 @@ const renderMapMarkers = () => {
 
   if (!hasFitInitialBounds && props.minesData.length > 0) {
     fitMineLayerBounds();
+    applyProjectViewLimit();
     hasFitInitialBounds = true;
   }
 };
