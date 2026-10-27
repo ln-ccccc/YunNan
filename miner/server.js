@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { createProjectRoutes } from './routes/projects.js';
 import { createStatsRoutes } from './routes/stats.js';
 import { createInterpretationRoutes } from './routes/interpretation.js';
+import { createTileRoutes } from './routes/tiles.js';
 import { authBackend } from './services/authBackend.js';
 import { relayBackendResponse, requireMinerAuth } from './services/authProxy.js';
 import { inferenceBackend } from './services/inferenceBackend.js';
@@ -84,22 +85,7 @@ app.get('/tiles/:z/:x/:y.png', (req, res) => {
 const projectStorageRoot = path.resolve(process.env.PROJECT_STORAGE_ROOT || '/project_storage');
 // 项目瓦片与 change-matrix 同为项目数据出口，必须同过 authGuard：
 // projectId/resourceId 为可枚举数字，裸路由会被未登录客户端整库拉取底图（2026-09-20 审查 P1）
-app.get('/tiles/projects/:projectId/:resourceId/:z/:x/:y.png', authGuard, (req, res) => {
-  const segments = ['projectId', 'resourceId', 'z', 'x', 'y'].map((key) => String(req.params[key] || ''));
-  if (!segments.every((value) => /^\d+$/.test(value))) {
-    return res.status(400).json({ error: 'Invalid tile path' });
-  }
-  const [projectId, resourceId, z, x, y] = segments;
-  const tileRoot = path.resolve(projectStorageRoot, 'projects', projectId, 'tiles', resourceId);
-  if (!fs.existsSync(path.join(tileRoot, '.active'))) {
-    return res.status(404).json({ error: 'Project basemap is not active' });
-  }
-  const tilePath = path.resolve(tileRoot, z, x, `${y}.png`);
-  if (!tilePath.startsWith(`${tileRoot}${path.sep}`) || !fs.existsSync(tilePath)) {
-    return res.status(404).json({ error: 'Project tile not found' });
-  }
-  return res.sendFile(tilePath);
-});
+app.use('/tiles', authGuard, createTileRoutes({ projectStorageRoot }));
 
 const changeMatrixStaticDir = path.resolve(process.cwd(), 'change_matrix_outputs');
 app.use('/change-matrix-outputs', authGuard, express.static(changeMatrixStaticDir));
