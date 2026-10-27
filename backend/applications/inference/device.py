@@ -19,6 +19,67 @@ GPU_ERROR_MESSAGES = {
     "GPU_INFERENCE_FAILED": "GPU 能力检查失败",
 }
 
+# CPU 模型常驻加载的宿主内存前置检查（R1 加固续篇）：fp32 checkpoint
+# 加载峰值约 2.2× 体积（反序列化副本 + 运行时结构）。8GB 级宿主在 GPU
+# 模型常驻（~2.6GiB）后，强制 device=cpu 曾 100% 以深处 Errno 12 失败、
+# 浪费整个冷加载时长——低于阈值直接前置拒绝（2026-10-27 实测驱动）
+CPU_MODEL_MEMORY_MULTIPLIER = 2.2
+INSUFFICIENT_HOST_MEMORY_FOR_CPU = "INSUFFICIENT_HOST_MEMORY_FOR_CPU"
+
+
+def read_host_memory_available_bytes() -> Optional[int]:
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _default_checkpoint_size_bytes() -> Optional[int]:
+    import os
+
+    try:
+        from applications.interface.mmseg_inference_caller import get_model_paths
+
+        _, checkpoint_path = get_model_paths("cc-ln/CUGRS", require_inference_checkpoint=True)
+        return os.path.getsize(checkpoint_path)
+    except Exception:
+        return None
+
+
+def ensure_host_memory_for_cpu_model(
+    checkpoint_bytes: Optional[int] = None,
+    *,
+    available_bytes: Optional[int] = None,
+    checkpoint_size_resolver=None,
+) -> Optional[int]:
+    """加载 CPU 模型前校验宿主可用内存；不足抛 DeviceResolutionError
+    （code=INSUFFICIENT_HOST_MEMORY_FOR_CPU）。读取失败或体积未知时放行
+    （保持旧行为），返回读取到的可用字节数。"""
+    if available_bytes is None:
+        available_bytes = read_host_memory_available_bytes()
+    if available_bytes is None:
+        return None
+    if checkpoint_bytes is None:
+        resolver = checkpoint_size_resolver or _default_checkpoint_size_bytes
+        checkpoint_bytes = resolver()
+    if not checkpoint_bytes:
+        return available_bytes
+    required = int(checkpoint_bytes * CPU_MODEL_MEMORY_MULTIPLIER)
+    if available_bytes < required:
+        raise DeviceResolutionError(
+            INSUFFICIENT_HOST_MEMORY_FOR_CPU,
+            "宿主可用内存 "
+            f"{available_bytes / 2**30:.2f}GiB 低于 CPU 模型加载所需约 "
+            f"{required / 2**30:.2f}GiB（checkpoint {checkpoint_bytes / 2**30:.2f}GiB × "
+            f"{CPU_MODEL_MEMORY_MULTIPLIER}）；GPU 模型常驻时 CPU 兜底尤为紧张，"
+            "请释放宿主内存后重试或扩充内存",
+        )
+    return available_bytes
+
 
 @dataclass(frozen=True)
 class DeviceResolution:

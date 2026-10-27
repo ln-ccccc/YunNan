@@ -58,6 +58,12 @@ def run_model_forward_smoke_test(model, *, inference_runner=None):
         raise RuntimeError(f"model forward smoke failed: {error}") from error
 
 
+def _real_cpu_memory_guard(device):
+    from applications.inference.device import ensure_host_memory_for_cpu_model
+
+    ensure_host_memory_for_cpu_model()
+
+
 def _default_model_loader(device):
     from applications.interface.mmseg_inference_caller import get_model_paths
     from applications.interface.mmseg_segmentation import load_model
@@ -159,6 +165,7 @@ class InferenceWorker:
         poll_interval=1.0,
         worker_id=None,
         inference_batch_size=1,
+        cpu_model_memory_guard=None,
     ):
         if job_store is None:
             from applications.inference import jobs as job_store
@@ -166,6 +173,8 @@ class InferenceWorker:
             from applications.kml_roi.pipeline import run_kml_roi_pipeline as pipeline_runner
 
         self.device_resolver = device_resolver
+        # CPU 加载前宿主内存预检（可注入便于测试；真实实现见 device 模块）
+        self.cpu_model_memory_guard = cpu_model_memory_guard or _real_cpu_memory_guard
         self.model_loader = model_loader or _default_model_loader
         self.model_smoke_test = model_smoke_test or run_model_forward_smoke_test
         self.inference_fn = inference_fn or _default_inference_fn
@@ -214,6 +223,7 @@ class InferenceWorker:
             )
             self.model = loaded.get("model")
             if self.model is None:
+                self._guard_cpu_model_memory(self.resolution.effective)
                 self.model = self.model_loader(self.resolution.effective)
                 self.model_smoke_test(self.model)
         else:
@@ -222,6 +232,7 @@ class InferenceWorker:
                 gpu_device=self.gpu_device,
                 allow_cpu_fallback=self.allow_cpu_fallback,
             )
+            self._guard_cpu_model_memory(self.resolution.effective)
             self.model = self.model_loader(self.resolution.effective)
         if self.resolution.effective == "cpu":
             self.cpu_model = self.model
@@ -258,6 +269,19 @@ class InferenceWorker:
             **kwargs,
         )
 
+    def _cancel_requested_now(self, job):
+        """跨进程读最新取消标志：刷新 ORM 对象后读取（与 should_cancel 同模式）。"""
+        if hasattr(self.job_store, "refresh_job"):
+            self.job_store.refresh_job(job)
+        return bool(job.cancel_requested)
+
+    def _guard_cpu_model_memory(self, device):
+        """CPU 模型加载前置校验宿主可用内存（8GB 宿主 GPU 常驻时实测必败，
+        前置拒绝省去整段冷加载时长；详见 device.ensure_host_memory_for_cpu_model）"""
+        if not str(device).startswith("cpu"):
+            return
+        self.cpu_model_memory_guard(device)
+
     @staticmethod
     def _is_cuda_oom_summary(summary):
         errors = (summary or {}).get("tile_errors") or {}
@@ -286,6 +310,7 @@ class InferenceWorker:
         except Exception as error:
             logger.warning("CUDA 缓存清理失败，继续加载 CPU 模型: %s", error)
         if self.cpu_model is None:
+            self._guard_cpu_model_memory("cpu")
             self.cpu_model = self.model_loader("cpu")
         self.model = self.cpu_model
 
@@ -353,7 +378,19 @@ class InferenceWorker:
 
     def run_job(self, job):
         if self.model is None:
-            self.initialize()
+            try:
+                self.initialize()
+            except Exception as error:
+                # 预检类异常（如 INSUFFICIENT_HOST_MEMORY_FOR_CPU）带语义码，
+                # 直接落任务失败终态；其余初始化异常维持原上抛语义
+                if getattr(error, "code", None):
+                    return self.job_store.finish_job(
+                        job,
+                        status="failed",
+                        error_code=error.code,
+                        error_message=str(error),
+                    )
+                raise
         if job.cancel_requested:
             return self.job_store.finish_job(job, status="cancelled")
 
@@ -405,6 +442,7 @@ class InferenceWorker:
                     warnings=(),
                 )
                 if self.cpu_model is None:
+                    self._guard_cpu_model_memory("cpu")
                     self.cpu_model = self.model_loader("cpu")
                 self.model = self.cpu_model
             summary = self._run_pipeline(payload, work_dir)
@@ -424,6 +462,11 @@ class InferenceWorker:
                 and summary.get("written_fid_list")
                 and summary.get("status") in {"completed", "succeeded", "partial_failed"}
             ):
+                # 发布段前复查取消：推理段粒度是逐瓦片，快任务在 GPU 常驻下
+                # 秒级完成，用户取消可能落在推理结束后——此时不应再把成果
+                # 写入正式分类成果（2026-10-27 实测 8fid 全量发布后才发现）
+                if self._cancel_requested_now(job):
+                    return self.job_store.finish_job(job, status="cancelled")
                 publisher = self.project_result_publisher
                 if publisher is None:
                     from applications.project_hub.inference_results import (
@@ -480,10 +523,15 @@ class InferenceWorker:
             else:
                 from applications.inference.device import classify_runtime_error
 
+                # 预检类异常自带语义码（如 INSUFFICIENT_HOST_MEMORY_FOR_CPU）
+                # 优先透传，避免落入消息模式分类
+                explicit_code = getattr(error, "code", None)
                 # 运行期同样可能宿主内存耗尽（Errno 12 / DefaultCPUAllocator
                 # "can't allocate memory"），不能只按设备前缀二分误归 GPU 失败
                 host_code = classify_runtime_error(error)
-                if host_code:
+                if explicit_code:
+                    error_code = explicit_code
+                elif host_code:
                     error_code = host_code
                 else:
                     error_code = (

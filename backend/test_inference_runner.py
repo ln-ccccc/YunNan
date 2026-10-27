@@ -63,6 +63,17 @@ def load_worker_module():
 
 
 class TestInferenceRunner(unittest.TestCase):
+    def setUp(self):
+        # CPU 加载内存预检与各用例逻辑无关（默认真实实现会按宿主实际内存拒绝），
+        # 全类默认放行；预检行为由专门用例显式覆盖
+        import applications.inference.device as device_module
+
+        self._guard_patcher = patch.object(
+            device_module, "ensure_host_memory_for_cpu_model", lambda *a, **k: None
+        )
+        self._guard_patcher.start()
+        self.addCleanup(self._guard_patcher.stop)
+
     def test_default_model_loader_uses_inference_checkpoint_and_device(self):
         worker_module = load_worker_module()
         caller_module = types.ModuleType("applications.interface.mmseg_inference_caller")
@@ -409,6 +420,117 @@ class TestInferenceRunner(unittest.TestCase):
         result = job_store.finish_job.call_args.kwargs["result"]
         self.assertEqual(result["routing"]["synced_fids"], [101])
         self.assertEqual(result["display_results"][0]["fid"], 101)
+
+    def test_explicit_cpu_job_fails_fast_when_host_memory_insufficient(self):
+        """device=cpu 且宿主可用内存不足：前置拒绝（秒级失败），任务终态
+        failed 且 error_code=INSUFFICIENT_HOST_MEMORY_FOR_CPU（不再深处 Errno 12）。"""
+        worker_module = load_worker_module()
+        job_store = Mock()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = worker_module.InferenceWorker(
+                device_resolver=Mock(
+                    resolve=Mock(
+                        return_value=types.SimpleNamespace(
+                            requested="cpu",
+                            effective="cpu",
+                            fallback_reason=None,
+                            warnings=(),
+                        )
+                    )
+                ),
+                model_loader=Mock(),
+                inference_fn=Mock(),
+                pipeline_runner=Mock(),
+                job_store=job_store,
+                runtime_root=Path(temp_dir),
+            )
+            worker.model = None  # 强制走 initialize → cpu 加载守卫
+            payload = {
+                "project_id": 7,
+                "mine_fids": [101],
+                "year": "2022",
+                "old_tif_path": "old.tif",
+                "new_tif_path": "new.tif",
+                "kml_path": "mines.geojson",
+                "output_root": "project-output",
+            }
+            job = types.SimpleNamespace(
+                id="job-cpu-mem",
+                status="running",
+                cancel_requested=False,
+                request_payload_json=json.dumps(payload),
+            )
+            import applications.inference.device as device_module
+
+            guard_error = device_module.DeviceResolutionError(
+                "INSUFFICIENT_HOST_MEMORY_FOR_CPU", "宿主可用内存不足"
+            )
+            with patch.object(
+                device_module, "ensure_host_memory_for_cpu_model", side_effect=guard_error
+            ):
+                worker.run_job(job)
+
+        kwargs = job_store.finish_job.call_args.kwargs
+        self.assertEqual(kwargs["status"], "failed")
+        self.assertEqual(kwargs["error_code"], "INSUFFICIENT_HOST_MEMORY_FOR_CPU")
+        self.assertIn("宿主可用内存不足", kwargs["error_message"])
+
+    def test_publish_phase_respects_cancel_requested_before_writing_results(self):
+        """取消落在推理段结束后（GPU 快任务实测场景）：发布前复查标志，
+        不再把已推理产物写入正式分类成果，任务终态 cancelled。"""
+        worker_module = load_worker_module()
+        publisher = Mock(
+            return_value={"synced_fids": [], "display_results": [], "classification_results": []}
+        )
+        job_store = Mock()
+
+        def refresh_flips_cancel(job):
+            job.cancel_requested = True
+
+        job_store.refresh_job.side_effect = refresh_flips_cancel
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = worker_module.InferenceWorker(
+                device_resolver=Mock(),
+                model_loader=Mock(),
+                inference_fn=Mock(),
+                pipeline_runner=Mock(
+                    return_value={
+                        "status": "succeeded",
+                        "written_fid_list": ["101"],
+                        "output_root": str(Path(temp_dir) / "job-project" / "staged_outputs"),
+                    }
+                ),
+                project_result_publisher=publisher,
+                job_store=job_store,
+                runtime_root=Path(temp_dir),
+            )
+            worker.model = object()
+            worker.resolution = types.SimpleNamespace(
+                requested="cpu",
+                effective="cpu",
+                fallback_reason=None,
+                warnings=(),
+            )
+            payload = {
+                "project_id": 7,
+                "mine_fids": [101],
+                "year": "2022",
+                "old_tif_path": "old.tif",
+                "new_tif_path": "new.tif",
+                "kml_path": "mines.geojson",
+                "output_root": "project-output",
+            }
+            job = types.SimpleNamespace(
+                id="job-project",
+                status="running",
+                cancel_requested=False,
+                request_payload_json=json.dumps(payload),
+            )
+
+            worker.run_job(job)
+
+        publisher.assert_not_called()
+        self.assertEqual(job_store.finish_job.call_args.kwargs["status"], "cancelled")
 
     def test_run_forever_isolates_poisoned_job_and_keeps_serving(self):
         worker_module = load_worker_module()

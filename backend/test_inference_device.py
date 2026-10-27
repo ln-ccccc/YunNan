@@ -27,6 +27,48 @@ def load_config_module():
     return module
 
 
+class TestCpuModelMemoryGuard(unittest.TestCase):
+    """CPU 模型加载前置内存校验（8GB 宿主 GPU 常驻时 device=cpu 必败场景）。"""
+
+    def test_insufficient_memory_raises_classified_error(self):
+        device = load_device_module()
+        with self.assertRaises(device.DeviceResolutionError) as ctx:
+            device.ensure_host_memory_for_cpu_model(
+                checkpoint_bytes=2 * 2**30,
+                available_bytes=3 * 2**30,
+            )
+        self.assertEqual(ctx.exception.code, "INSUFFICIENT_HOST_MEMORY_FOR_CPU")
+        self.assertIn("CPU", str(ctx.exception))
+
+    def test_sufficient_memory_passes_and_returns_available(self):
+        device = load_device_module()
+        available = device.ensure_host_memory_for_cpu_model(
+            checkpoint_bytes=2 * 2**30,
+            available_bytes=6 * 2**30,
+        )
+        self.assertEqual(available, 6 * 2**30)
+
+    def test_unknown_checkpoint_or_meminfo_keeps_legacy_behavior(self):
+        device = load_device_module()
+        # checkpoint 体积未知 → 放行
+        self.assertEqual(
+            device.ensure_host_memory_for_cpu_model(
+                checkpoint_bytes=None,
+                available_bytes=1,
+                checkpoint_size_resolver=lambda: None,
+            ),
+            1,
+        )
+        # /proc/meminfo 不可读 → 放行（返回 None）
+        with patch.object(device, "read_host_memory_available_bytes", return_value=None):
+            self.assertIsNone(
+                device.ensure_host_memory_for_cpu_model(
+                    checkpoint_bytes=2 * 2**30,
+                    available_bytes=None,
+                )
+            )
+
+
 class FakeCuda:
     def __init__(self, *, available=True, count=1, name="NVIDIA GPU", capability=(8, 9)):
         self.available = available
