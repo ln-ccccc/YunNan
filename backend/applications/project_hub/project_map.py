@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 from applications.models.inference_job import InferenceJob
@@ -18,6 +19,20 @@ logger = logging.getLogger(__name__)
 # 瓦片目录按 zoom/x/y 分层，正常树很小；探针挂概览热路径，"目录在但 PNG
 # 全缺"时无界 rglob 会遍历整棵目录树——限额内未找到即判瓦片缺失
 _TILE_SCAN_MAX_ENTRIES = 2000
+
+# stats 为纯读聚合（565 矿实测 8s，确定性优化后约 2s）。模块级短 TTL 缓存
+# 让看板反复打开毫秒返回；跨进程失效不可行（gunicorn 多 worker + 推理
+# worker 独立进程），故只做 TTL：矿山导入/推理发布后至多 _TTL 秒内看板
+# 可能滞后，属可接受的有界陈旧（不做写失效钩子，避免跨进程假失效）
+_STATS_CACHE_TTL_SECONDS = 120
+_STATS_CACHE = {}
+
+
+def invalidate_project_stats_cache(project_id=None):
+    if project_id is None:
+        _STATS_CACHE.clear()
+    else:
+        _STATS_CACHE.pop(project_id, None)
 
 
 def _scan_tile_dir_for_png(tile_dir, max_entries=_TILE_SCAN_MAX_ENTRIES):
@@ -131,11 +146,28 @@ def _aggregate_project_indices(project_id, fids):
     means = []
     trend_counter = {"upward": 0, "downward": 0, "stable": 0, "no_data": 0}
     available = 0
+    # 逐 fid 走 _read_project_output 会每文件重查项目行（565 次 DB 查询）+
+    # 整路径 resolve（bind mount 上 lstat 慢，实测 8s 中 5s+ 花在此）：
+    # 归属校验与目录解析各做一次，文件级只 stat+read
+    _project(project_id)
+    try:
+        indices_dir = resolve_storage_path(
+            get_storage_root(), Path("projects") / str(project_id) / "outputs" / "indices"
+        )
+    except ValueError:
+        indices_dir = None
     for fid in fids:
+        payload = {"available": False}
         try:
-            payload = _read_project_output(project_id, "indices", f"{int(fid)}.json")
-        except (ValueError, TypeError):
+            fid_value = int(fid)
+        except (TypeError, ValueError):
             continue
+        path = indices_dir / f"{fid_value}.json" if indices_dir is not None else None
+        if path is not None and path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {"available": False}
         ndvi = payload.get("ndvi") or {}
         if not ndvi.get("available"):
             trend_counter["no_data"] += 1
@@ -216,6 +248,10 @@ def aggregate_land_type_list(items):
 
 
 def get_project_stats(project_id):
+    now = time.monotonic()
+    cached = _STATS_CACHE.get(project_id)
+    if cached is not None and now < cached[0]:
+        return cached[1]
     geojson = get_project_geojson(project_id)
     features = geojson["features"]
     project = _project(project_id)
@@ -275,7 +311,7 @@ def get_project_stats(project_id):
         restoration_methods[restoration] = restoration_methods.get(restoration, 0) + 1
         land = str(properties.get("NXFFX") or "未知").strip()
         land_types[land] = land_types.get(land, 0) + 1
-    return {
+    stats = {
         "mineTotal": len(features),
         "mineAreaTotal": total_area,
         "treatedCount": treated,
@@ -296,6 +332,8 @@ def get_project_stats(project_id):
         },
         "mineChangeAreaList": [],
     }
+    _STATS_CACHE[project_id] = (now + _STATS_CACHE_TTL_SECONDS, stats)
+    return stats
 
 
 def search_project_mines(project_id, query):

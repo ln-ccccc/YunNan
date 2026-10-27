@@ -493,6 +493,84 @@ class TestProjectStatsAreaAggregation(unittest.TestCase):
                 else:
                     os.environ["PROJECT_STORAGE_ROOT"] = previous_root
 
+    def test_stats_indices_aggregation_and_short_ttl_cache(self):
+        from applications.project_hub.project_map import get_project_stats, invalidate_project_stats_cache
+
+        project = create_project({"name": "指数聚合", "region": "大理"})
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        invalidate_project_stats_cache()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            try:
+                pid = project["id"]
+                features = [
+                    {
+                        "type": "Feature",
+                        "properties": {"FID_1": 701, "HFZLQK": "已治理"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[100.0, 25.0], [100.01, 25.0], [100.0, 25.01], [100.0, 25.0]]],
+                        },
+                    }
+                ]
+                mine_dir = os.path.join(temp_dir, "projects", str(pid), "mines", "1")
+                os.makedirs(mine_dir)
+                with open(os.path.join(mine_dir, "mines.geojson"), "w", encoding="utf-8") as stream:
+                    json.dump({"type": "FeatureCollection", "features": features}, stream)
+                db.session.add(
+                    ProjectSpatialResource(
+                        project_id=pid,
+                        resource_type="mine_vector",
+                        version=1,
+                        status="active",
+                        source_path=f"projects/{pid}/mines/1/mines.geojson",
+                        normalized_path=f"projects/{pid}/mines/1/mines.geojson",
+                        source_format="geojson",
+                        bounds_json=json.dumps([100.0, 25.0, 100.01, 25.01]),
+                    )
+                )
+                db.session.add(ProjectMineBinding(project_id=pid, mine_fid=701, sort_order=0))
+                db.session.commit()
+
+                indices_dir = os.path.join(temp_dir, "projects", str(pid), "outputs", "indices")
+                os.makedirs(indices_dir)
+
+                def write_indices(mean, trend):
+                    with open(os.path.join(indices_dir, "701.json"), "w", encoding="utf-8") as stream:
+                        json.dump(
+                            {
+                                "ndvi": {
+                                    "available": True,
+                                    "mean": mean,
+                                    "mk_trend": trend,
+                                    "data": [{"year": 2023, "value": mean - 0.1}, {"year": 2024, "value": mean}],
+                                }
+                            },
+                            stream,
+                        )
+
+                write_indices(0.42, "upward")
+                first = get_project_stats(pid)
+                self.assertEqual(first["ndviStats"]["available_mine_count"], 1)
+                self.assertAlmostEqual(first["ndviStats"]["mean"], 0.42, places=4)
+                self.assertEqual(first["ndviStats"]["mk_trend_counter"]["upward"], 1)
+                self.assertEqual(first["ndviStats"]["yearly"][0]["year"], 2023)
+
+                # TTL 内重复读取命中缓存：磁盘改值不生效，失效后恢复
+                write_indices(0.9, "downward")
+                cached = get_project_stats(pid)
+                self.assertAlmostEqual(cached["ndviStats"]["mean"], 0.42, places=4)
+                invalidate_project_stats_cache(pid)
+                fresh = get_project_stats(pid)
+                self.assertAlmostEqual(fresh["ndviStats"]["mean"], 0.9, places=4)
+                self.assertEqual(fresh["ndviStats"]["mk_trend_counter"]["downward"], 1)
+            finally:
+                invalidate_project_stats_cache()
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
 
 if __name__ == "__main__":
     unittest.main()
