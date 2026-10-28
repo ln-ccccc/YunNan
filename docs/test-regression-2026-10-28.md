@@ -56,14 +56,37 @@
 
 上轮复测文档声称 N6 临时项目「16–19 全部清理」，实际 **16/17（n6-batch-1/2，2026-10-27 14:31 建，0 矿山 0 数据集）漏清**。本轮逐一显式 ID 核验（名称+内容）后 archive→delete，四步全 200；终态项目清单回归 1/2/4/10。教训与批量删除规程同源：清理后必须复核清单。
 
-## 4. 未测项（如实声明）
+## 4. 阶段二：重型真实任务链重放（同日追加）
 
-- 未重放重型真实任务链（11G 底图重切、GPU 推理全程、发布取消、快照恢复）：上轮已有真实证据且相关代码零改动，本轮以单测+轻探针覆盖。
-- 未测 CPU 推理成功路径（宿主 8GB 物理不可行，沿用设计秒拒结论）、在线底图 provider（无外网）。
+上轮仅留证据、本轮未重放的重型链路全部在活体栈重放，另补从未深测过的盲区。脚本与日志：`D:/Temp/yunnan-test-1028/phase2/`。
+
+| # | 项 | 方法 | 结果 |
+| --- | --- | --- | --- |
+| A | GPU 推理全链重放 | P10×数据集74×year2024（路由匹配 8 个影像相交 FID）→ succeeded 42s，成果 130 要素落库（result 111） | ✅ |
+| A | 推理期并发读压测 | overview/assets 双线程持续打（47+49 次） | 零失败，p50≈315ms |
+| B | 取消语义三级定性 | ①取消+0.02s→**cancelled**；②+3s/③+21s→succeeded | ①窗口内取消被尊重；②③落入上轮已记录"已受理仍完成"竞态（预热模型下 8-FID 任务前发布窗口仅约 4s，docker 日志时间戳证明推理在创建后 0.3s 内完成装载）——**非回归**，K-4 已决策不做 |
+| B+ | search 端点压测修正 | `q=15`（精确 FID）×29 次 | 零失败（首轮 `q=7` 51/51"失败"系探针不合业务语义：q 需精确匹配 FID，非缺陷） |
+| C | 编辑修订链+乐观锁 | 按受限 FeatureCollection 契约：改类保存 rev0→1→2；双会话并发同基准 | ✅ 200+409「成果已被其他保存更新」；旧基准单发 409（真实 MySQL） |
+| D | 质检重放 | result 111 quality-review | ✅ 200，5 类面积/占比/数量统计完整（water 65.67%/forest/grassland…） |
+| E | 导出五格式深验 | 下载 artifact 后程序化读回 | GeoJSON 565/565 面积零偏差；CSV 566 行；**SHP 经 OGR 读回 565 要素面积 rel=1.7e-14**；XLSX 2 sheet；DXF 3.4MB 568 多段线含真实坐标；分类导出 200 |
+| F | 快照三链重放 | P10 生成（manifest 565 矿山+11 数据集）→导入新项目→负例→清理 | ✅ 导入报告 mines=565/assets=11/failed=0；负例 422；**语义确认：导入会把 manifest 内项目名恢复到目标项目**（临时项目被重命名为 P10 同名，属预期行为） |
+| G | MySQL 并发写压测 | 8 线程×(建→改名→复读→归档→删) | ✅ 全 8/8 一致、零异常、零残留（3.3s）——补上"规模化并发写"盲区 |
+| I | 编辑器浏览器冒烟 | GeoView editor?project_id=10&result_id=111 | ✅ 底图+分类图斑渲染（视觉模型确认 V0-V2 版本记录、"当前版本已保存"）、API 修订在 UI 可见 |
+
+### 4.1 阶段二新发现（非阻断，如实记录）
+
+1. **POST `/api/projects/<id>/backups` 空 body → 500**（`request.json` 对空 body 抛 BadRequest 被 500 兜底，应 4xx）。空 body 探针触发；带 `{}` 正常。存量小缺陷，未修。
+2. **GeoView 编辑器瓦片路由缺 J-1 平价**：底图直连 Flask `/api/projects/10/map-resources/20/tiles/17/...`，视窗缩放超过金字塔 maxZoom(z15) 时 404（一次载入 21 个）；地图仍正常渲染（截图确认），仅控制台噪音与冗余请求。J-1 透明瓦片只覆盖了 BFF 路由。未修。
+3. **路由语义确认**：不传 `mine_fids` 时任务路由=影像相交矿山子集（P10×数据集74=8 个 FID），传超集被 400「必须是影像相交矿山的非空正整数子集」——行为正确，此前未在文档明示。
+
+## 5. 未测项（如实声明）
+
+- 11G 底图完整重切未重放（上轮已有真实证据；瓦片透明化 J-1、激活、负向探针本轮均已活体复验）；CPU 推理成功路径（宿主 8GB 物理不可行，沿用设计秒拒结论）；在线底图 provider（无外网）。
 - L-2 前端预构建镜像仍待负责人决策（沿 fix-plan 待办）。
 
-## 5. 留痕索引
+## 6. 留痕索引
 
-- 原始日志/脚本/截图：`D:/Temp/yunnan-test-1028/`（`backend_unittest_full.log` 首轮含失败明细、`backend_final_regression.log` 修复后终局、`miner_*.log`、`frontend_*.log`、`offline_deployment_test.log`、`ui_smoke.cjs`/`ui_smoke_result.log`、`geoview_login.cjs`、`shots/01..06*.png`）
-- 本轮代码改动：`backend/test_project_map.py`（仅测试缓存隔离，1 处 setUp，提交 `3b783b2`）
-- 提交：`3b783b2`（测试隔离修复）+ 本证据文档与上轮复测记录入库提交
+- 阶段一（静态套件+冒烟）：`D:/Temp/yunnan-test-1028/`（`backend_unittest_full.log` 首轮含失败明细、`backend_final_regression.log` 修复后终局、`miner_*.log`、`frontend_*.log`、`offline_deployment_test.log`、`ui_smoke.cjs`/`ui_smoke_result.log`、`geoview_login.cjs`、`shots/01..06*.png`）
+- 阶段二（重型链路重放）：`D:/Temp/yunnan-test-1028/phase2/`（`e2e_inference_stress.log`、`cancel_publish*.log`、`cancel_immediate.log`、`quality_exports_and_revision.log`、`revision_409.log`、`snapshot_import.log`、`mysql_write_stress.log`、`cancel_visibility_repro.log`、`editor_smoke.log`、`shots/editor_111.png`；容器内 `/tmp/e2e_*.py` 一次性）
+- 本轮代码改动：`backend/test_project_map.py`（仅测试缓存隔离，1 处 setUp，提交 `3b783b2`）；阶段二零代码改动（两项新发现未修，见 §4.1）
+- 提交：`3b783b2`（测试隔离修复）+ `7a2bab7`（证据文档）+ 本阶段追加提交
