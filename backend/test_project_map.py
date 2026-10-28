@@ -391,6 +391,10 @@ class TestProjectStatsAreaAggregation(unittest.TestCase):
     """
 
     def setUp(self):
+        # stats 结果带模块级 TTL 缓存，同进程先跑的其他测试会用同名 project id 污染缓存
+        from applications.project_hub.project_map import invalidate_project_stats_cache
+
+        invalidate_project_stats_cache()
         self.app = create_app("testing")
         self.ctx = self.app.app_context()
         self.ctx.push()
