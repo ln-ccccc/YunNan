@@ -452,8 +452,19 @@ def _copy_valid_mask(dst, masks):
 
 
 def _pixel_area_m2(src):
-    center_lat = math.radians((src.bounds.top + src.bounds.bottom) / 2.0)
-    return abs(src.transform.a) * abs(src.transform.e) * (_METERS_PER_DEG_LAT ** 2) * math.cos(center_lat)
+    # 按 CRS 换算（2026-10-31 数值审查）：地理坐标系用度公式；Web Mercator
+    # 每轴失真 1/cos(lat) 需乘 cos² 修正；其他投影（米制）直接为 m²。
+    # 原公式恒按度换算，对 EPSG:3857 源影像会得出天文数字。
+    pixel_area = abs(src.transform.a) * abs(src.transform.e)
+    center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
+    crs = src.crs
+    if crs is None:
+        return pixel_area * (_METERS_PER_DEG_LAT ** 2) * math.cos(math.radians(center_lat))
+    if crs.is_geographic:
+        return pixel_area * (_METERS_PER_DEG_LAT ** 2) * math.cos(math.radians(center_lat))
+    if crs.to_epsg() == 3857:
+        return pixel_area * (math.cos(math.radians(center_lat)) ** 2)
+    return pixel_area
 
 
 def _mine_geometry(project, mine_fid):

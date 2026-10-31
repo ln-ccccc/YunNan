@@ -167,16 +167,34 @@ def _read_change_matrix_pixels(fid_dir: Path):
 
 
 def _pixel_area_m2(fid_dir: Path):
-    """像元面积：最新 label.tif 的 transform（度→米按中心纬度换算）。"""
+    """像元面积（m²）：按最新 label.tif 的实际 CRS 换算。
+
+    2026-10-31 数值审查修正：原公式恒按 EPSG:4326 度换算，而推理 label 保留
+    源影像 CRS——2024 期（EPSG:3857 网墨卡托，米）被重复乘 111320²，看板修复
+    面积出现 5.4e14 m² 的天文数字。按 CRS 三分支：
+    - 地理坐标系（度）：|a|·|e|·111320²·cos(中心纬度)
+    - Web Mercator（EPSG:3857，米）：Mercator 每轴失真 1/cos(lat)，真面积
+      = |a|·|e|·cos²(中心纬度)
+    - 其他投影（米制）：|a|·|e| 直接为 m²
+    """
     labels = sorted(fid_dir.glob("*_label.tif"))
     if not labels:
         return None
     try:
         with rasterio.open(labels[-1]) as src:
-            center_lat = math.radians((src.bounds.top + src.bounds.bottom) / 2.0)
-            return abs(src.transform.a) * abs(src.transform.e) * (111320.0 ** 2) * math.cos(center_lat)
+            pixel_area = abs(src.transform.a) * abs(src.transform.e)
+            center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
+            crs = src.crs
     except (OSError, ValueError):
         return None
+    if crs is None:
+        return None
+    if crs.is_geographic:
+        return pixel_area * (111320.0 ** 2) * math.cos(math.radians(center_lat))
+    if crs.to_epsg() == 3857:
+        # Web Mercator：米制坐标每轴放大 1/cos(lat)，真面积乘 cos² 修正
+        return pixel_area * (math.cos(math.radians(center_lat)) ** 2)
+    return pixel_area
 
 
 def _change_metrics(project_root: Path):
