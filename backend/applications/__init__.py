@@ -79,9 +79,16 @@ def create_app(config_name=None):
     # 413，若小于视图内闸门会把大文件功能在 HTTP 层拦死（2026-09-20 审查
     # P1）。视图内仍保留逐文件硬上限校验与 500MB 预处理闸门；GB 级大文件
     # 走分片续传通道（UPLOAD_SESSION_MAX_TOTAL_MB=100GB）。
+    # 2026-10-31：底图网页上传（spatial_service.MAX_BASEMAP_UPLOAD_BYTES=
+    # 15GB，整省/大图集场景）需 MAX_CONTENT_LENGTH 覆盖——取两者较大值加
+    # 64MB 冗余；全局上限只挡未登录面滥用，业务口径仍在各视图内校验。
     from applications.common.utils.tiff_processor import MAX_UPLOAD_TIFF_SIZE_MB
+    from applications.project_hub.spatial_service import MAX_BASEMAP_UPLOAD_BYTES
 
-    app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_TIFF_SIZE_MB * 1024 * 1024
+    app.config['MAX_CONTENT_LENGTH'] = max(
+        MAX_UPLOAD_TIFF_SIZE_MB * 1024 * 1024,
+        MAX_BASEMAP_UPLOAD_BYTES + 64 * 1024 * 1024,
+    )
 
     # Werkzeug 在表单解析阶段即抛 413（默认英文 HTML），视图内"请改用分片
     # 续传"引导完全不可达（含绕过前端直连 API 的消费者）；统一转 JSON 业务
@@ -90,8 +97,9 @@ def create_app(config_name=None):
 
     @app.errorhandler(413)
     def _payload_too_large(_error):
+        limit_mb = app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)
         return fail_api(
-            f"请求体超过单发上传上限 {MAX_UPLOAD_TIFF_SIZE_MB}MB，请改用分片续传上传"
+            f"请求体超过服务端上限 {limit_mb}MB（单发影像 1GB / 底图 15GB，GB 级影像请走分片续传或投递 incoming/）"
         ), 413
 
     app.config['JSON_AS_ASCII'] = False

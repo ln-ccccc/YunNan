@@ -808,7 +808,7 @@ def cancel_spatial_job(project_id, job_id, actor="system"):
     return _serialize_job(job)
 
 
-MAX_BASEMAP_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+MAX_BASEMAP_UPLOAD_BYTES = 15 * 1024 * 1024 * 1024
 _BASEMAP_UPLOAD_CHUNK = 256 * 1024
 
 
@@ -817,7 +817,7 @@ def receive_basemap_upload(project_id, filename, stream):
 
     受控存储接口归后端（AGENTS §3）：BFF 只做鉴权与流式转发，本函数是校验与
     落盘的唯一权威——扩展名白名单复用 ALLOWED_BASEMAP_EXTENSIONS、staging 命名
-    复用 _is_incomplete_copy_name 契约、重名 409、2GB 业务上限（超限 413）。
+    复用 _is_incomplete_copy_name 契约、重名 409、15GB 业务上限（超限 413，2026-10-31 用户确认放宽：整省底图/大图集经网页上传的场景）。
     落盘完成即成为空间资源面板的底图候选。
     """
     project = Project.query.filter_by(id=project_id, deleted_at=None).first()

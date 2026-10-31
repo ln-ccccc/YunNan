@@ -270,12 +270,20 @@ const uploadProgress = ref('');
 const uploadError = ref('');
 
 // 底图网页上传（2026-10-31）：文件交给父组件流式直传 BFF（落盘 incoming/），
-// 进度经回调回显；成功后父组件会刷新候选列表并自动选中
+// 进度经回调回显；成功后父组件会刷新候选列表并自动选中。
+// 大文件预检（2026-10-31 数值审查补充）：>2GB 与后端上限一致，超大底图
+// （如 10GB 级离线图集）应直接放入服务器 incoming/ 后刷新候选，不经浏览器。
+const MAX_BASEMAP_UPLOAD_MB = 15360;
+
 function handleBasemapUpload(event) {
   const file = event.target.files?.[0];
   event.target.value = '';
   if (!file) return;
   uploadError.value = '';
+  if (file.size > MAX_BASEMAP_UPLOAD_MB * 1024 * 1024) {
+    uploadError.value = `底图文件 ${(file.size / 1073741824).toFixed(1)}GB 超过网页上传上限 15GB——更大的底图请直接放入服务器 incoming/ 目录，然后点"刷新导入目录"选择（无需上传）。`;
+    return;
+  }
   uploadProgress.value = '0%';
   emit('upload-basemap', {
     file,
