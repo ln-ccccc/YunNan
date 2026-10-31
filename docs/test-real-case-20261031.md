@@ -142,3 +142,35 @@
 ### 8.4 测试入口选择说明
 
 第一、二轮测试选 Miner 入口的原因：测试目标是「推理 → 分类成果 → 编辑竞态」闭环，Miner 入口引用已登记影像直接命中该链（解译平台 standalone 模式不产生分类成果，走它测不到编辑环节）；解译平台入口的差异化部分（现场上传、影像收编 `_publish_project_input`、mode 分叉）由本节补测覆盖。
+
+## 9. 补充轮三：mine-imagery-gehi skill 抓取历史影像推理（数据丰富）
+
+应用户要求，用 [mine-imagery-gehi skill](https://github.com/ln-ccccc/Zhong-s_Skills/tree/main/mine-imagery-gehi)（批量获取谷歌地球矿山影像，按 KML 多边形逐块下载 GeoTIFF）为项目 10 补充**2018 历史期**真实影像并完成推理，形成 2018/2023/2024 多年数据。
+
+### 9.1 管线执行（skill 7 步）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 工具部署 | GEHistoricalImagery v0.7.1 → `C:/tools/GEHistoricalImagery`（新版 exe 在 `gdal/` 子目录，skill CONFIG 相应修正） |
+| KML 解析 | 项目 10 激活矢量 `mines/17/source.kml`（1130 图斑）→ `parse_kml_polygons.py` → 565 矿清单，8 绑定矿山命中 |
+| 可用年份诊断 | 8 矿山档案并集：2012/2014/2017/2018 全有（**2022 无档案**——首版 2022 窗口 0/8，据实切 2018） |
+| 下载 | 2018-03 期（696/713/714/715/716/718=2018-03-02；1330/11195=2018-03-19），coverage 全部 ≥0.999，**8/8 零失败**，产物 526×592 RGB deflate（~1MB/幅） |
+
+### 9.2 推理与数据丰富
+
+8 幅影像逐幅 `POST /api/file/upload` → `POST /api/analysis/kml_roi_inference`（year=2018, project_id=10）→ **8/8 job succeeded**（相邻矿山被一幅影像同时求交命中，成果行幂等新增）。项目 10 成果分布变为：
+
+| 矿山 | 2018 | 2023 | 2024 |
+| --- | --- | --- | --- |
+| 696 | 1 行 | 1 行 | 10 行 |
+| 713/714/715 | 各 3 行 | — | 各 7 行 |
+| 716/718/1330/11195 | 各 2 行 | — | 各 5 行 |
+
+### 9.3 多年形态实证（截图 M01-M04）
+
+- 矿山 696「地物分类」：**2018/2023/2024 三张年份卡** + 历年地类占比表三列——**裸地 85.9%(2018) → 4.0%(2023) → 4.0%(2024)、草地 4.5% → 22.7% → 22.7%、林地 0.9% → 10.5% → 10.5%**（矿山治理的真实跨年变化）；
+- 变化矩阵自动切换最近两年（2023→2024，审校口径 basis=revised_vector）；
+- 「原始影像」按年分组三条+，每条带预览/下载按钮；
+- 趋势报告首末年变为 2018 vs 2024（跨 6 年）。
+
+脚本与产物：`D:/Temp/Zhong-s-Skills-20261011/mine-imagery-gehi/scripts/`（mines_yunnan_p10.json、batch_yunnan_p10_2022.py）与 `D:/Temp/gehi-yunnan-2018/`（8 幅 tif、manifest、batch-infer-2018.cjs、infer-results.json）。
