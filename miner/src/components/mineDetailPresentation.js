@@ -74,6 +74,8 @@ export function buildOriginalImageryItems(originalImageryData) {
     timeText: formatImageryTime(item.created_at),
     statusText: JOB_STATUS_TEXT[item.job_status] || item.job_status || '未知状态',
     downloadable: Boolean(item.file_exists && item.job_id),
+    previewable: Boolean(item.has_preview && item.preview_url),
+    previewUrl: item.preview_url || null,
     year: item.year ?? null,
   }));
 }

@@ -138,6 +138,11 @@
                 <div class="imagery-side">
                   <span class="imagery-status">{{ item.statusText }}</span>
                   <button type="button"
+                    v-if="item.previewable"
+                    class="imagery-download-btn"
+                    @click="previewSrc = item.previewUrl"
+                  >预览</button>
+                  <button type="button"
                     v-if="item.downloadable"
                     class="imagery-download-btn"
                     @click="$emit('download-original', item)"
@@ -146,6 +151,15 @@
               </div>
             </div>
             <div v-else class="no-data">暂无原始影像记录（该矿山未参与过项目推理）</div>
+            <div v-if="previewSrc" class="preview-overlay" @click="previewSrc = null">
+              <div class="preview-body" @click.stop>
+                <div class="preview-head">
+                  <span>原始影像预览（推理 ROI 原图）</span>
+                  <button type="button" class="preview-close" @click="previewSrc = null">×</button>
+                </div>
+                <img :src="previewSrc" alt="原始影像预览" class="preview-img" />
+              </div>
+            </div>
           </template>
 
           <template v-else>
@@ -215,6 +229,8 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['close', 'tab-change', 'download-original']);
+
+const previewSrc = ref(null);
 
 const trendChartRef = ref(null);
 let trendChartInst = null;
@@ -592,6 +608,49 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
   font-size: 12px;
 }
 .imagery-download-btn:hover { background: #4ecdc4; color: #000; }
+
+.preview-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 25, 30, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2200;
+}
+.preview-body {
+  background: #fff;
+  border-radius: 10px;
+  padding: 14px;
+  max-width: min(920px, 92vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  color: #2b3a3d;
+}
+.preview-close {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+  color: #5a6b6e;
+  line-height: 1;
+}
+.preview-img {
+  max-width: 100%;
+  max-height: 74vh;
+  object-fit: contain;
+  border: 1px solid #dbe7e4;
+  border-radius: 6px;
+  background: #f4f8f7;
+}
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }

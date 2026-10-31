@@ -565,6 +565,25 @@ def _payload_dict(raw):
     return payload if isinstance(payload, dict) else {}
 
 
+def _path_within(path, roots):
+    """受控根包含性判断：任一根命中即放行（路径已 resolve，逐根 relative_to）。"""
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _inference_dir(project_id, fid, filename=None):
+    directory = resolve_storage_path(
+        get_storage_root(),
+        Path("projects") / str(project_id) / "outputs" / "inference" / str(fid),
+    )
+    return directory / filename if filename else directory
+
+
 def list_project_original_imagery(project_id, fid, item_limit=50):
     """矿山维度列出地物分类推理所用的原始影像（溯源，2026-09-22）。
 
@@ -582,11 +601,15 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
 
     items = []
     seen = set()
-    # 列表与下载同门槛：只认本项目 inputs 根内的记录（legacy 迁移任务可能指向
-    # storage 其他位置——列表放行而下载 404 会造成可点不可达，2026-09-22 审查 P2）
-    input_root = resolve_storage_path(
-        get_storage_root(), Path("projects") / str(project.id) / "inputs"
-    )
+    # 列表与下载同门槛：受控根并集 = 本项目 inputs 根 ∪ 全局 incoming/。
+    # 2026-10-31 审查 P2：M5.2 项目推理通道直接引用 dataset 登记路径（登记在
+    # incoming/ 的影像推理后 payload 指向 incoming），旧的单 inputs 根校验会把
+    # 整个 job 过滤成空列表（矿山 11195 实证）；解译平台收编拷贝（inputs/
+    # interpretation/）不受影响
+    input_roots = [
+        resolve_storage_path(get_storage_root(), Path("projects") / str(project.id) / "inputs"),
+        resolve_storage_path(get_storage_root(), Path("incoming")),
+    ]
     jobs = (
         InferenceJob.query.filter_by(project_id=project.id)
         .order_by(InferenceJob.create_time.desc())
@@ -602,8 +625,9 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
             continue
         try:
             input_path = Path(input_text).expanduser().resolve()
-            input_path.relative_to(input_root)
         except (ValueError, OSError):
+            continue
+        if not _path_within(input_path, input_roots):
             continue
         year_text = str(payload.get("year") or "").strip()
         key = (str(input_path), year_text)
@@ -620,6 +644,13 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
         except OSError:
             size_bytes, file_exists = None, False
         year_value = int(year_text) if year_text.isdigit() and len(year_text) == 4 else None
+        # 预览（2026-10-31 方案 a）：推理发布已生成 ROI 原图截图 {fid}+{year}_src.png，
+        # 复用受控 outputs 静态路由（解译历史缩略图同源），tif 原件仍走下载
+        preview_src = f"{fid_value}+{year_text}_src.png" if year_text else None
+        preview_exists = bool(
+            preview_src
+            and _inference_dir(project.id, fid_value, preview_src).is_file()
+        )
         items.append({
             "job_id": job.id,
             "year": year_value,
@@ -628,6 +659,12 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
             "file_exists": file_exists,
             "job_status": job.status,
             "created_at": to_utc_z(job.create_time),
+            "has_preview": preview_exists,
+            "preview_url": (
+                f"/api/projects/{project.id}/outputs/inference/{fid_value}/{preview_src}"
+                if preview_exists
+                else None
+            ),
         })
         if len(items) >= item_limit:
             break
@@ -635,7 +672,10 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
 
 
 def resolve_project_original_imagery_download(project_id, job_id):
-    """溯源下载：按任务记录解析输入影像，并强制位于本项目 inputs 根内。"""
+    """溯源下载：按任务记录解析输入影像，受控根并集 = 本项目 inputs ∪ incoming/。
+
+    与列表同门槛（2026-10-31 审查 P2 教训：列表放行而下载 404 会造成可点不可达）；
+    M5.2 项目推理引用登记在 incoming/ 的影像，单 inputs 根会误拒。"""
     project = _project(project_id)
     job = InferenceJob.query.filter_by(id=str(job_id or ""), project_id=project.id).first()
     if job is None:
@@ -644,14 +684,13 @@ def resolve_project_original_imagery_download(project_id, job_id):
     input_text = str(payload.get("new_tif_path") or payload.get("old_tif_path") or "")
     if not input_text:
         raise FileNotFoundError("任务未记录原始影像")
-    input_root = resolve_storage_path(
-        get_storage_root(), Path("projects") / str(project.id) / "inputs"
-    )
+    input_roots = [
+        resolve_storage_path(get_storage_root(), Path("projects") / str(project.id) / "inputs"),
+        resolve_storage_path(get_storage_root(), Path("incoming")),
+    ]
     path = Path(input_text).expanduser().resolve()
-    try:
-        path.relative_to(input_root)
-    except ValueError:
-        raise FileNotFoundError("原始影像不在项目输入目录中") from None
+    if not _path_within(path, input_roots):
+        raise FileNotFoundError("原始影像不在受控输入目录中") from None
     if not path.is_file():
         raise FileNotFoundError("原始影像文件不存在")
     return path
