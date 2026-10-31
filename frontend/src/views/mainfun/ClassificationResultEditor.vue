@@ -128,6 +128,7 @@ import {
   buildEditableFeatureCollection,
   isEditableVectorStatus,
   resolveSecureTileTemplate,
+  resolveTileZoomRange,
 } from '@/utils/classificationEditor.mjs';
 import { createEditorHistory } from '@/utils/classificationEditorHistory.mjs';
 import {
@@ -380,7 +381,15 @@ export default {
       const sources = {};
       const layers = [{ id: 'editor-background', type: 'background', paint: { 'background-color': '#edf3f1' } }];
       if (this.tileTemplate) {
-        sources.project_basemap = { type: 'raster', tiles: [this.tileTemplate], tileSize: 256 };
+        // 底图金字塔声明范围应用到 raster source（2026-10-31 审计 P2）：放大
+        // 超过原生最大级别时 MapLibre 对最后可用级别过缩放渲染，而不是继续
+        // 请求不存在的瓦片；不设 Map maxZoom，允许在有效源级别上继续放大
+        sources.project_basemap = {
+          type: 'raster',
+          tiles: [this.tileTemplate],
+          tileSize: 256,
+          ...resolveTileZoomRange(mapManifest),
+        };
         layers.push({ id: 'project-basemap', type: 'raster', source: 'project_basemap', paint: { 'raster-opacity': 0.92 } });
       }
       const backendOrigin = new URL(global.BASEURL).origin;
