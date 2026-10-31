@@ -18,6 +18,7 @@ from applications.models.classification_result import (
     ClassificationResult,
 )
 from applications.models.project import Project
+from applications.project_hub.classification_stats import resolve_ratio_series
 from applications.project_hub.project_map import (
     list_project_original_imagery,
     _project as _get_project,
@@ -60,6 +61,9 @@ def _years_payload(project, fid_value):
     inference_root = _project_output_root(project.id) / "inference" / str(fid_value)
     ratio_doc = _read_json_file(inference_root / "class_ratio_percent.json") or {}
     ratio_years = ratio_doc.get("years") or []
+    # 审校口径优先（2026-10-31 方案 b）：人工修订后按审校矢量重算的占比
+    # 存于 revised 块，无修订/旧数据回落推理掩膜口径
+    ratio_series_percent, ratio_area_source, _revised_revision = resolve_ratio_series(ratio_doc)
 
     years = []
     for year in sorted(latest_by_year):
@@ -86,12 +90,13 @@ def _years_payload(project, fid_value):
             "class_ratio_percent": (
                 {
                     name: round(float(values[ratio_index]), 2)
-                    for name, values in (ratio_doc.get("series_percent") or {}).items()
+                    for name, values in (ratio_series_percent or {}).items()
                     if ratio_index is not None and ratio_index < len(values)
                 }
                 if ratio_index is not None
                 else None
             ),
+            "class_ratio_area_source": ratio_area_source if ratio_index is not None else None,
             "revisions": [
                 {
                     "revision_no": audit.revision_no,
@@ -125,6 +130,7 @@ def build_mine_traceability(project_id, fid):
         raise ValueError("矿山不属于当前项目")
 
     years, ratio_doc = _years_payload(project, fid_value)
+    ratio_series_percent, ratio_area_source, _revised_revision = resolve_ratio_series(ratio_doc)
     output_root = _project_output_root(project.id)
     change = _read_json_file(output_root / "change_matrix" / f"{fid_value}.json")
     indices = _read_json_file(output_root / "indices" / f"{fid_value}.json")
@@ -137,7 +143,8 @@ def build_mine_traceability(project_id, fid):
         "ratio_series": {
             "class_names": ratio_doc.get("class_names") or [],
             "years": ratio_doc.get("years") or [],
-            "series_percent": ratio_doc.get("series_percent") or {},
+            "series_percent": ratio_series_percent or {},
+            "area_source": ratio_area_source,
         } if ratio_doc else None,
         "change_matrix": change,
         "indices": indices,

@@ -20,6 +20,10 @@ from applications.models.classification_result import (
 )
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
+from applications.project_hub.classification_stats import (
+    apply_revised_class_ratio,
+    compute_revised_change_matrix,
+)
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 from applications.common.utils.utc_time import to_utc_z
 
@@ -482,6 +486,19 @@ def save_classification_revision(project_id, result_id, payload, *, actor, body_
         db.session.flush()
         os.replace(temporary_snapshot_path, snapshot_path)
         db.session.commit()
+        # 审校统计回写（2026-10-31 方案 b）：保存成功后按审校矢量重算占比与
+        # 变化矩阵，失败仅记日志不回滚——统计产物非关键数据，溯源/趋势有
+        # 推理口径回落（见 classification_stats 模块注释）
+        try:
+            apply_revised_class_ratio(
+                result.project_id, result.mine_fid, result.year, revision_no, feature_collection
+            )
+            compute_revised_change_matrix(result.project_id, result.mine_fid)
+        except Exception:  # noqa: BLE001 - 统计回写绝不影响保存结果
+            LOGGER.warning(
+                "审校统计回写异常 result_id=%s mine_fid=%s year=%s",
+                result.id, result.mine_fid, result.year, exc_info=True,
+            )
     except ClassificationConflictError:
         db.session.rollback()
         with suppress(OSError):

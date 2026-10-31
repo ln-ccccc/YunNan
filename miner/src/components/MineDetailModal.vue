@@ -240,10 +240,13 @@ const formatLabel = (label) => {
 };
 
 const getMatrixSourceText = () => {
-  const source = props.changeMatrixData && props.changeMatrixData.data_source;
-  if (source === 'historical_output') return '历史输出';
-  if (source === 'pixel_resolution') return '像元分辨率估算';
-  if (source === 'project_inference') return '项目推理';
+  const data = props.changeMatrixData || {};
+  if (data.data_source === 'historical_output') return '历史输出';
+  if (data.data_source === 'pixel_resolution') return '像元分辨率估算';
+  if (data.data_source === 'project_inference') {
+    // 口径标记（2026-10-31 方案 b）：审校后矢量栅格化重算 vs 推理掩膜原值
+    return data.basis === 'revised_vector' ? '项目推理 · 基于审校后矢量（含人工修订）' : '项目推理（基于推理结果，未含人工修订）';
+  }
   return '无数据';
 };
 

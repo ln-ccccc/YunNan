@@ -15,7 +15,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
 from applications import create_app
 from applications.extensions import db
-from applications.models.project import Project, ProjectBackupRecord, ProjectDataset, ProjectExportRecord
+from applications.models.inference_job import InferenceJob
+from applications.models.classification_result import ClassificationResult, ClassificationRevision
+from applications.models.project import Project, ProjectBackupRecord, ProjectDataset, ProjectExportRecord, ProjectMineBinding
 from applications.models.project_spatial import ProjectSpatialResource
 
 
@@ -365,6 +367,138 @@ class TestProjectAPI(unittest.TestCase):
             self.assertEqual(ok.status_code, 200)
             self.assertEqual(self._json(ok)["code"], 0)
             export_service.assert_called_once()
+
+    def test_revision_recomputes_revised_stats_and_imagery_roots(self):
+        # 2026-10-31 方案 b：保存人工修订后按审校矢量重算占比（球面鞋带）与变化
+        # 矩阵（矢量栅格化）回写发布产物；溯源/矩阵接口消费审校口径。同用例覆盖
+        # 原始影像受控根并集（incoming/ 命中）与预览字段。
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        self.login_as_admin()
+        project_id = self._create_project("审校统计口径项目")
+        db.session.add(ProjectMineBinding(project_id=project_id, mine_fid=713))
+        db.session.commit()
+
+        storage_root = Path(os.environ["PROJECT_STORAGE_ROOT"])
+        fid_dir = storage_root / "projects" / str(project_id) / "outputs" / "inference" / "713"
+        fid_dir.mkdir(parents=True)
+        (fid_dir / "class_ratio_percent.json").write_text(json.dumps({
+            "fid": "713",
+            "class_names": ["grassland", "forest", "building", "road", "bareground", "water"],
+            "years": [2023, 2024],
+            "totals": [100, 100],
+            "series_percent": {
+                "grassland": [30.0, 40.0], "forest": [20.0, 20.0], "building": [10.0, 10.0],
+                "road": [5.0, 5.0], "bareground": [15.0, 15.0], "water": [20.0, 10.0],
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+        for year in (2023, 2024):
+            data = np.full((10, 10), 255, dtype=np.uint8)
+            data[:, :5] = 1  # 林地
+            data[:, 5:] = 0  # 草地
+            with rasterio.open(
+                fid_dir / f"713+{year}_label.tif", "w", driver="GTiff",
+                height=10, width=10, count=1, dtype="uint8",
+                crs="EPSG:4326", transform=from_origin(100.0, 26.0, 0.001, 0.001), nodata=255,
+            ) as dataset:
+                dataset.write(data, 1)
+
+        def _fc(first_class):
+            return {"type": "FeatureCollection", "features": [
+                {"type": "Feature", "properties": {"class_code": first_class, "feature_id": f"auto-1-{first_class}-1"},
+                 "geometry": {"type": "Polygon", "coordinates": [[[100.0, 26.0], [100.005, 26.0], [100.005, 25.99], [100.0, 25.99], [100.0, 26.0]]]}},
+                {"type": "Feature", "properties": {"class_code": 4, "feature_id": "auto-1-4-1"},
+                 "geometry": {"type": "Polygon", "coordinates": [[[100.005, 26.0], [100.01, 26.0], [100.01, 25.99], [100.005, 25.99], [100.005, 26.0]]]}},
+            ]}
+
+        roi_geometry = {"type": "Polygon", "coordinates": [
+            [[99.9, 25.9], [100.1, 25.9], [100.1, 26.1], [99.9, 26.1], [99.9, 25.9]],
+        ]}
+        fc_json = json.dumps(_fc(0), ensure_ascii=False)
+        for year in (2023, 2024):
+            db.session.add(ClassificationResult(
+                project_id=project_id, mine_fid=713, year=year,
+                inference_job_id=f"job-stats-{year}", model_id="cc-ln/CUGRS", mine_resource_id=1,
+                roi_geometry_json=json.dumps(roi_geometry),
+                current_feature_collection_json=fc_json,
+                auto_feature_collection_json=fc_json,
+                current_revision_no=0, feature_count=2, vector_status="ready",
+            ))
+        db.session.commit()
+        # 乐观锁按 v0 基准修订校验 feature_id 归属——自动基线行必须存在
+        for result in ClassificationResult.query.filter_by(project_id=project_id).all():
+            db.session.add(ClassificationRevision(
+                result_id=result.id, revision_no=0, source="auto", author="system",
+                feature_count=2, snapshot_path=f"classification-results/{result.id}/auto.geojson",
+                feature_collection_json=fc_json,
+            ))
+        db.session.commit()
+        result_2024 = ClassificationResult.query.filter_by(project_id=project_id, year=2024).first()
+
+        # 保存修订：林地左半改为建筑 → 审校栅格与占比随之变化
+        revised_fc = _fc(2)
+        revised_fc["features"][0]["properties"]["feature_id"] = "auto-1-0-1"
+        response = self.client.post(
+            f"/api/projects/{project_id}/classification-results/{result_2024.id}/revisions",
+            json={"base_revision_no": 0, "feature_collection": revised_fc},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+
+        ratio = json.loads((fid_dir / "class_ratio_percent.json").read_text(encoding="utf-8"))
+        self.assertEqual(ratio["revised"]["revision_no"], 1)
+        self.assertEqual(ratio["revised"]["area_source"], "vector_shoelace")
+        # 2024 索引位 = 审校值（两块等面积：建筑/裸地各 50%），2023 位保持推理原值
+        self.assertAlmostEqual(ratio["revised"]["series_percent"]["building"][1], 50.0, places=1)
+        self.assertAlmostEqual(ratio["revised"]["series_percent"]["grassland"][1], 0.0, places=1)
+        self.assertAlmostEqual(ratio["series_percent"]["grassland"][1], 40.0, places=1)
+
+        response = self.client.get(f"/api/projects/{project_id}/mines/713/traceability")
+        years = self._json(response)["data"]["years"]
+        year_2024 = next(entry for entry in years if entry["year"] == 2024)
+        self.assertAlmostEqual(year_2024["class_ratio_percent"]["building"], 50.0, places=1)
+        self.assertEqual(year_2024["class_ratio_area_source"], "vector_shoelace")
+
+        response = self.client.get(f"/api/projects/{project_id}/mines/change-matrix?fid=713")
+        matrix = self._json(response)["data"]
+        self.assertEqual(matrix["basis"], "revised_vector")
+        self.assertTrue(matrix["has_change_matrix"])
+        self.assertEqual(matrix["old_year"], 2023)
+        self.assertEqual(matrix["new_year"], 2024)
+        # 2023 矢量口径（auto，左草右裸）→ 2024 审校（左建筑右裸地）：
+        # 草地行 100% 转入建筑列（掩膜口径下这里本是对角 100%，修订被矩阵反映）
+        grassland_row = next(row for row in matrix["matrix"] if row["label"] == "grassland")
+        self.assertAlmostEqual(grassland_row["values"][matrix["headers"].index("building")], 100.0, places=1)
+        bareground_row = next(row for row in matrix["matrix"] if row["label"] == "bareground")
+        self.assertAlmostEqual(bareground_row["values"][matrix["headers"].index("bareground")], 100.0, places=1)
+
+        # 原始影像：incoming/ 根命中（方案 A）+ 预览字段（方案 a）
+        incoming = storage_root / "incoming"
+        incoming.mkdir(exist_ok=True)
+        imagery_tif = incoming / "drill_2023.tif"
+        imagery_tif.write_bytes(b"II*\x00fake-tiff")
+        (fid_dir / "713+2023_src.png").write_bytes(b"\x89PNG-fake")
+        job_id = "job-imagery-incoming"
+        db.session.add(InferenceJob(
+            id=job_id, project_id=project_id, status="succeeded",
+            request_payload_json=json.dumps({
+                "new_tif_path": str(imagery_tif), "old_tif_path": str(imagery_tif),
+                "year": "2023", "mine_fids": [713],
+            }),
+        ))
+        db.session.commit()
+        response = self.client.get(f"/api/projects/{project_id}/mines/original-imagery?fid=713")
+        items = self._json(response)["data"]["items"]
+        self.assertTrue(items, "incoming/ 路径的推理任务应命中原始影像列表")
+        entry = next(item for item in items if item["job_id"] == job_id)
+        self.assertTrue(entry["file_exists"])
+        self.assertTrue(entry["has_preview"])
+        self.assertIn("713+2023_src.png", entry["preview_url"])
+        response = self.client.get(
+            f"/api/projects/{project_id}/mines/original-imagery/{job_id}/download"
+        )
+        self.assertEqual(response.status_code, 200)
 
     def test_project_workflow_crud_binding_dataset_timeline_and_status(self):
         self.login_as_admin()

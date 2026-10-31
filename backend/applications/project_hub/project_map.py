@@ -8,6 +8,7 @@ from pathlib import Path
 from applications.models.inference_job import InferenceJob
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
+from applications.project_hub.classification_stats import resolve_ratio_series
 from applications.project_hub.spatial_service import sanitize_public_geojson_value
 from applications.project_hub.spatial_state import serialize_project_spatial_state
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
@@ -464,7 +465,9 @@ def _build_trend_report_summary(project_id, class_name, direction):
             continue
         ready += 1
         available_classes.update(doc.get("class_names") or [])
-        series = (doc.get("series_percent") or {}).get(class_name) or []
+        # 审校口径优先（2026-10-31 方案 b）：有修订回写时用 revised 序列
+        trend_series_percent, _area_source, _rev = resolve_ratio_series(doc)
+        series = (trend_series_percent or {}).get(class_name) or []
         if len(series) < 2:
             continue
         years = doc["years"]
