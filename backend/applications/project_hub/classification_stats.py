@@ -140,17 +140,21 @@ def apply_revised_class_ratio(project_id, mine_fid, year, revision_no, feature_c
         return False
 
 
-def rasterize_year_vector(project_id, mine_fid, year, feature_collection):
-    """审校矢量栅格化到该年 label.tif 网格：类别值 0-5、无效区 255。
+def rasterize_year_vector(project_id, mine_fid, year, feature_collection, target_grid=None):
+    """审校矢量栅格化：类别值 0-5、无效区 255。
 
-    FC 为 WGS84，label.tif 保留原影像 CRS——统一 transform_geom 后 rasterize。
-    label.tif 缺失或无有效要素返回 None。
+    target_grid=None 时用该年自身 label.tif 网格；提供 (transform, shape, crs)
+    时强制栅格化到统一网格——跨 CRS/跨分辨率年份的转移矩阵必须同网格对齐，
+    否则逐像素对比在空间上不成立（2026-10-31 数值审查发现的静默错误源）。
     """
     label_path = _inference_fid_dir(project_id, mine_fid) / f"{mine_fid}+{year}_label.tif"
     if not label_path.is_file():
         return None
     shapes = []
     with rasterio.open(label_path) as dataset:
+        grid_transform = target_grid[0] if target_grid else dataset.transform
+        grid_shape = target_grid[1] if target_grid else dataset.shape
+        grid_crs = target_grid[2] if target_grid else dataset.crs
         for feature in (feature_collection or {}).get("features") or []:
             if not isinstance(feature, dict):
                 continue
@@ -161,13 +165,13 @@ def rasterize_year_vector(project_id, mine_fid, year, feature_collection):
                 continue
             if not isinstance(geometry, dict):
                 continue
-            shapes.append((transform_geom("EPSG:4326", dataset.crs, geometry), class_code))
+            shapes.append((transform_geom("EPSG:4326", grid_crs, geometry), class_code))
         if not shapes:
             return None
         return rasterize(
             shapes,
-            out_shape=dataset.shape,
-            transform=dataset.transform,
+            out_shape=grid_shape,
+            transform=grid_transform,
             fill=255,
             dtype="uint8",
         )
@@ -202,14 +206,33 @@ def compute_revised_change_matrix(project_id, mine_fid):
 
     import json as _json
 
+    # 统一目标网格（2026-10-31 数值审查修正）：取旧年的 label 网格，两期矢量
+    # 都栅格化到同一 transform/CRS——不同来源影像的 label 网格 CRS/分辨率不同
+    # （GEHI=4326 度、用户 573M=3857 米），各自网格逐像素对比在空间上不成立。
+    def _grid_of(year_value):
+        label_path = _inference_fid_dir(project_id, mine_fid) / f"{mine_fid}+{year_value}_label.tif"
+        if not label_path.is_file():
+            return None
+        with rasterio.open(label_path) as dataset:
+            return dataset.transform, dataset.shape, dataset.crs
+
+    old_year_value = years_sorted[-2]
+    target_grid = _grid_of(old_year_value)
+    if target_grid is None:
+        LOGGER.info(
+            "审校矩阵跳过（旧年 %s label 缺失）project_id=%s mine_fid=%s",
+            old_year_value, project_id, mine_fid,
+        )
+        return False
+
     rasters = []
-    for year in years_sorted:
+    for year in years_sorted[-2:]:
         result = latest_by_year[year]
         try:
             collection = _json.loads(result.current_feature_collection_json or "null")
         except (TypeError, ValueError):
             collection = None
-        raster = rasterize_year_vector(project_id, mine_fid, year, collection)
+        raster = rasterize_year_vector(project_id, mine_fid, year, collection, target_grid=target_grid)
         if raster is None:
             LOGGER.info(
                 "审校矩阵跳过（年份 %s 栅格化不可用）project_id=%s mine_fid=%s",
@@ -220,11 +243,6 @@ def compute_revised_change_matrix(project_id, mine_fid):
 
     old_year, old_raster, old_revision = rasters[-2]
     new_year, new_raster, new_revision = rasters[-1]
-    if old_raster.shape != new_raster.shape:
-        LOGGER.info(
-            "审校矩阵跳过（两年网格不一致）project_id=%s mine_fid=%s", project_id, mine_fid
-        )
-        return False
 
     class_count = len(CLASS_NAMES)
     valid = (old_raster < class_count) & (new_raster < class_count)

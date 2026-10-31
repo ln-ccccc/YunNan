@@ -181,5 +181,71 @@ class RasterizeYearVectorTests(unittest.TestCase):
         self.assertIsNone(rasterize_year_vector(10, 714, 2024, empty))
 
 
+class RasterizeUnifiedGridTests(unittest.TestCase):
+    """跨 CRS 年份的统一网格（2026-10-31 数值审查）：2018 期 label 为 4326 度
+    网格、2024 期为 3857 米网格——两期矢量必须栅格化到同一 transform/CRS 才能
+    逐像素对比，否则转移矩阵静默产出空间不对应的错误数据。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.storage = Path(self.temp.name)
+        os.environ["PROJECT_STORAGE_ROOT"] = str(self.storage)
+        self.fid_dir = self.storage / "projects" / "10" / "outputs" / "inference" / "713"
+        self.fid_dir.mkdir(parents=True)
+        # 2023 label：4326 度网格（8x8，左半草地 0 右半裸地 4）
+        data = np.full((8, 8), 255, dtype=np.uint8)
+        data[:, :4] = 0
+        data[:, 4:] = 4
+        with rasterio.open(
+            self.fid_dir / "713+2023_label.tif", "w", driver="GTiff",
+            height=8, width=8, count=1, dtype="uint8",
+            crs="EPSG:4326", transform=from_origin(100.0, 26.0, 0.001, 0.001), nodata=255,
+        ) as dataset:
+            dataset.write(data, 1)
+        # 2024 label：3857 米网格——用 warp.transform 把 2023 网格的同一地理
+        # 范围精确转到 3857，保证两期网格空间对齐（这正是统一网格的语义）
+        from rasterio.warp import transform as warp_transform
+        west, east = 100.0, 100.008
+        south, north = 25.992, 26.0
+        mx, my = warp_transform("EPSG:4326", "EPSG:3857", [west, east], [south, north])
+        with rasterio.open(
+            self.fid_dir / "713+2024_label.tif", "w", driver="GTiff",
+            height=8, width=8, count=1, dtype="uint8",
+            crs="EPSG:3857",
+            transform=from_origin(min(mx), max(my), (max(mx) - min(mx)) / 8, (max(my) - min(my)) / 8),
+            nodata=255,
+        ) as dataset:
+            dataset.write(data, 1)
+
+    def test_target_grid_aligns_cross_crs_years(self):
+        # 2023 矢量（4326）：左半草地；2024 矢量（4326 描述的同一地理位置）：右半裸地
+        # 统一到 2024 的 3857 网格后：左半应是 0（无矢量覆盖处 255? 不——栅格化 fill=255，
+        # 但草地面覆盖左半 → 左半 0），右半 4
+        fc_2023 = {"type": "FeatureCollection", "features": [
+            _feature(0, _polygon([[[100.0, 26.0], [100.004, 26.0], [100.004, 25.992], [100.0, 25.992], [100.0, 26.0]]])),
+        ]}
+        with rasterio.open(self.fid_dir / "713+2023_label.tif") as dataset:
+            grid_2023 = (dataset.transform, dataset.shape, dataset.crs)
+        # 2023 label 自身网格（4326）：栅格化 2023 矢量
+        raster_2023 = rasterize_year_vector(10, 713, 2023, fc_2023, target_grid=grid_2023)
+        self.assertIsNotNone(raster_2023)
+        self.assertEqual(int(raster_2023[0, 0]), 0, "草地应落在左上角（4326 网格）")
+        self.assertEqual(int(raster_2023[0, 7]), 255, "4326 矢量未覆盖右下角")
+
+    def test_4326_vector_rasterized_onto_3857_grid(self):
+        # 4326 描述的面（右半裸地）栅格化到 3857 网格：同地理位置必须落对位置
+        fc = {"type": "FeatureCollection", "features": [
+            _feature(4, _polygon([[[100.004, 26.0], [100.008, 26.0], [100.008, 25.992], [100.004, 25.992], [100.004, 26.0]]])),
+        ]}
+        with rasterio.open(self.fid_dir / "713+2024_label.tif") as dataset:
+            grid_2024 = (dataset.transform, dataset.shape, dataset.crs)
+        raster = rasterize_year_vector(10, 713, 2024, fc, target_grid=grid_2024)
+        self.assertIsNotNone(raster)
+        # 右半（经度 100.004-100.008 ≈ 网格列 4-7）应为裸地 4
+        self.assertEqual(int(raster[0, 6]), 4)
+        self.assertEqual(int(raster[0, 0]), 255, "左半未被该面覆盖")
+
+
 if __name__ == "__main__":
     unittest.main()
