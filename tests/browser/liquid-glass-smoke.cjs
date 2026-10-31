@@ -15,7 +15,11 @@ const requests = [];
 const consoleErrors = [], failedRequests = [];
 let authenticated = true;
 const thumb = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="75"><rect width="100" height="75" fill="#d9e7df"/><path d="M0 60 35 15l30 45 20-25 15 30v10H0Z" fill="#8bb69c"/></svg>');
-const labels = ['影像管理', '智能解译', '图斑编辑', '数据管理', '查询搜索', '系统设置', '项目管理'];
+// 侧栏 2026-10-26 收敛后：.nav-list 只放 3 个主入口（项目工作台/矿山地图/
+// 解译平台），6 个工具入口收进"更多工具"折叠组（.nav-tools-list）。
+// measureNavigation 只循环工具入口（6×6=36 次）：矿山地图依赖有效项目哈希、
+// 解译平台是跳转 GeoView 的外链，不参与盲点循环。
+const toolLabels = ['影像管理', '智能解译', '图斑编辑', '数据管理', '查询搜索', '系统设置'];
 
 async function measureNavigation(page) {
   const profiler = await page.context().newCDPSession(page);
@@ -30,9 +34,11 @@ async function measureNavigation(page) {
     requestAnimationFrame(tick);
     new PerformanceObserver(list => window.__auditLongTasks.push(...list.getEntries().map(entry => entry.duration))).observe({ type: 'longtask', buffered: false });
   });
+  const toolsToggle = page.locator('.nav-tools-toggle');
+  if (await toolsToggle.count() && (await toolsToggle.getAttribute('aria-expanded')) === 'false') await toolsToggle.click();
   for (let round = 0; round < 6; round++) {
-    for (const label of labels) {
-      await page.locator('.nav-list').getByRole('button', { name: label, exact: true }).click();
+    for (const label of toolLabels) {
+      await page.locator('.nav-tools-list').getByRole('button', { name: label, exact: true }).click();
       await page.waitForTimeout(65);
     }
   }
@@ -112,6 +118,12 @@ async function main() {
   page.on('console', message => { if (message.type() === 'error') consoleErrors.push({ text: message.text(), location: message.location() }); });
   page.on('requestfailed', request => failedRequests.push({ url: request.url(), error: request.failure()?.errorText }));
   const nav = () => page.locator('.nav-list');
+  // "更多工具"按当前状态展开（aria-expanded），避免重复点击把它收起
+  const ensureToolsExpanded = async () => {
+    const toggle = page.locator('.nav-tools-toggle');
+    if (await toggle.count() && (await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+  };
+  const toolNav = () => page.locator('.nav-tools-list');
   const settle = () => page.evaluate(async () => {
     for (let pass = 0; pass < 2; pass++) {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -126,7 +138,7 @@ async function main() {
       if (process.env.GUI_DISABLE_BLUR === '1') await page.addStyleTag({ content: '#app * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }' });
       await settle();
       const metrics = await measureNavigation(page);
-      await fs.writeFile(path.join(out, 'miner-navigation-sample.json'), JSON.stringify({ scope: '同一HTTP fixture与42次导航；仅本机浏览器采样', browser: browser.version(), metrics, errors, missing }, null, 2));
+      await fs.writeFile(path.join(out, 'miner-navigation-sample.json'), JSON.stringify({ scope: '同一HTTP fixture与36次导航；仅本机浏览器采样', browser: browser.version(), metrics, errors, missing }, null, 2));
       console.log(JSON.stringify({ metrics, errors, missing, out }, null, 2));
       return;
     }
@@ -134,9 +146,12 @@ async function main() {
     await page.setViewportSize({ width: 1024, height: 900 });
     await settle();
     const buttons = await nav().locator('button').evaluateAll(nodes => nodes.map(node => ({ label: node.getAttribute('aria-label'), icon: !!node.querySelector('svg'), height: node.getBoundingClientRect().height })));
-    assert.equal(buttons.length, 7);
+    assert.equal(buttons.length, 3, '主入口应收敛为 3 项（项目工作台/矿山地图/解译平台）');
     assert.ok(buttons.every(button => button.label && button.icon && button.height >= 40), '折叠导航必须保留可辨认图标、名称与点击区域');
-    checks.push('1024px 折叠导航图标、名称和点击区域');
+    const toolButtons = await toolNav().locator('button').evaluateAll(nodes => nodes.map(node => ({ label: node.getAttribute('aria-label'), icon: !!node.querySelector('svg'), height: node.getBoundingClientRect().height })));
+    assert.equal(toolButtons.length, 6, '更多工具折叠组应有 6 个工具入口');
+    assert.ok(toolButtons.every(button => button.label && button.icon && button.height >= 40), '折叠态工具入口同样保留图标、名称与点击区域');
+    checks.push('1024px 折叠导航：3 主入口 + 6 工具入口的图标、名称和点击区域');
     assert.equal(await page.getByRole('button', { name: '退出登录', exact: true }).locator('svg').count(), 1, '退出图标不依赖系统缺失的符号字形');
     await screenshot('miner-after-1024.png');
     await page.setViewportSize({ width: 1440, height: 1000 });
@@ -185,15 +200,17 @@ async function main() {
     checks.push('导出与配置快照按钮产生真实浏览器下载');
 
     const metrics = await measureNavigation(page);
-    assert.equal(await nav().locator('[aria-current="page"]').count(), 1);
-    assert.equal(await page.locator('.workspace-page:visible').count(), 1);
-    checks.push('42 次连续导航切换：唯一激活项、正确终态、无运行时异常');
+    assert.equal(await nav().locator('[aria-current="page"]').count(), 0, '36 次工具循环结束于系统设置，主入口不应有激活项');
+    assert.equal(await toolNav().locator('[aria-current="page"]').count(), 1, '唯一激活项应落在工具折叠组（36 次循环结束于系统设置）');
+    assert.equal(await page.locator('.settings-view:visible').count(), 1, '36 次循环结束于系统设置，终态视图可见');
+    checks.push('36 次连续导航切换：唯一激活项、正确终态、无运行时异常');
 
-    await nav().getByRole('button', { name: '数据管理', exact: true }).click();
+    await ensureToolsExpanded();
+    await toolNav().getByRole('button', { name: '数据管理', exact: true }).click();
     await page.locator('.data-manager-view .export-snapshot-panel').waitFor();
     await screenshot('miner-data-manager.png');
 
-    await nav().getByRole('button', { name: '智能解译', exact: true }).click();
+    await toolNav().getByRole('button', { name: '智能解译', exact: true }).click();
     await page.locator('.interpretation-view .record-row').waitFor();
     await page.getByRole('button', { name: '下一页', exact: true }).click();
     await page.locator('.interpretation-view select').selectOption('43');
@@ -274,7 +291,7 @@ async function main() {
     await page.locator('.map-container').scrollIntoViewIfNeeded();
     await screenshot('miner-map-390.png');
     checks.push('合成瓦片地图真实缩放、经纬网、6次侧栏切换；390px地图可滚动到达且宽度不坍缩');
-    await nav().getByRole('button', { name: '项目管理', exact: true }).click();
+    await nav().getByRole('button', { name: '项目工作台', exact: true }).click();
 
     for (const width of [390, 768, 1024, 1440]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
@@ -285,14 +302,18 @@ async function main() {
     }
     checks.push('390/768/1024/1440px 项目页无横向溢出');
     await page.setViewportSize({ width: 1024, height: 480 }); await settle();
-    await nav().getByRole('button', { name: '系统设置', exact: true }).click();
+    await toolNav().getByRole('button', { name: '系统设置', exact: true }).click();
     assert.ok(await page.locator('.settings-view').isVisible());
     await screenshot('miner-short-window.png');
     checks.push('480px短窗口末尾导航可滚动点击');
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.setViewportSize({ width: 1440, height: 1000 });
-    for (const label of labels) await nav().getByRole('button', { name: label, exact: true }).click();
+    await ensureToolsExpanded();
+    for (const label of toolLabels) await toolNav().getByRole('button', { name: label, exact: true }).click();
+    // 原脚本循环结束于"项目管理"（项目工作台），此处动画/按压检查都在工作台进行
+    await nav().getByRole('button', { name: '项目工作台', exact: true }).click();
+    await page.locator('.workspace-page:visible').waitFor();
     const reduced = await page.locator('.workspace-page').evaluate(node => ({ animation: getComputedStyle(node).animationName, transition: getComputedStyle(node.querySelector('button')).transitionDuration }));
     assert.equal(reduced.animation, 'none'); assert.equal(reduced.transition, '0s');
     const reducedCreate = page.locator('.workspace-header').getByRole('button', { name: '新建项目', exact: true });
