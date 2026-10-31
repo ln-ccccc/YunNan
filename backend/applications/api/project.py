@@ -107,6 +107,26 @@ def _project_hub_failure_response(error, message, project_id=None):
     return fail_api(f"{message}，请检查服务日志", status=500)
 
 
+def _json_object_payload():
+    """解析 JSON 请求体并要求为 JSON 对象，按 415/400/422 显式分型收口。
+
+    直接在接口里用 ``request.json or {}`` 时，Werkzeug 的解析异常会落入接口
+    的 ``except Exception`` 兜底被误报成 500 + 服务端堆栈日志（2026-10-31 审计
+    P2）。这里显式分型，不依赖 Werkzeug 小版本对 request.json 的异常差异：
+    非 JSON 媒体类型 415、空 body/非法 JSON 400、合法但非对象（null/数组/标量）
+    422。返回 ``(payload, None)`` 或 ``(None, fail_api 响应)``。
+    """
+    if not request.is_json:
+        return None, fail_api(msg="请求数据不合法，请提交正确的 JSON", status=415)
+    try:
+        payload = request.json
+    except HTTPException:
+        return None, fail_api(msg="请求数据不合法，请提交正确的 JSON", status=400)
+    if not isinstance(payload, dict):
+        return None, fail_api("请求体必须为 JSON 对象", status=422)
+    return payload, None
+
+
 def _is_label_geotiff_filename(fid, filename):
     prefix = f"{fid}+"
     suffix = "_label.tif"
@@ -790,17 +810,20 @@ def project_restore_api(project_id):
 @project_api.post("/<int:project_id>/exports")
 @login_required
 def project_export_create_api(project_id):
+    payload, error = _json_object_payload()
+    if error is not None:
+        return error
     try:
         return success_api(
-            data=create_export(project_id, request.json or {}, actor=_request_actor())
+            data=create_export(project_id, payload, actor=_request_actor())
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
     except ValueError as exc:
         return fail_api(str(exc))
-    except Exception:
-        LOGGER.exception("项目导出创建失败 project_id=%s", project_id)
-        return fail_api("项目导出失败，请检查服务日志", status=500)
+    except Exception as exc:
+        # 保持既有 500 响应文案"项目导出失败，请检查服务日志"不变
+        return _project_hub_failure_response(exc, "项目导出失败", project_id)
 
 
 @project_api.get("/<int:project_id>/exports")
@@ -815,17 +838,19 @@ def project_export_list_api(project_id):
 @project_api.post("/<int:project_id>/backups")
 @login_required
 def project_backup_create_api(project_id):
+    payload, error = _json_object_payload()
+    if error is not None:
+        return error
     try:
         return success_api(
-            data=create_backup(project_id, request.json or {}, actor=_request_actor())
+            data=create_backup(project_id, payload, actor=_request_actor())
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
     except ValueError as exc:
         return fail_api(str(exc))
-    except Exception:
-        LOGGER.exception("项目配置快照创建失败 project_id=%s", project_id)
-        return fail_api("项目配置快照创建失败，请检查服务日志", status=500)
+    except Exception as exc:
+        return _project_hub_failure_response(exc, "项目配置快照创建失败", project_id)
 
 
 @project_api.post("/<int:project_id>/backups/import")

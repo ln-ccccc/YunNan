@@ -326,6 +326,46 @@ class TestProjectAPI(unittest.TestCase):
                 self.assertFalse(body["success"])
                 self.assertEqual(body["msg"], message)
 
+    def test_export_and_snapshot_malformed_body_returns_client_error(self):
+        # 2026-10-31 审计 P2：request.json 解析异常不得被 except Exception 吞成
+        # 500。按 415/400/422 显式分型（见 project.py _json_object_payload），
+        # 且持久层零调用；合法空对象作为对照应到达服务层。
+        self.login_as_admin()
+        project_id = self._create_project("非法请求体矩阵项目")
+        paths = (
+            f"/api/projects/{project_id}/exports",
+            f"/api/projects/{project_id}/backups",
+        )
+        cases = (
+            ("", "application/json", 400, "带 JSON 头的空 body"),
+            ("{", "application/json", 400, "非法 JSON"),
+            ("null", "application/json", 422, "JSON null 非对象"),
+            ("[1,2]", "application/json", 422, "数组非对象"),
+            ('"text"', "application/json", 422, "标量非对象"),
+        )
+        with patch("applications.api.project.create_export") as export_service, \
+                patch("applications.api.project.create_backup") as backup_service:
+            for path in paths:
+                for raw, content_type, expected_status, description in cases:
+                    with self.subTest(path=path, raw=raw, description=description):
+                        response = self.client.post(path, data=raw, content_type=content_type)
+                        body = self._json(response)
+                        self.assertEqual(response.status_code, expected_status)
+                        self.assertFalse(body["success"])
+                # 非 JSON 媒体类型 → 415
+                response = self.client.post(path, data="{}", content_type="text/plain")
+                self.assertEqual(response.status_code, 415)
+                self.assertFalse(self._json(response)["success"])
+            export_service.assert_not_called()
+            backup_service.assert_not_called()
+
+            # 对照：合法 JSON 对象应到达服务层（这里 mock 服务返回值）
+            export_service.return_value = {"id": 1, "status": "queued"}
+            ok = self.client.post(paths[0], json={})
+            self.assertEqual(ok.status_code, 200)
+            self.assertEqual(self._json(ok)["code"], 0)
+            export_service.assert_called_once()
+
     def test_project_workflow_crud_binding_dataset_timeline_and_status(self):
         self.login_as_admin()
         response = self.client.post(
