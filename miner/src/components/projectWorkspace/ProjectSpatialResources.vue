@@ -56,6 +56,19 @@
           </button>
           <span class="muted-text">支持 TIF/TIFF、IMG、JPG/PNG（需同名世界文件+.prj）、ENVI(.dat+.hdr)，请连同同名辅助文件放入项目离线导入目录。</span>
         </div>
+        <div class="action-row basemap-upload-row">
+          <label class="primary-btn basemap-upload-btn" :class="{ disabled: busy || !canConfigure }">
+            {{ uploadProgress ? `上传中 ${uploadProgress}` : '上传底图到导入目录' }}
+            <input
+              type="file"
+              accept=".tif,.tiff,.img,.jpg,.jpeg,.png,.dat"
+              :disabled="busy || !canConfigure || Boolean(uploadProgress)"
+              @change="handleBasemapUpload"
+            />
+          </label>
+          <span class="muted-text">也可直接把影像文件放入服务器 incoming/ 目录后点"刷新导入目录"。</span>
+        </div>
+        <p v-if="uploadError" class="error-text">{{ uploadError }}</p>
 
         <article v-if="latestTerminalJob" class="job-item">
           <p>上次任务：阶段 {{ latestTerminalJob.stage || '--' }} · 状态 {{ latestTerminalJob.status || '--' }}</p>
@@ -250,7 +263,26 @@ const emit = defineEmits([
   'open-map',
   'load-retained-basemaps',
   'reactivate-basemap',
+  'upload-basemap',
 ]);
+
+const uploadProgress = ref('');
+const uploadError = ref('');
+
+// 底图网页上传（2026-10-31）：文件交给父组件流式直传 BFF（落盘 incoming/），
+// 进度经回调回显；成功后父组件会刷新候选列表并自动选中
+function handleBasemapUpload(event) {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file) return;
+  uploadError.value = '';
+  uploadProgress.value = '0%';
+  emit('upload-basemap', {
+    file,
+    onProgress: (percent) => { uploadProgress.value = `${percent}%`; },
+    onDone: () => { uploadProgress.value = ''; },
+  });
+}
 
 const wizardStep = ref(2);
 const mineFileName = ref('');
@@ -385,6 +417,27 @@ function formatFileSize(value) {
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.88);
   box-shadow: 0 12px 30px rgba(31, 66, 61, 0.08);
+}
+
+.basemap-upload-row {
+  margin-top: 10px;
+  align-items: center;
+}
+
+.basemap-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.basemap-upload-btn input[type='file'] {
+  display: none;
+}
+
+.basemap-upload-btn.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .panel-title-row,

@@ -2,6 +2,10 @@ import { Router } from 'express';
 import { Readable } from 'node:stream';
 
 import { projectApi as defaultProjectApi } from '../services/projectBackend.js';
+import { forwardBasemapUpload } from '../services/basemapUpload.js';
+
+// 底图上传的转发目标与 server.js 的 GEOVIEW_BACKEND_URL 同源（BFF 容器 env）
+const basemapBackendOrigin = process.env.GEOVIEW_BACKEND_URL || 'http://backend:5008';
 
 function relayJson(res, upstream) {
   res.status(upstream.status || 200).json(upstream.body);
@@ -158,6 +162,12 @@ export function createProjectRoutes({
   router.post('/:projectId/spatial/mines/preview', relay('POST', () => '/spatial/mines/preview', { body: true }));
   router.post('/:projectId/spatial/mines', relay('POST', () => '/spatial/mines', { body: true }));
   router.get('/:projectId/spatial/basemap-candidates', relay('GET', () => '/spatial/basemap-candidates'));
+  // 底图网页上传（2026-10-31）：BFF 流式转发到后端权威端点（校验+落盘都在
+  // 后端，BFF 不落盘业务数据）。express.json 只解析 application/json，
+  // octet-stream 在此路由仍是未消费的原始流，可 pipe 转发
+  router.post('/:projectId/spatial/basemap-upload', (req, res) => {
+    forwardBasemapUpload(req, res, { backendOrigin: basemapBackendOrigin, projectId: req.params.projectId });
+  });
   router.post('/:projectId/spatial/basemaps', relay('POST', () => '/spatial/basemaps', { body: true }));
   router.get('/:projectId/spatial/jobs/:jobId', relay('GET', (req) => `/spatial/jobs/${encodeURIComponent(req.params.jobId)}`));
   router.post('/:projectId/spatial/jobs/:jobId/retry', relay('POST', (req) => `/spatial/jobs/${encodeURIComponent(req.params.jobId)}/retry`, { body: true }));

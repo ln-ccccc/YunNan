@@ -500,6 +500,61 @@ class TestProjectAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_basemap_web_upload_to_candidates(self):
+        # 底图网页上传（2026-10-31 方案 A）：octet-stream 流式落盘 incoming/，
+        # 即成底图候选（受控存储接口归后端，BFF 仅流式转发）。重名 409、
+        # 坏扩展名/路径穿越 400、未登录 401。
+        self.login_as_admin()
+        project_id = self._create_project("底图上传项目")
+        # 合法的小 GeoTIFF（候选注册要过 GDAL 元数据校验，损坏文件会被跳过）
+        import io
+
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin as _from_origin
+        buffer = io.BytesIO()
+        with rasterio.open(
+            buffer, "w", driver="GTiff", height=8, width=8, count=1, dtype="uint8",
+            crs="EPSG:4326", transform=_from_origin(100.0, 26.0, 0.001, 0.001),
+        ) as dataset:
+            dataset.write(np.zeros((8, 8), dtype=np.uint8), 1)
+        tif_bytes = buffer.getvalue()
+
+        def upload(name):
+            return self.client.post(
+                f"/api/projects/{project_id}/spatial/basemap-upload?filename={name}",
+                data=tif_bytes,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+
+        response = upload("my-basemap_2024.tif")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        storage_root = Path(os.environ["PROJECT_STORAGE_ROOT"])
+        self.assertTrue((storage_root / "incoming" / "my-basemap_2024.tif").is_file())
+
+        response = self.client.get(f"/api/projects/{project_id}/spatial/basemap-candidates")
+        items = self._json(response)["data"]["items"]
+        self.assertTrue(any(item["filename"] == "my-basemap_2024.tif" for item in items))
+
+        response = upload("my-basemap_2024.tif")
+        self.assertEqual(response.status_code, 409, "重名应返回 409 Conflict")
+        # 项目 API 惯例：ValueError 走 fail_api 信封（HTTP 200 + success:false）
+        response = upload("map.exe")
+        body = self._json(response)
+        self.assertFalse(body["success"])
+        self.assertIn("不支持的底图格式", body["msg"])
+        response = upload("../../escape.tif")
+        body = self._json(response)
+        self.assertFalse(body["success"])
+        self.assertIn("文件名非法", body["msg"])
+
+        anonymous = self.app.test_client()
+        logged_out = anonymous.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload?filename=anon.tif",
+            data=b"x", headers={"Content-Type": "application/octet-stream"},
+        )
+        self.assertIn(logged_out.status_code, (301, 302, 401), "未登录不得上传")
+
     def test_project_workflow_crud_binding_dataset_timeline_and_status(self):
         self.login_as_admin()
         response = self.client.post(

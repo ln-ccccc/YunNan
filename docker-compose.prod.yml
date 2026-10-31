@@ -108,6 +108,7 @@ services:
     <<: *runtime-base
     container_name: yunnan-miner-api
     entrypoint: ["/bin/bash", "/app/docker/start-miner-api.sh"]
+
     environment:
       <<: *app-env
       GEOVIEW_BACKEND_URL: "http://backend:5008"
@@ -133,6 +134,8 @@ services:
       - miner-uploads:/app/miner/uploads
       - backend-static:/app/backend/static
       - hf-cache:/root/.cache/huggingface
+      # 只读保持（2026-10-31 架构审查）：底图上传由 BFF 流式转发到后端权威端点
+      # 落盘，BFF 不落盘业务数据（受控存储接口归后端）
       - ./project_storage:/project_storage:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/auth/session >/dev/null || exit 1"]

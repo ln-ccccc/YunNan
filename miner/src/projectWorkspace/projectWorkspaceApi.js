@@ -43,6 +43,18 @@ export function createProjectWorkspaceApi({ http = axios, baseUrl = '' } = {}) {
     listBasemapCandidates: (projectId) => data(http.get(
       url(`/api/projects/${projectId}/spatial/basemap-candidates`),
     )),
+    // 底图网页上传（2026-10-31）：octet-stream 流式直传 BFF（转发到后端落盘
+    // incoming/），走注入的 http 封装保持可测；URL 已 encodeURIComponent 防注入
+    uploadBasemap: (projectId, file, onProgress) => data(http.post(
+      url(`/api/projects/${projectId}/spatial/basemap-upload?filename=${encodeURIComponent(file.name)}`),
+      file,
+      {
+        headers: { 'Content-Type': 'application/octet-stream' },
+        onUploadProgress: (event) => {
+          if (onProgress && event.total) onProgress(Math.round((event.loaded / event.total) * 100));
+        },
+      },
+    )),
     registerBasemap: (projectId, payload) => data(http.post(
       url(`/api/projects/${projectId}/spatial/basemaps`),
       payload,

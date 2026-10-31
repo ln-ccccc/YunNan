@@ -87,6 +87,7 @@
             @clear-mine-preview="clearMinePreview"
             @import-mine="importMineVector"
             @load-basemap-candidates="loadBasemapCandidates"
+            @upload-basemap="uploadBasemap"
             @register-basemap="registerBasemap"
             @retry-job="retrySpatialJob"
             @cancel-job="cancelSpatialJob"
@@ -866,6 +867,34 @@ async function loadBasemapCandidates() {
       spatialUi.error = messageFrom(error, '底图候选读取失败');
     }
   } finally {
+    if (isCurrentSpatialMutation(mutation)) spatialUi.busy = false;
+  }
+}
+
+// 底图网页上传（2026-10-31）：流式直传 BFF 落盘 incoming/，成功后刷新候选
+// 并自动选中刚上传的影像；进度回显在底图步骤内
+async function uploadBasemap({ file, onProgress, onDone }) {
+  const mutation = startSpatialMutation();
+  if (!mutation) return;
+  spatialUi.busy = true;
+  spatialUi.error = '';
+  try {
+    const uploaded = await api.uploadBasemap(mutation.projectId, file, (percent) => {
+      if (isCurrentSpatialMutation(mutation)) onProgress(percent);
+    });
+    if (!isCurrentSpatialMutation(mutation)) return;
+    await loadBasemapCandidates();
+    if (isCurrentSpatialMutation(mutation)) {
+      spatialUi.selectedBasemapCandidate = uploaded?.candidate
+        || spatialUi.basemapCandidates.find((item) => item.filename === uploaded?.filename)?.candidate
+        || spatialUi.selectedBasemapCandidate;
+    }
+  } catch (error) {
+    if (isCurrentSpatialMutation(mutation)) {
+      spatialUi.error = messageFrom(error, '底图上传失败');
+    }
+  } finally {
+    if (typeof onDone === 'function') onDone();
     if (isCurrentSpatialMutation(mutation)) spatialUi.busy = false;
   }
 }

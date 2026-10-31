@@ -1,10 +1,12 @@
 import json
+import os
 import re
 import shutil
 import uuid
 from pathlib import Path
 
 from osgeo import gdal, ogr, osr
+from werkzeug.exceptions import Conflict, RequestEntityTooLarge
 from sqlalchemy import func
 
 from applications.extensions import db
@@ -804,3 +806,57 @@ def cancel_spatial_job(project_id, job_id, actor="system"):
     )
     db.session.commit()
     return _serialize_job(job)
+
+
+MAX_BASEMAP_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+_BASEMAP_UPLOAD_CHUNK = 256 * 1024
+
+
+def receive_basemap_upload(project_id, filename, stream):
+    """底图网页上传（2026-10-31 方案 A）：浏览器直传 → 流式落盘 incoming/。
+
+    受控存储接口归后端（AGENTS §3）：BFF 只做鉴权与流式转发，本函数是校验与
+    落盘的唯一权威——扩展名白名单复用 ALLOWED_BASEMAP_EXTENSIONS、staging 命名
+    复用 _is_incomplete_copy_name 契约、重名 409、2GB 业务上限（超限 413）。
+    落盘完成即成为空间资源面板的底图候选。
+    """
+    project = Project.query.filter_by(id=project_id, deleted_at=None).first()
+    if project is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    original_name = str(filename or "").strip()
+    safe_name = os.path.basename(original_name.replace("\\", "/"))
+    ext = Path(safe_name).suffix.lower()
+    if not safe_name or safe_name.startswith(".") or safe_name != original_name:
+        raise ValueError("底图文件名非法")
+    if ext not in ALLOWED_BASEMAP_EXTENSIONS:
+        raise ValueError(
+            f"不支持的底图格式: {ext or '（无扩展名）'}（{_BASEMAP_FORMAT_HINT}）"
+        )
+    storage_root = ensure_storage_layout()
+    incoming_root = storage_root / "incoming"
+    incoming_root.mkdir(parents=True, exist_ok=True)
+    final_path = incoming_root / safe_name
+    staging_path = incoming_root / f"{safe_name}.staging"
+    if final_path.exists():
+        raise Conflict("incoming/ 已存在同名底图，请重命名后重试")
+
+    received = 0
+    try:
+        with open(staging_path, "wb") as handle:
+            while True:
+                chunk = stream.read(_BASEMAP_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                received += len(chunk)
+                if received > MAX_BASEMAP_UPLOAD_BYTES:
+                    raise RequestEntityTooLarge("底图文件超过 2GB 上限")
+                handle.write(chunk)
+        os.replace(staging_path, final_path)
+    except Exception:
+        staging_path.unlink(missing_ok=True)
+        raise
+    return {
+        "filename": safe_name,
+        "size_bytes": received,
+        "candidate": f"incoming/{safe_name}",
+    }

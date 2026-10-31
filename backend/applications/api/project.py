@@ -54,6 +54,7 @@ from applications.project_hub.spatial_service import (
     import_mine_vector,
     list_basemap_candidates,
     preview_mine_vector,
+    receive_basemap_upload,
     register_basemap,
     retry_spatial_job,
     list_retained_basemaps,
@@ -330,6 +331,20 @@ def project_basemap_candidates_api(project_id):
         return success_api(data={"items": list_basemap_candidates(project_id)})
     except Exception as exc:
         return _spatial_failure_response(exc, "底图候选读取失败", project_id)
+
+
+@project_api.post("/<int:project_id>/spatial/basemap-upload")
+@login_required
+def project_basemap_upload_api(project_id):
+    """底图网页上传（2026-10-31）：浏览器 octet-stream 流式直传，后端为校验与
+    落盘的唯一权威（BFF 仅鉴权与流式转发，不落盘业务数据——受控存储接口归后端）。
+    重名 409 / 坏扩展名或非法文件名 400 / 超限 413。"""
+    try:
+        return success_api(
+            data=receive_basemap_upload(project_id, request.args.get("filename", ""), request.stream)
+        )
+    except Exception as exc:
+        return _spatial_failure_response(exc, "底图上传失败", project_id)
 
 
 def _request_zoom(value, default):
