@@ -360,3 +360,24 @@ MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sh \
 
 **本项目实例（2026-09-30）**：编辑器点选 P0 的完整定位链与修复后全链验证（单选/Shift 加选/合并/
 锯齿/撤销/重载），见 `docs/feature-iteration-20260929.md` 第四批记录与提交 `36537c4`。
+
+### 24. Playwright route 逆序匹配会悬空瓦片请求，卡死 MapLibre load（2026-10-31）✅
+
+**解决什么问题**：冒烟脚本给编辑器 fixture 配了 `map_manifest`（合成瓦片 URL）后，地图 canvas 正常出现但
+NavigationControl/Draw 控件 30 秒永不出现，极易误判为"地图初始化回归"；实际是脚本自身的问题。
+
+**根因与做法**：Playwright 的 `context.route` 按**注册逆序**匹配（后注册者先命中）。若把瓦片 route 注册在前、
+`**/api/**` 注册在后，瓦片请求会落入 api handler；handler 里一旦对不认识的分支裸 `return`（不 `fulfill`），
+请求即永久挂起——MapLibre 的 `load` 事件等待首批瓦片，永远不触发，`map.on('load')` 里的 addControl/
+MapboxDraw 全部不出现。**所有 /api/** 资源放进单一 route handler 内按 endpoint 分支处理**（瓦片分支同样要
+fulfill），或在 handler 末尾兜底 fulfill/404，禁止裸 return。
+
+### 25. maplibre-gl 5.x 控件类前缀是 maplibregl-（2026-10-31）✅
+
+**解决什么问题**：冒烟脚本用 `.mapboxgl-ctrl-zoom-in` 找 NavigationControl 放大按钮超时，同页 Draw 控件
+（`.mapbox-gl-draw_*`）却正常，误判为控件未加载。
+
+**结论**：本项目 maplibre-gl 5.24.0 的控件 DOM/CSS 前缀是 `maplibregl-`（`maplibregl-ctrl-zoom-in`、
+`maplibregl-ctrl-group`、`maplibregl-ctrl-top-left`）；而 `@mapbox/mapbox-gl-draw` 控件仍是
+`mapbox-gl-draw_` 前缀（`mapbox-gl-draw_polygon`/`_trash`）。写地图相关断言/点击前先
+`document.querySelectorAll('[class*=ctrl]')` 输出真实类名再定选择器，不凭记忆猜前缀。
