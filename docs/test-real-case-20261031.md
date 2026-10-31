@@ -108,3 +108,37 @@
 ### 7.4 补充轮结论
 
 从「用户点击确认开始推理」到「竞态编辑后正式 ID 跨版本稳定」全链真实环境闭环：真实 GPU/推理容器处理 8 矿山影像、worker 自动发布与矢量化产出全新成果（130 图斑）、编辑器对该成果的竞态保护与 ID 同步全部生效。
+
+## 8. 补充轮二：解译平台入口（GeoView Segmentation 页）
+
+分类推理有两个产品入口，第 7 节走的是 Miner 项目工作台入口；本节实测 **GeoView 解译平台入口**的差异化链路（现场上传 → 影像收编 → 同一 job 队列）。
+
+### 8.1 两入口架构（代码核实）
+
+| | Miner 智能解译页（InferenceModal） | GeoView 解译平台（Segmentation 页） |
+| --- | --- | --- |
+| 定位 | 项目工作台：项目维度正式推理流程 | 解译工具页：现场上传影像的快速分析 |
+| 影像来源 | **只能引用已登记**的项目影像资产（dataset_id，须 imagery+ready） | **现场上传 tif**（必须填年份），不依赖预登记 |
+| 请求接口 | `POST /api/inference/jobs`（BFF 转发） | `POST /api/analysis/kml_roi_inference`（`analysis.py:363` → `prepare_geoview_interpretation`，`inference/interpretation.py:77`） |
+| 模式分叉 | 恒为项目模式（can_start_inference 前置门槛） | 影像 ∩ 项目矿山相交 → **项目模式**：上传影像被收编进项目输入（`_publish_project_input`）后构造与 Miner 完全相同的 job 请求 `create_job`；**不相交/无 project_id → standalone**：同步出结果、只在解译平台页内展示，不建 job、不产生分类成果 |
+| 后续链路 | `create_job` → 同一 `inference_jobs` 队列 → 同一 worker → **同一套自动发布+矢量化**（worker 只认 job，不区分来源入口） | 同左（项目模式时） |
+| 另有两个同义入口 | 地图工作台「+ 添加矿山与解译」、项目工作台「开始地物分类」——与智能解译页共用同一 InferenceModal，属同一入口的三个摆放位置 | — |
+
+### 8.2 实测过程（G01-G04）
+
+| 步骤 | 截图 | 内容 |
+| --- | --- | --- |
+| G1 | `G01-segmentation-page.png` | GeoView 登录后打开 `/segmentation?project_id=10`（带项目参数） |
+| G2 | `G02-uploaded.png` | **现场真实上传** 483K 切片 tif（`slice_20261027_064224_5f0120_r0c0.tif`，裁自本项目矿山 696）+ 填年份 2024 |
+| G3 | `G03-job-created.png` | 响应实证 `mode=project`、`matched_fids=[696]`、job `aaee987b…` 建立——上传影像被收编进项目输入 |
+| G4 | `G04-inference-done.png` | 推理 succeeded 1/1 → worker 自动发布+矢量化；解译平台页按契约不展示项目成果明细 |
+
+### 8.3 结果核对
+
+- job `aaee987b-5656-4fad-b1e2-f6bbbabc5e4d`：succeeded 1/1。
+- 新成果 **result_id=120**（project 10 / fid 696 / 2024 / ready / V0 / **146 面**）——与 10-27 复测的 result 112（同一影像切片、同一 ROI）同为 146 面，自动矢量化确定性输出一致。
+- 两个入口殊途同归：GeoView 上传的影像经收编后，与 Miner 入口共享 job 队列、worker、发布与矢量化链路，产出的分类成果形态完全一致（本轮共产生 result 112/119/120 三个 ready 成果，全部可"编辑矢量"）。
+
+### 8.4 测试入口选择说明
+
+第一、二轮测试选 Miner 入口的原因：测试目标是「推理 → 分类成果 → 编辑竞态」闭环，Miner 入口引用已登记影像直接命中该链（解译平台 standalone 模式不产生分类成果，走它测不到编辑环节）；解译平台入口的差异化部分（现场上传、影像收编 `_publish_project_input`、mode 分叉）由本节补测覆盖。
