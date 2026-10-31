@@ -72,7 +72,20 @@ test('saveDrawing detects edits made while the save request is in flight', () =>
   const drawSet = body.indexOf('this.draw.set(');
   assert.ok(raceCheck > awaitSave && raceCheck < drawSet, '响应覆盖画布前必须先做代次+快照竞态比对');
 
-  const markSaved = body.indexOf('this.history.markSaved(submittedDrawJson)');
+  // 保存边界（2026-10-31 复审 P2）：提交后的首个 vertex 手势不得被 coalesce
+  // 合并，否则 markSaved 找不到边界退化为清栈，保存期间的修改无法撤销
+  const boundary = body.indexOf('this.history.markSubmitBoundary()');
+  assert.ok(boundary > 0 && boundary < awaitSave, '必须在 await 保存前建立不可合并的提交边界');
+
+  // 正式 ID 同步（2026-10-31 复审 P2）：client-* → manual-* 映射须在 markSaved
+  // 前应用到画布与历史，否则再次保存把同一面当新面，破坏跨版本追踪
+  const assignedMap = body.indexOf('buildAssignedFeatureIdMap(featureCollection, saved.feature_collection)');
+  const applyIds = body.indexOf('this.applyFeatureIdMap(assignedIds)');
+  const migrateIds = body.indexOf('this.history.migrateIds(assignedIds)');
+  const markSaved = body.indexOf('this.history.markSaved(rewriteFeatureCollectionJson');
+  assert.ok(assignedMap > raceCheck, '竞态分支必须构建服务端正式 ID 映射');
+  assert.ok(applyIds > assignedMap && applyIds < markSaved, '正式 ID 必须先同步到画布');
+  assert.ok(migrateIds > applyIds && migrateIds < markSaved, '正式 ID 必须同步到历史快照');
   assert.ok(markSaved > raceCheck && markSaved < drawSet, '竞态分支必须 markSaved 登记保存基线');
 
   // 竞态分支不得触碰画布与历史：draw.set 与 resetEditHistory 只允许出现在

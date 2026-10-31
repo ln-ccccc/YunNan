@@ -125,10 +125,12 @@ import {
 } from '@/api/classificationResults';
 import global from '@/global';
 import {
+  buildAssignedFeatureIdMap,
   buildEditableFeatureCollection,
   isEditableVectorStatus,
   resolveSecureTileTemplate,
   resolveTileZoomRange,
+  rewriteFeatureCollectionJson,
 } from '@/utils/classificationEditor.mjs';
 import { createEditorHistory } from '@/utils/classificationEditorHistory.mjs';
 import {
@@ -650,6 +652,10 @@ export default {
       // draw.update 要到鼠标释放才发出、代次可能未变，需快照比对兜底
       const submittedDrawJson = this.currentDrawJson();
       const editSeq = this.editGeneration;
+      // 保存提交边界（2026-10-31 复审 P2）：提交后的首个 vertex 手势不得被
+      // coalesce 窗口合并进提交前手势，否则历史栈中没有保存边界快照，
+      // markSaved 只能退化清栈，保存期间的修改无法撤销
+      this.history.markSubmitBoundary();
       this.saving = true;
       const stillOwnsState = () =>
         this.reloadSeq === seq && this.context?.resultId === savedResultId;
@@ -664,7 +670,15 @@ export default {
         if (this.editGeneration !== editSeq || this.currentDrawJson() !== submittedDrawJson) {
           // 保存期间画布又有新修改：保留画布与本地手势（含未结束手势），
           // 仅把已落库快照登记为新基线（撤销不得穿越保存边界），提示再次保存
-          this.history.markSaved(submittedDrawJson);
+          // 服务端为提交时的新面（client-*）分配了正式 manual-* ID（既有 ID
+          // 保留、逐要素按提交顺序规范化）——必须同步到画布与历史快照，否则
+          // 再次保存会把同一面当新面，破坏跨版本图斑追踪（2026-10-31 复审 P2）
+          const assignedIds = buildAssignedFeatureIdMap(featureCollection, saved.feature_collection);
+          if (assignedIds.size) {
+            this.applyFeatureIdMap(assignedIds);
+            this.history.migrateIds(assignedIds);
+          }
+          this.history.markSaved(rewriteFeatureCollectionJson(submittedDrawJson, assignedIds));
           this.syncHistoryState();
           await this.loadRevisions();
           this.$message.warning(`已保存为 V${saved.current_revision_no}；保存期间又有新的修改，请再次保存。`);
@@ -693,12 +707,24 @@ export default {
         }
       }
     },
+    applyFeatureIdMap(idMap) {
+      // 竞态分支：把服务端分配的正式 manual-* ID 写回画布要素的
+      // properties.feature_id（业务 ID，与 MapboxDraw 内部要素 id 无关）。
+      // setFeatureProperty 为编程式 API（suppressAPIEvents 默认 true），
+      // 不触发 draw.update，不会造成额外手势记录
+      if (!this.draw || !idMap.size) return;
+      this.draw.getAll().features.forEach((feature) => {
+        const current = feature.properties?.feature_id;
+        if (typeof current === 'string' && idMap.has(current)) {
+          this.draw.setFeatureProperty(feature.id, 'feature_id', idMap.get(current));
+        }
+      });
+    },
     async loadRevisions() {
       if (!this.context) return;
       const payload = await getClassificationRevisions(this.context.projectId, this.context.resultId);
       this.revisions = payload?.revisions || [];
-    },
-    async downloadCurrent() {
+    },    async downloadCurrent() {
       if (!this.context) return;
       this.exporting = true;
       try {

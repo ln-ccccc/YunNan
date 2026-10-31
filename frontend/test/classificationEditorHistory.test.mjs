@@ -154,3 +154,53 @@ test('markSaved clears redo and falls back when undo crossed the save snapshot',
   assert.equal(history.canUndo, false);
   assert.equal(history.isDirty('B'), false, '已落库的 B 不应再被判为未保存');
 });
+
+// 保存提交边界（2026-10-31 复审 P2）：提交后 coalesce 窗口内的 vertex 手势
+// 不得合并进提交前手势——否则栈中没有保存边界快照，markSaved 只能退化清栈，
+// 保存期间的修改无法撤销（实测 A→B→提交B→100ms 内编辑C 时 canUndo=false）。
+test('markSubmitBoundary forces the first post-submit gesture onto the stack', () => {
+  const history = createEditorHistory();
+  history.reset('A');
+  history.record('vertex', 'B', 1000);
+  history.markSubmitBoundary(); // 保存请求发出
+  // 提交后 100ms 内的 vertex 编辑：若无边界会被 coalesce 吞掉
+  assert.equal(history.record('vertex', 'C', 1100), true, '提交后的首个手势必须入栈');
+  assert.equal(history.canUndo, true);
+
+  // markSaved 定位到 B：保存期间的 C 手势可撤销，撤销不穿越保存边界
+  assert.equal(history.markSaved('B'), true);
+  assert.equal(history.isDirty('C'), true, '保存期间的修改相对新基线仍是脏的');
+  assert.equal(history.undo('C'), 'B');
+  assert.equal(history.isDirty('B'), false);
+  assert.equal(history.canUndo, false, '撤销不得穿越保存边界');
+});
+
+test('migrateIds rewrites assigned feature ids across all snapshots', () => {
+  const featureJson = (featureId) => JSON.stringify({
+    type: 'FeatureCollection',
+    features: [{ type: 'Feature', properties: { class_code: 1, feature_id: featureId }, geometry: {} }],
+  });
+  const history = createEditorHistory();
+  history.reset(featureJson('auto-142-1'));
+  history.record('create', featureJson('client-abc'), 1000); // 提交 B
+  history.record('properties', featureJson('client-abc').replace('client-abc', 'client-def'), 1100); // C
+
+  // 服务端把 client-abc 分配为 manual-142-2：画布与历史快照全部同步
+  history.migrateIds(new Map([['client-abc', 'manual-142-2']]));
+  assert.equal(history.markSaved(featureJson('manual-142-2')), true, '基线与栈内快照同步后必须能定位保存边界');
+  assert.equal(history.isDirty(JSON.stringify({
+    type: 'FeatureCollection',
+    features: [{ type: 'Feature', properties: { class_code: 1, feature_id: 'client-def' }, geometry: {} }],
+  })), true, '未提交的 client-def 不受映射影响');
+  const restored = history.undo(JSON.stringify({
+    type: 'FeatureCollection',
+    features: [{ type: 'Feature', properties: { class_code: 1, feature_id: 'client-def' }, geometry: {} }],
+  }));
+  assert.equal(JSON.parse(restored).features[0].properties.feature_id, 'manual-142-2', '撤销恢复的画布必须是正式 ID');
+
+  // 空/非法映射无操作
+  const before = history.isDirty(featureJson('manual-142-2'));
+  history.migrateIds(new Map());
+  history.migrateIds(null);
+  assert.equal(history.isDirty(featureJson('manual-142-2')), before);
+});

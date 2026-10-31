@@ -96,6 +96,55 @@ export function resolveTileZoomRange(manifest) {
   return range;
 }
 
+/**
+ * 构建服务端保存响应分配的正式图斑 ID 映射（client-* → manual-*）。
+ * 服务端规范化（classification_results.py _validate_save_payload）按提交
+ * 顺序逐要素 append、几何不变形：响应 FC 与提交 FC 一一对应，既有 ID 保留、
+ * client- 前缀或缺省的要素分配新 manual-*。竞态分支据此把正式 ID 同步回画布与历史，
+ * 否则再次保存会把同一面当新面，破坏跨版本图斑追踪（2026-10-31 复审 P2）。
+ * 长度不一致（理论上不可能）时不猜测，返回空 Map 保持现状。
+ */
+export function buildAssignedFeatureIdMap(submittedCollection, savedCollection) {
+  const mapping = new Map();
+  const submitted = submittedCollection?.features || [];
+  const saved = savedCollection?.features || [];
+  if (!submitted.length || submitted.length !== saved.length) return mapping;
+  for (let index = 0; index < submitted.length; index += 1) {
+    const before = submitted[index]?.properties?.feature_id;
+    const after = saved[index]?.properties?.feature_id;
+    if (typeof before === 'string' && before.startsWith('client-') && typeof after === 'string' && after !== before) {
+      mapping.set(before, after);
+    }
+  }
+  return mapping;
+}
+
+/**
+ * 对 currentDrawJson() 风格的快照字符串应用 ID 映射（与
+ * classificationEditorHistory.migrateIds 同一规则），用于把保存提交快照
+ * 重写为正式 ID 版本后再登记为历史基线。
+ */
+export function rewriteFeatureCollectionJson(snapshotJson, idMap) {
+  if (typeof snapshotJson !== 'string' || !(idMap instanceof Map) || idMap.size === 0) {
+    return snapshotJson;
+  }
+  if (snapshotJson.indexOf('"feature_id"') === -1) return snapshotJson;
+  try {
+    const parsed = JSON.parse(snapshotJson);
+    let changed = false;
+    for (const feature of parsed.features || []) {
+      const current = feature.properties?.feature_id;
+      if (typeof current === 'string' && idMap.has(current)) {
+        feature.properties.feature_id = idMap.get(current);
+        changed = true;
+      }
+    }
+    return changed ? JSON.stringify(parsed) : snapshotJson;
+  } catch (_) {
+    return snapshotJson;
+  }
+}
+
 export function isEditableVectorStatus(vectorStatus) {
   return vectorStatus === 'ready' || vectorStatus === 'ready_empty';
 }

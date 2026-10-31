@@ -44,6 +44,12 @@ export function createEditorHistory({ limit = 50, coalesceWindowMs = 500 } = {})
       lastMutateAt = now;
       return !coalesce;
     },
+    markSubmitBoundary() {
+      // 保存请求发出时调用：把 lastMutateAt 归零，使提交后的首个 vertex
+      // 手势不再落入 coalesce 窗口被合并（否则栈中没有保存边界快照，
+      // markSaved 找不到定位只能退化清栈，保存期间的修改无法撤销）
+      lastMutateAt = 0;
+    },
     markSaved(savedJson) {
       // 保存响应落库后调用：把已保存快照登记为新基线，撤销不得穿越保存边界。
       // 从撤销栈中定位最后一次等于已保存快照的条目，截掉之前的手势（已落库），
@@ -57,6 +63,34 @@ export function createEditorHistory({ limit = 50, coalesceWindowMs = 500 } = {})
       baselineJson = savedJson;
       lastMutateAt = 0;
       return savedIndex !== -1;
+    },
+    migrateIds(idMap) {
+      // 竞态分支用（2026-10-31 复审 P2）：服务端为提交时的新面（client-*）
+      // 分配了正式 manual-* ID 后，把撤销栈、重做栈、最近快照与基线里对应
+      // 要素的 properties.feature_id 一并替换——否则撤销/重做恢复的画布仍带
+      // client-*，再次保存会把同一图斑当新面，破坏跨版本追踪。
+      if (!(idMap instanceof Map) || idMap.size === 0) return;
+      const rewrite = (json) => {
+        if (typeof json !== 'string' || json.indexOf('"feature_id"') === -1) return json;
+        try {
+          const parsed = JSON.parse(json);
+          let changed = false;
+          for (const feature of parsed.features || []) {
+            const current = feature.properties?.feature_id;
+            if (typeof current === 'string' && idMap.has(current)) {
+              feature.properties.feature_id = idMap.get(current);
+              changed = true;
+            }
+          }
+          return changed ? JSON.stringify(parsed) : json;
+        } catch (_) {
+          return json;
+        }
+      };
+      undoStack = undoStack.map(rewrite);
+      redoStack = redoStack.map(rewrite);
+      lastJson = rewrite(lastJson);
+      baselineJson = rewrite(baselineJson);
     },
     undo(current) {
       if (!undoStack.length) return null;
