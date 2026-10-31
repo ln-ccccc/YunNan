@@ -112,3 +112,45 @@ test('reset clears both stacks and rebases dirty state', () => {
   assert.equal(history.isDirty('NEW'), false);
   assert.equal(history.isDirty('A'), true);
 });
+
+// 保存竞态（2026-10-31 审计 P1）：保存请求发出时画布是 B，响应返回前又编辑到
+// C。markSaved(B) 后服务端已落库 B，撤销不得穿越保存边界回到 A，也不得把已
+// 落库的 B 判为未保存；保存期间的本地编辑 C 必须保留且仍可撤销。
+test('markSaved rebases to the saved snapshot and keeps post-save gestures (A/B/C)', () => {
+  const history = createEditorHistory();
+  history.reset('A');
+  history.record('create', 'B', 1000);
+  history.record('properties', 'C', 1100);
+
+  assert.equal(history.markSaved('B'), true);
+  assert.equal(history.isDirty('C'), true, '保存期间的后续编辑相对新基线仍是脏的');
+  assert.equal(history.isDirty('B'), false, '已落库的 B 不应再被判为未保存');
+
+  // 撤销一次回到 B（不是 A），且不能再退
+  assert.equal(history.undo('C'), 'B');
+  assert.equal(history.canUndo, false, '撤销不得穿越保存边界');
+  assert.equal(history.isDirty('B'), false);
+
+  // 重做与继续编辑仍可用，且撤销到 B 为止
+  assert.equal(history.redo('B'), 'C');
+  assert.equal(history.isDirty('C'), true);
+  history.record('vertex', 'D', 1500);
+  assert.equal(history.undo('D'), 'C');
+  assert.equal(history.undo('C'), 'B');
+  assert.equal(history.canUndo, false);
+});
+
+test('markSaved clears redo and falls back when undo crossed the save snapshot', () => {
+  const history = createEditorHistory();
+  history.reset('A');
+  history.record('create', 'B', 1000);
+  history.record('delete', 'C', 1100);
+  history.undo('C'); // 撤销到 B：B 已被弹出栈（栈存手势前快照），redoStack=[C]
+
+  // 保存提交画布 B 落库：B 不在撤销栈中 → 退化清栈；跨保存边界的 redo
+  // （回到 C）不得复活；基线 B 判脏正确，数据不丢
+  assert.equal(history.markSaved('B'), false);
+  assert.equal(history.canRedo, false, '保存边界另一侧的重做记录必须作废');
+  assert.equal(history.canUndo, false);
+  assert.equal(history.isDirty('B'), false, '已落库的 B 不应再被判为未保存');
+});

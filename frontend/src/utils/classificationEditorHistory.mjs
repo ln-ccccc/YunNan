@@ -44,6 +44,20 @@ export function createEditorHistory({ limit = 50, coalesceWindowMs = 500 } = {})
       lastMutateAt = now;
       return !coalesce;
     },
+    markSaved(savedJson) {
+      // 保存响应落库后调用：把已保存快照登记为新基线，撤销不得穿越保存边界。
+      // 从撤销栈中定位最后一次等于已保存快照的条目，截掉之前的手势（已落库），
+      // 保留其后的本地手势（保存期间的继续编辑仍可撤销）。
+      // 栈中找不到（保存期间撤销/重做过、vertex coalesce 或栈深截断）时清空
+      // 两个栈——宁可丢失撤销能力，也不让撤销回到服务端已不存在的版本；
+      // 脏状态仍按新基线正确判定，本地未保存的修改一个都不会丢。
+      const savedIndex = undoStack.lastIndexOf(savedJson);
+      undoStack = savedIndex === -1 ? [] : undoStack.slice(savedIndex);
+      redoStack = [];
+      baselineJson = savedJson;
+      lastMutateAt = 0;
+      return savedIndex !== -1;
+    },
     undo(current) {
       if (!undoStack.length) return null;
       const previous = undoStack.pop();

@@ -52,3 +52,70 @@ test('saveDrawing guards UI updates against stale context', () => {
   const finallyGuard = body.indexOf('if (stillOwnsState() || this.reloadSeq === -1)');
   assert.ok(finallyGuard > 0, 'finally 复位 saving 前必须确认仍持有上下文');
 });
+
+// 保存竞态（2026-10-31 审计 P1，源码形状守护，行为断言见
+// tests/browser/geoview-editor-save-race-smoke.cjs）：保存在途的本地新修改
+// 不得被响应覆盖——代次+提交快照双比对必须在覆盖画布前执行；竞态分支只
+// markSaved 登记新基线（撤销不穿越保存边界），不得 draw.set/重置历史。
+test('saveDrawing detects edits made while the save request is in flight', () => {
+  const start = source.indexOf('async saveDrawing()');
+  assert.ok(start > 0, 'saveDrawing 方法应存在');
+  const body = source.slice(start, source.indexOf('async loadRevisions', start));
+
+  const snapshotCapture = body.indexOf('const submittedDrawJson = this.currentDrawJson()');
+  const seqCapture = body.indexOf('const editSeq = this.editGeneration');
+  const awaitSave = body.indexOf('await saveClassificationRevision');
+  assert.ok(snapshotCapture > 0 && snapshotCapture < awaitSave, '必须在 await 保存前捕获提交快照');
+  assert.ok(seqCapture > 0 && seqCapture < awaitSave, '必须在 await 保存前捕获编辑代次');
+
+  const raceCheck = body.indexOf('this.editGeneration !== editSeq');
+  const drawSet = body.indexOf('this.draw.set(');
+  assert.ok(raceCheck > awaitSave && raceCheck < drawSet, '响应覆盖画布前必须先做代次+快照竞态比对');
+
+  const markSaved = body.indexOf('this.history.markSaved(submittedDrawJson)');
+  assert.ok(markSaved > raceCheck && markSaved < drawSet, '竞态分支必须 markSaved 登记保存基线');
+
+  // 竞态分支不得触碰画布与历史：draw.set 与 resetEditHistory 只允许出现在
+  // 竞态比对之后（无新编辑的正常路径）
+  assert.equal(
+    body.indexOf('this.draw.set('),
+    drawSet,
+    '竞态比对与 draw.set 之间不得有其他 draw.set',
+  );
+  const resetHistory = body.indexOf('this.resetEditHistory()');
+  assert.ok(resetHistory > raceCheck, 'resetEditHistory 只允许在竞态比对之后的正常路径');
+});
+
+// 冻结改类入口（2026-10-31 审计 P1 复现路径）：saving 期间改类按钮禁用，
+// selectClass 双保险检查；编辑代次由 recordMutation 单一入口递增。
+test('class change entry is frozen while saving and generation increments on mutation', () => {
+  assert.match(
+    source,
+    /:disabled="saving"\s*\n\s*@click="selectClass/,
+    '改类按钮必须在保存期间禁用',
+  );
+
+  const selectClassStart = source.indexOf('selectClass(classCode) {');
+  assert.ok(selectClassStart > 0, 'selectClass 方法应存在');
+  const selectClassHead = source.slice(selectClassStart, selectClassStart + 300);
+  assert.match(selectClassHead, /if \(this\.saving\) return;/, 'selectClass 必须先检查 saving');
+
+  const recordMutation = source.slice(
+    source.indexOf('recordMutation(kind = \'edit\')'),
+    source.indexOf('undoLastEdit()'),
+  );
+  assert.match(recordMutation, /this\.editGeneration \+= 1/, 'recordMutation 必须递增编辑代次');
+});
+
+// 底图 zoom 收敛（2026-10-31 审计 P2，源码形状守护，行为断言见
+// tests/browser/geoview-editor-tile-zoom-smoke.cjs）：raster source 必须把
+// manifest 声明的金字塔范围传给 resolveTileZoomRange，否则放大越级 404。
+test('raster source applies the manifest zoom range via resolveTileZoomRange', () => {
+  assert.match(
+    source,
+    /import \{[^}]*resolveTileZoomRange[^}]*\} from '@\/utils\/classificationEditor\.mjs'/,
+    '编辑器必须引入 resolveTileZoomRange',
+  );
+  const sourceBuild = source.slice(source.indexOf('sources.project_basemap'), source.indexOf("layers.push({ id: 'project-basemap'"));
+  assert.match(sourceBuild, /\.\.\.resolveTileZoomRange\(mapManifest\)/, 'raster source 必须展开 resolveTileZoomRange(mapManifest)');
+});

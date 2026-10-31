@@ -68,6 +68,7 @@
             class="class-option"
             :class="{ active: activeClassCode === definition.class_code }"
             type="button"
+            :disabled="saving"
             @click="selectClass(definition.class_code)"
           >
             <span class="class-swatch" :style="{ backgroundColor: classColor(definition) }" />
@@ -256,6 +257,9 @@ export default {
       canUndo: false,
       canRedo: false,
       suppressDrawEvents: false,
+      // 编辑代次：所有经 recordMutation 的修改递增。保存响应据此识别"保存
+      // 期间又发生的新编辑"（配合提交快照比对兜底未结束手势，见 saveDrawing）
+      editGeneration: 0,
       map: null,
       draw: null,
       tileTemplate: null,
@@ -454,6 +458,7 @@ export default {
     },
     recordMutation(kind = 'edit') {
       if (!this.history) return;
+      this.editGeneration += 1;
       this.history.record(kind, this.currentDrawJson(), Date.now());
       this.syncHistoryState();
     },
@@ -487,6 +492,10 @@ export default {
       }
     },
     selectClass(classCode) {
+      // 保存在途时冻结改类入口：请求体与响应数据对应的是发出瞬间的画布，
+      // 此时改类会被响应覆盖（2026-10-31 审计 P1）；绘制类手势无法干净冻结，
+      // 由 saveDrawing 的代次+提交快照双比对兜底保留
+      if (this.saving) return;
       this.activeClassCode = classCode;
       if (!this.draw || !this.selectedDrawIds.length) return;
       this.selectedDrawIds.forEach((drawId) => {
@@ -627,6 +636,11 @@ export default {
       // 合法状态（按 base_revision_no 乐观锁提交），只是不再动本地 UI
       const seq = this.reloadSeq;
       const savedResultId = this.context.resultId;
+      // 保存竞态双比对（2026-10-31 审计 P1）：提交快照取自请求发出瞬间；
+      // editGeneration 覆盖已 record 的手势，而顶点拖拽等未结束手势的
+      // draw.update 要到鼠标释放才发出、代次可能未变，需快照比对兜底
+      const submittedDrawJson = this.currentDrawJson();
+      const editSeq = this.editGeneration;
       this.saving = true;
       const stillOwnsState = () =>
         this.reloadSeq === seq && this.context?.resultId === savedResultId;
@@ -638,6 +652,15 @@ export default {
         if (!stillOwnsState()) return;
         this.result.current_feature_collection = saved.feature_collection;
         this.result.current_revision_no = saved.current_revision_no;
+        if (this.editGeneration !== editSeq || this.currentDrawJson() !== submittedDrawJson) {
+          // 保存期间画布又有新修改：保留画布与本地手势（含未结束手势），
+          // 仅把已落库快照登记为新基线（撤销不得穿越保存边界），提示再次保存
+          this.history.markSaved(submittedDrawJson);
+          this.syncHistoryState();
+          await this.loadRevisions();
+          this.$message.warning(`已保存为 V${saved.current_revision_no}；保存期间又有新的修改，请再次保存。`);
+          return;
+        }
         this.draw.set(saved.feature_collection || emptyFeatureCollection());
         // 新版本即新基线：编辑历史作废，撤销只服务当前版本的未保存手势
         this.resetEditHistory();
@@ -858,10 +881,15 @@ h1 {
   text-align: left;
 }
 
-.class-option:hover,
+.class-option:hover:not(:disabled),
 .class-option.active {
   border-color: rgba(43, 182, 173, 0.38);
   background: var(--primary-hover);
+}
+
+.class-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .class-option small {
