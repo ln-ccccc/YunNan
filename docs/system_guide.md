@@ -112,6 +112,13 @@ GET /tiles/projects/{projectId}/{resourceId}/{z}/{x}/{y}.png
 
 旧全局矿山、统计和瓦片接口返回 `410 Gone`。
 
+底图有两种进入方式（候选列表同源，均出现在空间资源面板「选择底图」步骤）：
+
+- **投递目录**：把影像放入宿主机 `project_storage/incoming`（或 `OFFLINE_MAP_DIR`
+  挂载目录），点「刷新导入目录」后出现在候选列表——整省/大体积底图推荐此方式；
+- **网页上传**（2026-10-31 新增）：第 3 步的「上传底图到导入目录」按钮，浏览器
+  流式直传（上限 15GB，显示上传进度），落盘同一 `incoming/` 目录。
+
 ## 6. 部署入口
 
 - 离线部署：`offline_deployment_guide.md`

@@ -80,6 +80,27 @@ Failure:
 {"project_id": 7, "dataset_id": 12, "year": "2024", "device": "auto"}
 ```
 
+### `POST /api/projects/{id}/spatial/basemap-upload`
+
+底图网页上传（2026-10-31）：浏览器以 `application/octet-stream` 流式直传，BFF 只做
+鉴权（authGuard）与流式转发；**校验与落盘在后端**（`spatial_service.receive_basemap_upload`），
+落盘 `incoming/<文件名>` 后即成空间资源面板的底图候选。文件名经 query 传递并
+`encodeURIComponent`。
+
+- Query：`filename=<原始文件名>`（`encodeURIComponent` 编码）
+- Body：`application/octet-stream`（原始文件字节流，不使用 multipart）
+- Success：`{"code":0,"data":{"filename":"x.tif","size_bytes":...,"candidate":"incoming/x.tif"}}`
+- Failure：
+  - 非 TIF/TIFF、IMG、JPG/PNG、ENVI(.dat)：`200` + `success:false` 信封（`不支持的底图格式`）
+  - 文件名非法/路径穿越：`200` + `success:false`（`文件名非法`）
+  - `incoming/` 同名已存在：`409`（`请重命名后重试`）
+  - 超过 15GB：`413`（`底图文件超过 15GB 上限`）
+  - 未登录：`401`
+
+约束：扩展名白名单与重名/上限校验以**后端为单一真源**（BFF 零校验零落盘，
+`project_storage` 对 BFF 保持只读）；落盘使用 `.staging` 原子转正，与底图候选
+列表的 `_is_incomplete_copy_name` 契约对齐。
+
 `year` 可省略或留空，此时使用登记数据集的 `year_end`，没有结束年份时使用 `year_start`；均无有效年份时提示补充。后端还支持可选 `mine_fids`，当前 Miner 弹窗不传。创建成功返回 HTTP 201 的任务 DTO，随后通过 `GET /api/inference/jobs/{job_id}` 查询。
 
 Miner 仍保留 `/api/inference/kml-roi` 路由别名，但它转发到相同的项目任务接口，不能再提交 `old_tif_path`、`new_tif_path`、`kml_path`、`old_year/new_year` 等旧请求字段。旧脚本的双年份参数不等于当前浏览器 API 契约。
