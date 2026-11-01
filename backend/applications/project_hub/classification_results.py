@@ -461,6 +461,9 @@ def save_classification_revision(project_id, result_id, payload, *, actor, body_
         ) != 1:
             db.session.rollback()
             raise _save_conflict(result, base_revision_no)
+        # UPDATE 用 synchronize_session=False，同步内存对象供后续统计回写
+        # （revised_revision_no 等）读取正确修订号
+        result.current_revision_no = revision_no
         db.session.add(
             ClassificationRevision(
                 result_id=result.id,
