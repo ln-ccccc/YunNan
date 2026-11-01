@@ -89,6 +89,7 @@
             @load-basemap-candidates="loadBasemapCandidates"
             @upload-basemap="uploadBasemap"
             @register-basemap="registerBasemap"
+            @register-tileset="registerTileset"
             @retry-job="retrySpatialJob"
             @cancel-job="cancelSpatialJob"
             @open-map="openMap"
@@ -185,6 +186,7 @@ import ProjectOverviewPanel from './projectWorkspace/ProjectOverviewPanel.vue';
 import ProjectSelector from './projectWorkspace/ProjectSelector.vue';
 import ProjectSpatialResources from './projectWorkspace/ProjectSpatialResources.vue';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
+import { shouldUseChunkedUpload } from '../utils/basemapChunking.js';
 import { actionTarget, createSelectionGate, createSlice, INVALIDATION } from '../projectWorkspace/projectWorkspaceViewModel.js';
 import { setSelectedProjectId } from '../services/projectSelectionStore.js';
 
@@ -871,17 +873,28 @@ async function loadBasemapCandidates() {
   }
 }
 
-// 底图网页上传（2026-10-31）：流式直传 BFF 落盘 incoming/，成功后刷新候选
-// 并自动选中刚上传的影像；进度回显在底图步骤内
+// 底图网页上传（2026-10-31）：>64MB 自动走分片通道（断点续传），否则单发
+// 流式直传；两者均落盘 incoming/，成功后刷新候选并自动选中
 async function uploadBasemap({ file, onProgress, onDone }) {
   const mutation = startSpatialMutation();
   if (!mutation) return;
   spatialUi.busy = true;
   spatialUi.error = '';
   try {
-    const uploaded = await api.uploadBasemap(mutation.projectId, file, (percent) => {
-      if (isCurrentSpatialMutation(mutation)) onProgress(percent);
-    });
+    let uploaded;
+    if (shouldUseChunkedUpload(file.size)) {
+      // onProgress 回调统一透传 0-100 纯数字——% 由展示层（子组件）统一拼接，
+      // 此前这里拼"分片 x%"后子组件再拼 % 出现"45%%"（2026-11-01 审查项）
+      uploaded = await api.uploadBasemapResumable(mutation.projectId, file, {
+        onProgress: (percent) => {
+          if (isCurrentSpatialMutation(mutation)) onProgress(percent);
+        },
+      });
+    } else {
+      uploaded = await api.uploadBasemap(mutation.projectId, file, (percent) => {
+        if (isCurrentSpatialMutation(mutation)) onProgress(percent);
+      });
+    }
     if (!isCurrentSpatialMutation(mutation)) return;
     await loadBasemapCandidates();
     if (isCurrentSpatialMutation(mutation)) {
@@ -911,6 +924,25 @@ async function registerBasemap(payload) {
   } catch (error) {
     if (isCurrentSpatialMutation(mutation)) {
       spatialUi.error = messageFrom(error, '底图处理启动失败');
+    }
+  } finally {
+    if (isCurrentSpatialMutation(mutation)) spatialUi.busy = false;
+  }
+}
+
+// 瓦片集直挂（2026-11-01 后续项③）：预切瓦片包跳过切片直接激活
+async function registerTileset(payload) {
+  const mutation = startSpatialMutation();
+  if (!mutation) return;
+  spatialUi.busy = true;
+  spatialUi.error = '';
+  try {
+    await api.registerBasemapTileset(mutation.projectId, payload);
+    if (!isCurrentSpatialMutation(mutation)) return;
+    await refreshCurrent(INVALIDATION.spatial);
+  } catch (error) {
+    if (isCurrentSpatialMutation(mutation)) {
+      spatialUi.error = messageFrom(error, '瓦片集登记失败');
     }
   } finally {
     if (isCurrentSpatialMutation(mutation)) spatialUi.busy = false;

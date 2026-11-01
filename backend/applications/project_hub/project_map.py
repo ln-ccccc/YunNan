@@ -610,6 +610,7 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
         resolve_storage_path(get_storage_root(), Path("projects") / str(project.id) / "inputs"),
         resolve_storage_path(get_storage_root(), Path("incoming")),
     ]
+    storage_root_for_keys = get_storage_root()
     jobs = (
         InferenceJob.query.filter_by(project_id=project.id)
         .order_by(InferenceJob.create_time.desc())
@@ -651,10 +652,14 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
             preview_src
             and _inference_dir(project.id, fid_value, preview_src).is_file()
         )
+        # 高保真预览（2026-11-01 后续项③方案 b）：imagery preview 端点实时降采样
+        # tif 原件；source 传相对 storage_key（受控根并集见 _resolve_source）
+        storage_key = input_path.relative_to(storage_root_for_keys).as_posix()
         items.append({
             "job_id": job.id,
             "year": year_value,
             "filename": input_path.name,
+            "storage_key": storage_key,
             "size_bytes": size_bytes,
             "file_exists": file_exists,
             "job_status": job.status,
@@ -668,7 +673,7 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
         })
         if len(items) >= item_limit:
             break
-    return {"fid": fid_value, "items": items}
+    return {"fid": fid_value, "project_id": project.id, "items": items}
 
 
 def resolve_project_original_imagery_download(project_id, job_id):

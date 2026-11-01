@@ -76,6 +76,9 @@ export function buildOriginalImageryItems(originalImageryData) {
     downloadable: Boolean(item.file_exists && item.job_id),
     previewable: Boolean(item.has_preview && item.preview_url),
     previewUrl: item.preview_url || null,
+    // 高保真预览（2026-11-01 后续项③）：imagery preview 端点实时降采样 tif 原件
+    hdPreviewable: Boolean(item.file_exists && item.storage_key),
+    storageKey: item.storage_key || null,
     year: item.year ?? null,
   }));
 }

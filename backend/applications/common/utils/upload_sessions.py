@@ -243,6 +243,12 @@ def _ensure_session_owner(state: dict, owner) -> None:
         raise UploadSessionError("无权操作他人的上传会话")
 
 
+def ensure_session_owner(session_id: str, owner) -> None:
+    """按 session_id 的公开属主校验（complete 等写块之外的入口复用；2026-11-01
+    底图分片 complete 抢先完成审查 P1）。"""
+    _ensure_session_owner(_load_session(session_id), owner)
+
+
 def mark_session_done(session_id: str, result) -> None:
     """complete 成功后写完成态（含结果）而非删目录：响应丢失/批次重试/双标签页
     并发 complete 均幂等返回同一结果，不重复入库；目录交由 sweep 过期清理。"""

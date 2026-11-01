@@ -120,13 +120,14 @@ def claim_next_job(worker_id):
             return job
 
 
-def _activity(project_id, event_type, payload):
+def _activity(project_id, event_type, payload, actor="system"):
     import json
 
     db.session.add(
         ProjectActivityLog(
             project_id=project_id,
             event_type=event_type,
+            actor=actor or "system",
             payload_json=json.dumps(payload, ensure_ascii=False),
         )
     )
@@ -239,7 +240,11 @@ def _run_gdal2tiles(job, resource, source, tile_dir, poll_seconds):
         raise RuntimeError(f"gdal2tiles 失败，退出码 {process.returncode}")
 
 
-def _activate_basemap(job, resource, storage_root):
+def _activate_basemap(job, resource, storage_root, actor="system"):
+    """底图激活状态机唯一真源：互斥下线旧 active → 置 succeeded → 写新 .active
+    标记 → commit（失败回滚标记）→ commit 成功后才删旧标记与超量历史目录。
+    切片 worker 与瓦片集直挂登记（spatial_service.register_basemap_tileset）
+    共用，勿在本函数外复制此流程。"""
     previous_active = ProjectSpatialResource.query.filter_by(
         project_id=resource.project_id,
         resource_type="basemap",
@@ -281,12 +286,14 @@ def _activate_basemap(job, resource, storage_root):
             resource.project_id,
             "spatial_resource_removed",
             {"resource_id": obsolete.id, "resource_type": "basemap", "version": obsolete.version},
+            actor=actor,
         )
         db.session.delete(obsolete)
     _activity(
         resource.project_id,
         "spatial_resource_activated",
         {"resource_id": resource.id, "resource_type": "basemap", "version": resource.version},
+        actor=actor,
     )
     active_marker = resolve_storage_path(storage_root, resource.tile_path) / ".active"
     active_marker.write_text(str(resource.id), encoding="ascii")

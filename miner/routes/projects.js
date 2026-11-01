@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { Readable } from 'node:stream';
 
 import { projectApi as defaultProjectApi } from '../services/projectBackend.js';
-import { forwardBasemapUpload } from '../services/basemapUpload.js';
+import { forwardBasemapUpload, forwardRawStream } from '../services/basemapUpload.js';
 
 // 底图上传的转发目标与 server.js 的 GEOVIEW_BACKEND_URL 同源（BFF 容器 env）
 const basemapBackendOrigin = process.env.GEOVIEW_BACKEND_URL || 'http://backend:5008';
@@ -162,6 +162,19 @@ export function createProjectRoutes({
   router.post('/:projectId/spatial/mines/preview', relay('POST', () => '/spatial/mines/preview', { body: true }));
   router.post('/:projectId/spatial/mines', relay('POST', () => '/spatial/mines', { body: true }));
   router.get('/:projectId/spatial/basemap-candidates', relay('GET', () => '/spatial/basemap-candidates'));
+  // 底图分片上传（2026-11-01 后续项①）：init/complete 为 JSON 透传；chunk 为
+  // octet-stream 原始流转发（express.json 跳过非 JSON，流未被消费可 pipe）。
+  // 会话暂存后端 static/upload/.chunks，complete 合并落盘 incoming/。
+  router.post('/:projectId/spatial/basemap-upload/init', relay('POST', () => '/spatial/basemap-upload/init', { body: true }));
+  // 瓦片集直挂登记（2026-11-01 后续项③）：甲方预切瓦片包跳过切片直接激活
+  router.post('/:projectId/spatial/basemap-tileset-register', relay('POST', () => '/spatial/basemap-tileset-register', { body: true }));
+  router.post('/:projectId/spatial/basemap-upload/chunk/:sessionId/:index', (req, res) => {
+    forwardRawStream(req, res, {
+      backendOrigin: basemapBackendOrigin,
+      path: `/api/projects/${encodeURIComponent(req.params.projectId)}/spatial/basemap-upload/chunk/${encodeURIComponent(req.params.sessionId)}/${encodeURIComponent(req.params.index)}`,
+    });
+  });
+  router.post('/:projectId/spatial/basemap-upload/complete/:sessionId', relay('POST', (req) => `/spatial/basemap-upload/complete/${encodeURIComponent(req.params.sessionId)}`, { body: true }));
   // 底图网页上传（2026-10-31）：BFF 流式转发到后端权威端点（校验+落盘都在
   // 后端，BFF 不落盘业务数据）。express.json 只解析 application/json，
   // octet-stream 在此路由仍是未消费的原始流，可 pipe 转发

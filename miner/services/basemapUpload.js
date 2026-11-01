@@ -1,34 +1,34 @@
 import http from 'node:http';
 
-// 底图网页上传（2026-10-31 方案 A 重构）：BFF 是**纯传输层**——把浏览器的
-// octet-stream 流式转发到后端权威端点（后端校验扩展名/文件名/重名/2GB 并落盘
-// incoming/，见 spatial_service.receive_basemap_upload）。BFF 不落盘业务数据、
-// 不复制校验逻辑（单一真源在后端），project_storage 挂载保持只读。
+// 底图上传传输层（2026-10-31 方案 A / 2026-11-01 后续项①）：BFF 是**纯传输层**
+// ——把浏览器的请求体流式转发到后端权威端点（校验/落盘/会话全在后端），
+// project_storage 对 BFF 保持只读。JSON 与 octet-stream 一律 pipe 透传
+// （express.json 只解析 application/json，其余 content-type 的流未被消费）。
 
 export function resolveForwardTarget(queryFilename, projectId, backendOrigin) {
   const filename = encodeURIComponent(String(queryFilename || ''));
   return `${backendOrigin}/api/projects/${projectId}/spatial/basemap-upload?filename=${filename}`;
 }
 
-/**
- * 流式转发：req pipe → 后端权威端点；后端 JSON 响应原样透传（含 409/400/413）。
- * 鉴权已由 router 挂载的 authGuard 完成（矿工 session），cookie 随流转交给后端
- * （后端 @login_required 校验自己的 session）。
- */
-export function forwardBasemapUpload(req, res, { backendOrigin, projectId }) {
-  const target = resolveForwardTarget(req.query.filename, projectId, backendOrigin);
+/** 通用流式转发：req pipe → 后端；后端 JSON 响应透传（状态码/信封原样）。
+ * 除 content-type/cookie/content-length 外还必须透传 X-Chunk-Sha256——它是
+ * 分块内容校验的唯一凭证，丢了后端 declared_sha256=None、校验静默失效
+ * （2026-11-01 审查项）。 */
+export function forwardRawStream(req, res, { backendOrigin, path }) {
+  const target = `${backendOrigin}${path}`;
+  const headers = {
+    'content-type': req.headers['content-type'] || 'application/octet-stream',
+    cookie: req.headers.cookie || '',
+  };
+  if (req.headers['content-length']) {
+    headers['content-length'] = req.headers['content-length'];
+  }
+  if (req.headers['x-chunk-sha256']) {
+    headers['x-chunk-sha256'] = req.headers['x-chunk-sha256'];
+  }
   const upstream = http.request(
     target,
-    {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/octet-stream',
-        ...(req.headers['content-length']
-          ? { 'content-length': req.headers['content-length'] }
-          : {}),
-        cookie: req.headers.cookie || '',
-      },
-    },
+    { method: req.method, headers },
     (upstreamRes) => {
       let body = '';
       upstreamRes.on('data', (chunk) => { body += chunk; });
@@ -47,4 +47,11 @@ export function forwardBasemapUpload(req, res, { backendOrigin, projectId }) {
   });
   req.on('error', () => upstream.destroy());
   req.pipe(upstream);
+}
+
+export function forwardBasemapUpload(req, res, { backendOrigin, projectId }) {
+  forwardRawStream(req, res, {
+    backendOrigin,
+    path: `/api/projects/${projectId}/spatial/basemap-upload?filename=${encodeURIComponent(String(req.query.filename || ''))}`,
+  });
 }

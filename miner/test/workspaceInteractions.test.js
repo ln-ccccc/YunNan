@@ -7,6 +7,7 @@ import * as Vue from 'vue';
 
 import { createProjectWorkspaceApi } from '../src/projectWorkspace/projectWorkspaceApi.js';
 import * as viewModel from '../src/projectWorkspace/projectWorkspaceViewModel.js';
+import { shouldUseChunkedUpload } from '../src/utils/basemapChunking.js';
 import { sortInterpretationRecords } from '../src/utils/interpretationOrdering.js';
 
 function setupComponent(filename, axios, extras = {}) {
@@ -17,6 +18,7 @@ function setupComponent(filename, axios, extras = {}) {
     ...viewModel,
     axios,
     createProjectWorkspaceApi,
+    shouldUseChunkedUpload,
     getSelectedProjectId: () => null,
     setSelectedProjectId: () => {},
     formatLifecycleStatus: (status) => status,

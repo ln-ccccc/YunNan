@@ -101,9 +101,37 @@ Failure:
 `project_storage` 对 BFF 保持只读）；落盘使用 `.staging` 原子转正，与底图候选
 列表的 `_is_incomplete_copy_name` 契约对齐。
 
-`year` 可省略或留空，此时使用登记数据集的 `year_end`，没有结束年份时使用 `year_start`；均无有效年份时提示补充。后端还支持可选 `mine_fids`，当前 Miner 弹窗不传。创建成功返回 HTTP 201 的任务 DTO，随后通过 `GET /api/inference/jobs/{job_id}` 查询。
+### 底图分片续传通道（>64MB 自动分流，总上限 100GB）
 
-Miner 仍保留 `/api/inference/kml-roi` 路由别名，但它转发到相同的项目任务接口，不能再提交 `old_tif_path`、`new_tif_path`、`kml_path`、`old_year/new_year` 等旧请求字段。旧脚本的双年份参数不等于当前浏览器 API 契约。
+`POST /api/projects/{id}/spatial/basemap-upload/init`（JSON）：`upload_key`
+（文件名+大小+修改时间的摘要，同一文件断点续传）、`filename`、`total_size`、
+`chunk_size`。返回 `session_id/chunk_size/received[]`（已收分块直接跳过）。
+
+`POST /api/projects/{id}/spatial/basemap-upload/chunk/{session_id}/{index}`
+（octet-stream，头 `X-Chunk-Sha256` 由 BFF **原样透传**——丢头即静默跳过内容
+校验）：分块大小不符/校验和不匹配 `400`。
+
+`POST /api/projects/{id}/spatial/basemap-upload/complete/{session_id}`（JSON
+`filename`）：合并落盘 `incoming/<filename>`。错误：分块缺失 `400`；重名
+`409`；done 幂等——同名重试返回上次结果，**改名重试 `409`**（不得返回指向
+不存在文件的结果）。**属主校验**贯穿三端点：会话非本人 init/chunk/complete
+一律 `400`（`无权操作他人的上传会话`）。
+
+### `POST /api/projects/{id}/spatial/basemap-tileset-register`
+
+甲方预切 XYZ 瓦片包（`incoming/` 下 `{z}/{x}/{y}.png` 目录）直挂登记：JSON
+`{"candidate": "incoming/<目录名>"}`，探测结构后原子拷贝到规范 `tile_path`
+并**复用切片通道的 `_activate_basemap` 激活状态机**（互斥下线旧 active、
+`.active` 标记 commit 成功后才删旧、保留最近 2 份历史、版本号
+`func.max(version)+1`）。错误：非 XYZ 目录 `200`+`success:false`；归档项目
+`200`+`success:false`（`归档项目不允许修改空间资源`）。bounds 按 Web Mercator
+标准 `atan(sinh(…))` 反算。
+
+### `GET /api/projects/{id}/imagery/preview?source=<storage_key>&max_size=2048`
+
+原始影像高保真预览：实时降采样 tif 原件为 PNG，返回 `{png_base64}`；
+`source` 限定受控根并集（本项目 inputs ∪ 全局 incoming）。前端预览弹层须做
+请求竞态守卫（切换矿山后旧响应作废，不得写入当前弹层）。
 
 ### `GET /api/mines/trend-report`
 

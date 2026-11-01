@@ -143,6 +143,12 @@
                     @click="previewSrc = item.previewUrl"
                   >预览</button>
                   <button type="button"
+                    v-if="item.hdPreviewable"
+                    class="imagery-download-btn"
+                    :disabled="hdPreviewLoading"
+                    @click="openHdPreview(item)"
+                  >{{ hdPreviewLoading ? '生成中…' : '高清预览' }}</button>
+                  <button type="button"
                     v-if="item.downloadable"
                     class="imagery-download-btn"
                     @click="$emit('download-original', item)"
@@ -231,6 +237,44 @@ const props = defineProps({
 const emit = defineEmits(['close', 'tab-change', 'download-original']);
 
 const previewSrc = ref(null);
+const hdPreviewLoading = ref(false);
+// HD 预览竞态守卫（2026-11-01 审查项）：弹层复用同一实例，切换矿山/关闭再开
+// 时在途旧响应回来会把上一矿山的影像写进当前弹层——请求序号使旧响应失效
+let hdPreviewRequestId = 0;
+
+// 矿山切换/弹层关闭：清空预览并作废在途请求
+watch(
+  () => [props.visible, props.mineData],
+  () => {
+    hdPreviewRequestId += 1;
+    previewSrc.value = null;
+    hdPreviewLoading.value = false;
+  },
+);
+
+// 高保真预览（2026-11-01 后续项③方案 b）：imagery preview 端点实时降采样
+// tif 原件（长边 2048 PNG）；与 ROI 截图预览共用弹层
+async function openHdPreview(item) {
+  if (!item.storageKey) return;
+  const requestId = ++hdPreviewRequestId;
+  hdPreviewLoading.value = true;
+  try {
+    const projectId = props.traceabilityData?.project_id
+      || props.originalImageryData?.project_id;
+    const response = await fetch(
+      `/api/projects/${projectId}/imagery/preview?source=${encodeURIComponent(item.storageKey)}&max_size=2048`,
+      { credentials: 'include' },
+    );
+    const body = await response.json();
+    if (body?.success === false) throw new Error(body.msg || '高清预览失败');
+    if (requestId !== hdPreviewRequestId) return;
+    previewSrc.value = `data:image/png;base64,${body.data.png_base64}`;
+  } catch (error) {
+    console.error('[hd-preview]', error.message);
+  } finally {
+    if (requestId === hdPreviewRequestId) hdPreviewLoading.value = false;
+  }
+}
 
 const trendChartRef = ref(null);
 let trendChartInst = null;

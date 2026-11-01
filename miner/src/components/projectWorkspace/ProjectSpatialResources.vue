@@ -91,10 +91,21 @@
             :disabled="busy || !canConfigure"
             @change="$emit('update:selected-basemap-candidate', item.candidate)"
           />
-          <span>{{ item.filename || '未命名底图' }}（{{ formatFileSize(item.size_bytes) }}）</span>
-          <small>{{ item.crs || '--' }} · {{ item.intersects_mines ? '与矿山范围相交' : '不相交' }}</small>
+          <span>{{ item.filename || '未命名底图' }}（{{ item.type === 'tileset' ? '预切瓦片集' : formatFileSize(item.size_bytes) }}）</span>
+          <small v-if="item.type === 'tileset'">XYZ 瓦片 · z{{ item.min_zoom }}-{{ item.max_zoom }} · {{ item.intersects_mines ? '与矿山范围相交' : '不相交' }}</small>
+          <small v-else>{{ item.crs || '--' }} · {{ item.intersects_mines ? '与矿山范围相交' : '不相交' }}</small>
         </label>
         <button
+          v-if="selectedCandidateType === 'tileset'"
+          class="primary-btn"
+          type="button"
+          :disabled="busy || !canConfigure || !selectedBasemapCandidate"
+          @click="registerTileset"
+        >
+          {{ busy ? '提交中…' : '直挂登记（跳过切片）' }}
+        </button>
+        <button
+          v-else
           class="primary-btn"
           type="button"
           :disabled="busy || !canConfigure || !selectedBasemapCandidate"
@@ -193,6 +204,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
 import { resolveSpatialWizardStep } from '../../projectWorkspace/projectWorkspaceViewModel.js';
+import { exceedsChunkedUploadLimit } from '../../utils/basemapChunking.js';
 
 const MAX_MINE_FILE_BYTES = 50 * 1024 * 1024;
 const mappingTargets = [
@@ -257,6 +269,7 @@ const emit = defineEmits([
   'import-mine',
   'load-basemap-candidates',
   'register-basemap',
+  'register-tileset',
   'retry-job',
   'cancel-job',
   'update:selected-basemap-candidate',
@@ -269,19 +282,18 @@ const emit = defineEmits([
 const uploadProgress = ref('');
 const uploadError = ref('');
 
-// 底图网页上传（2026-10-31）：文件交给父组件流式直传 BFF（落盘 incoming/），
-// 进度经回调回显；成功后父组件会刷新候选列表并自动选中。
-// 大文件预检（2026-10-31 数值审查补充）：>2GB 与后端上限一致，超大底图
-// （如 10GB 级离线图集）应直接放入服务器 incoming/ 后刷新候选，不经浏览器。
-const MAX_BASEMAP_UPLOAD_MB = 15360;
-
+// 底图网页上传（2026-10-31）：文件交给父组件（ProjectWorkspace.uploadBasemap
+// 按大小自动分流：>64MB 分片续传 / 其余单发流式），均落盘 incoming/；成功后
+// 父组件会刷新候选列表并自动选中。
+// 入口只拦分片通道总上限（100GB，2026-11-01 后续项①——15GB 单发上限由分流
+// 保证：>64MB 全部走分片，单发只可能收到 64MB 以内的文件）
 function handleBasemapUpload(event) {
   const file = event.target.files?.[0];
   event.target.value = '';
   if (!file) return;
   uploadError.value = '';
-  if (file.size > MAX_BASEMAP_UPLOAD_MB * 1024 * 1024) {
-    uploadError.value = `底图文件 ${(file.size / 1073741824).toFixed(1)}GB 超过网页上传上限 15GB——更大的底图请直接放入服务器 incoming/ 目录，然后点"刷新导入目录"选择（无需上传）。`;
+  if (exceedsChunkedUploadLimit(file.size)) {
+    uploadError.value = `底图文件 ${(file.size / 1073741824).toFixed(1)}GB 超过分片上传上限 100GB——更大的底图请直接放入服务器 incoming/ 目录，然后点"刷新导入目录"选择（无需上传）。`;
     return;
   }
   uploadProgress.value = '0%';
@@ -389,6 +401,19 @@ function registerBasemap() {
     max_zoom: 15,
   });
 }
+
+// 瓦片集直挂（2026-11-01 后续项③）：预切瓦片包跳过切片直接激活
+function registerTileset() {
+  emit('register-tileset', { candidate: props.selectedBasemapCandidate });
+}
+
+// 选中候选的类型：tileset（直挂）或 raster（切片）——驱动按钮文案切换
+const selectedCandidateType = computed(() => {
+  const selected = props.basemapCandidates?.find(
+    (item) => item.candidate === props.selectedBasemapCandidate,
+  );
+  return selected?.type || 'raster';
+});
 
 function isRunningJob(job) {
   return ['queued', 'running'].includes(job?.status);

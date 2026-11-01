@@ -1,7 +1,9 @@
+import io
 import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -1651,6 +1653,389 @@ class TestProjectAPI(unittest.TestCase):
         self.assertEqual(record.status, "failed")
         self.assertFalse(self._export_root(project_id, record.id).exists())
         self.assertEqual(Project.query.filter_by(id=project_id).one().id, project_id)
+
+    def test_basemap_chunked_upload_flow(self):
+        # 底图分片上传（2026-11-01 后续项①）：init 预检 → chunk → complete 合并
+        # 落盘 incoming/ 即成候选；重名 init 409；越界分块索引 400。
+        import hashlib
+        import io
+
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin as _chunk_origin
+
+        self.login_as_admin()
+        project_id = self._create_project("底图分片上传项目")
+        # 合法小 GeoTIFF：候选注册要过 GDAL 元数据校验，损坏文件会被跳过
+        buffer = io.BytesIO()
+        with rasterio.open(
+            buffer, "w", driver="GTiff", height=32, width=32, count=1, dtype="uint8",
+            crs="EPSG:4326", transform=_chunk_origin(100.7, 26.1, 0.001, 0.001),
+        ) as dataset:
+            dataset.write(np.zeros((32, 32), dtype=np.uint8), 1)
+        payload_bytes = buffer.getvalue()
+
+        def init_session(filename, total):
+            # upload_key 混入时间戳：确定性 key 会命中 .chunks 的历史 done 会话
+            # （幂等返回构造 candidate 而不落盘），测试需要每次全新会话
+            return self.client.post(
+                f"/api/projects/{project_id}/spatial/basemap-upload/init",
+                json={
+                    "upload_key": hashlib.sha256(f"{filename}:{total}:{time.time()}".encode()).hexdigest(),
+                    "filename": filename,
+                    "total_size": total,
+                    "mime": "application/octet-stream",
+                    "chunk_size": 1024 * 1024,
+                },
+            )
+
+        response = init_session("chunked-basemap.tif", len(payload_bytes))
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        state = self._json(response)["data"]
+        session_id = state["session_id"]
+        chunk_size = state["chunk_size"]
+
+        for index, start in enumerate(range(0, len(payload_bytes), chunk_size)):
+            blob = payload_bytes[start:start + chunk_size]
+            sha = hashlib.sha256(blob).hexdigest()
+            response = self.client.post(
+                f"/api/projects/{project_id}/spatial/basemap-upload/chunk/{session_id}/{index}",
+                data=blob,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-Chunk-Sha256": sha,
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/complete/{session_id}",
+            json={"filename": "chunked-basemap.tif"},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        body = self._json(response)["data"]
+        self.assertEqual(body["candidate"], "incoming/chunked-basemap.tif")
+        storage_root = Path(os.environ["PROJECT_STORAGE_ROOT"])
+        self.assertTrue((storage_root / "incoming" / "chunked-basemap.tif").is_file())
+
+        response = self.client.get(f"/api/projects/{project_id}/spatial/basemap-candidates")
+        items = self._json(response)["data"]["items"]
+        self.assertTrue(any(
+            item["type"] == "raster" and item["filename"] == "chunked-basemap.tif"
+            for item in items
+        ))
+
+        # 重名：init 预检直接 409
+        response = init_session("chunked-basemap.tif", len(payload_bytes))
+        self.assertEqual(response.status_code, 409)
+
+        # 越界分块索引 → 400
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/chunk/{session_id}/99",
+            data=b"\x00", headers={"Content-Type": "application/octet-stream"},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_basemap_tileset_direct_registration(self):
+        # 瓦片集直挂（2026-11-01 后续项③）：incoming/ 下 XYZ 瓦片目录 → 探测 →
+        # 原子拷贝到规范 tile_path → 直接 active（跳过切片）→ 瓦片路由/候选。
+        import io
+        import math
+
+        import numpy as np
+        import rasterio
+        from rasterio.warp import transform as warp_transform
+        from rasterio.transform import from_origin as _from_origin
+
+        self.login_as_admin()
+        project_id = self._create_project("瓦片集直挂项目")
+        db.session.add(ProjectMineBinding(project_id=project_id, mine_fid=713))
+        # mine_vector 激活资源（map_ready 前置：矿山矢量已导入的语义）
+        db.session.add(ProjectSpatialResource(
+            project_id=project_id, resource_type="mine_vector", status="active",
+            version=1, source_path="projects/x/source.kml", source_format="kml",
+            normalized_path="projects/x/mines/source.kml",
+        ))
+        db.session.commit()
+
+        # 构造 XYZ 瓦片目录 fixture（z12 两块，覆盖矿山 713 附近）；
+        # 2024 label 用 3857 网格（warp.transform 精确对齐 4326 同一地理范围）
+        incoming = Path(os.environ["PROJECT_STORAGE_ROOT"]) / "incoming" / "dali-tiles"
+        zoom = 12
+        n = 2 ** zoom
+        center_x = int((100.7671 + 180.0) / 360.0 * n)
+        center_y = int((1 - math.log(math.tan(math.radians(26.1283)) + 1 / math.cos(math.radians(26.1283))) / math.pi) / 2 * n)
+        buffer = io.BytesIO()
+        with rasterio.open(
+            buffer, "w", driver="PNG", height=256, width=256, count=3, dtype="uint8"
+        ) as dataset:
+            for band in range(3):
+                dataset.write(np.full((256, 256), 90 + band * 40, dtype=np.uint8), band + 1)
+        png_bytes = buffer.getvalue()
+        for dx in (0, 1):
+            tile_dir = incoming / str(zoom) / str(center_x + dx)
+            tile_dir.mkdir(parents=True, exist_ok=True)
+            (tile_dir / f"{center_y}.png").write_bytes(png_bytes)
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-tileset-register",
+            json={"candidate": "incoming/dali-tiles"},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        body = self._json(response)["data"]
+        self.assertEqual(body["min_zoom"], zoom)
+        self.assertEqual(body["max_zoom"], zoom)
+        resource_id = body["resource_id"]
+        # 纬度反算公式回归（2026-11-01 审查 P1）：bounds 必须按 Web Mercator
+        # 标准 atan(sinh(…)) 反算——fixture 瓦片在 26.1°N 附近，误用 sin 会
+        # 系统性低算到 ~24.5°，前端按 bounds 裁剪会滤掉有效瓦片
+        north, south = body["bounds"][3], body["bounds"][1]
+        self.assertTrue(26.1 < north < 26.4, f"north={north} 不在 26.1~26.4（sin/sinh 回归）")
+        self.assertTrue(26.0 < south < 26.2, f"south={south} 不在 26.0~26.2（sin/sinh 回归）")
+
+        response = self.client.get(f"/api/projects/{project_id}/spatial")
+        spatial = self._json(response)["data"]
+        self.assertTrue(spatial.get("map_ready"), "直挂激活后 map_ready 应为 true")
+        response = self.client.get(
+            f"/api/projects/{project_id}/map-resources/{resource_id}/tiles/{zoom}/{center_x}/{center_y}.png"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Content-Type"], "image/png")
+
+        # 非 XYZ 目录拒绝
+        bad_dir = Path(os.environ["PROJECT_STORAGE_ROOT"]) / "incoming" / "not-a-tileset"
+        bad_dir.mkdir(parents=True, exist_ok=True)
+        (bad_dir / "readme.txt").write_text("no tiles here", encoding="utf-8")
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-tileset-register",
+            json={"candidate": "incoming/not-a-tileset"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("不是可识别的 XYZ 瓦片集", self._json(response)["msg"])
+
+    def test_basemap_chunked_upload_owner_and_rename_guards(self):
+        # 2026-11-01 审查修复回归：complete 属主校验（他人拿到 session_id 也不得
+        # 抢先完成）；错误摘要 400（内容校验真实生效）；done 幂等改名重试 409
+        # （此前会返回指向不存在文件的 candidate）
+        import hashlib
+
+        self.login_as_admin()
+        project_id = self._create_project("底图分片边界项目")
+        payload_bytes = b"x" * (1024 * 1024)  # 恰好 1MB = 单块
+        # upload_key 混入时间戳：避免命中 .chunks 的历史 done 会话（与上方
+        # chunked flow 测试同款处理）
+        upload_key = hashlib.sha256(
+            f"owner-guard:{time.time()}".encode()
+        ).hexdigest()
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/init",
+            json={
+                "upload_key": upload_key,
+                "filename": "owner-guard.tif",
+                "total_size": len(payload_bytes),
+                "mime": "application/octet-stream",
+                "chunk_size": 1024 * 1024,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        session_id = self._json(response)["data"]["session_id"]
+
+        # 他人身份抢先 complete：400 拒绝且不落盘（属主校验先于合并）
+        with self.client.session_transaction() as http_session:
+            http_session["admin_username"] = "other-admin"
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/complete/{session_id}",
+            json={"filename": "owner-guard.tif"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("无权操作", self._json(response)["msg"])
+        storage_root = Path(os.environ["PROJECT_STORAGE_ROOT"])
+        self.assertFalse((storage_root / "incoming" / "owner-guard.tif").exists())
+
+        # 切回属主：错误摘要的分块必须被拒（BFF 透传 X-Chunk-Sha256 后校验生效）
+        with self.client.session_transaction() as http_session:
+            http_session["admin_username"] = "admin"
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/chunk/{session_id}/0",
+            data=payload_bytes,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Chunk-Sha256": "0" * 64,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("校验和不匹配", self._json(response)["msg"])
+
+        # 正确摘要 → complete 成功
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/chunk/{session_id}/0",
+            data=payload_bytes,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Chunk-Sha256": hashlib.sha256(payload_bytes).hexdigest(),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/complete/{session_id}",
+            json={"filename": "owner-guard.tif"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._json(response)["data"]["candidate"], "incoming/owner-guard.tif")
+
+        # done 幂等 + 改名重试：同一会话换文件名 complete → 409（不得返回指向
+        # 不存在文件的 candidate）；同名重试 → 幂等返回上次落盘结果
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/complete/{session_id}",
+            json={"filename": "renamed.tif"},
+        )
+        self.assertEqual(response.status_code, 409)
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-upload/complete/{session_id}",
+            json={"filename": "owner-guard.tif"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._json(response)["data"]["candidate"], "incoming/owner-guard.tif")
+        self.assertFalse((storage_root / "incoming" / "renamed.tif").exists())
+
+    def test_basemap_tileset_version_and_archive_guards(self):
+        # 2026-11-01 审查修复回归：版本号取 func.max(version)+1——删除历史记录后
+        # 登记不得复用已有版本号（count 会回退）；归档项目拒绝直挂登记
+        import io
+        import math
+
+        import numpy as np
+        import rasterio
+
+        self.login_as_admin()
+        project_id = self._create_project("瓦片集版本边界项目")
+        db.session.add(ProjectMineBinding(project_id=project_id, mine_fid=713))
+        db.session.add(ProjectSpatialResource(
+            project_id=project_id, resource_type="mine_vector", status="active",
+            version=1, source_path="projects/x/source.kml", source_format="kml",
+            normalized_path="projects/x/mines/source.kml",
+        ))
+        db.session.commit()
+
+        def make_tileset(name):
+            incoming = Path(os.environ["PROJECT_STORAGE_ROOT"]) / "incoming" / name
+            zoom = 12
+            n = 2 ** zoom
+            center_x = int((100.7671 + 180.0) / 360.0 * n)
+            center_y = int((1 - math.log(math.tan(math.radians(26.1283)) + 1 / math.cos(math.radians(26.1283))) / math.pi) / 2 * n)
+            buffer = io.BytesIO()
+            with rasterio.open(
+                buffer, "w", driver="PNG", height=8, width=8, count=1, dtype="uint8"
+            ) as dataset:
+                dataset.write(np.zeros((8, 8), dtype=np.uint8), 1)
+            for dx in (0, 1):
+                tile_dir = incoming / str(zoom) / str(center_x + dx)
+                tile_dir.mkdir(parents=True, exist_ok=True)
+                (tile_dir / f"{center_y}.png").write_bytes(buffer.getvalue())
+            return f"incoming/{name}"
+
+        # 第一次直挂 → v1（走完整 API 路径）
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-tileset-register",
+            json={"candidate": make_tileset("tiles-a")},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        first_id = self._json(response)["data"]["resource_id"]
+        self.assertEqual(
+            ProjectSpatialResource.query.filter_by(id=first_id).one().version, 1
+        )
+
+        # 手动补 v2/v3 历史记录（retained，保留策略 2 份内不会被清理），再删除
+        # 中间的 v2 —— 该场景区分 count 与 func.max：count+1=3 会与现存 v3 撞号，
+        # func.max+1=4 才正确（version 列无唯一约束，撞号不会报错而是静默重复）
+        for extra_version in (2, 3):
+            db.session.add(ProjectSpatialResource(
+                project_id=project_id, resource_type="basemap",
+                version=extra_version, status="retained",
+                source_path=f"incoming/hist-v{extra_version}",
+                source_format="xyz_tiles", crs="EPSG:3857", bounds_json="[]",
+                min_zoom=12, max_zoom=12,
+            ))
+        db.session.commit()
+        middle = ProjectSpatialResource.query.filter_by(
+            project_id=project_id, resource_type="basemap", version=2
+        ).one()
+        db.session.delete(middle)
+        db.session.commit()
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-tileset-register",
+            json={"candidate": make_tileset("tiles-b")},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        second_id = self._json(response)["data"]["resource_id"]
+        self.assertEqual(
+            ProjectSpatialResource.query.filter_by(id=second_id).one().version, 4,
+            "删除中间版本后登记必须取 func.max+1（count+1 会复用现存 v3 的版本号）"
+        )
+        versions = [
+            row.version for row in ProjectSpatialResource.query.filter_by(
+                project_id=project_id, resource_type="basemap"
+            ).all()
+        ]
+        self.assertEqual(len(versions), len(set(versions)), f"版本号不得重复: {versions}")
+
+        # 归档项目拒绝直挂登记（与切片通道 _editable_project 同口径）
+        project = Project.query.filter_by(id=project_id).one()
+        project.status = "archived"
+        db.session.commit()
+        response = self.client.post(
+            f"/api/projects/{project_id}/spatial/basemap-tileset-register",
+            json={"candidate": make_tileset("tiles-c")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("归档项目", self._json(response)["msg"])
+
+    def test_original_imagery_hd_preview_from_incoming(self):
+        # 高保真预览（2026-11-01 后续项③方案 b）：_resolve_source 受控根并集
+        # 放行 incoming/ ——preview 端点实时降采样 tif 原件为 PNG base64。
+        import io
+
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin as _from_origin
+
+        self.login_as_admin()
+        project_id = self._create_project("高清预览项目")
+        db.session.add(ProjectMineBinding(project_id=project_id, mine_fid=713))
+        incoming_dir = Path(os.environ["PROJECT_STORAGE_ROOT"]) / "incoming"
+        incoming_dir.mkdir(parents=True, exist_ok=True)
+        buffer = io.BytesIO()
+        with rasterio.open(
+            buffer, "w", driver="GTiff", height=64, width=64, count=3, dtype="uint8",
+            crs="EPSG:4326", transform=_from_origin(100.7, 26.1, 0.001, 0.001),
+        ) as dataset:
+            for band in range(3):
+                dataset.write(np.full((64, 64), 60 + band * 50, dtype=np.uint8), band + 1)
+        tif_bytes = buffer.getvalue()
+
+        job_id = "job-hd-preview"
+        imagery_path = incoming_dir / "hd-preview.tif"
+        imagery_path.write_bytes(tif_bytes)
+        db.session.add(InferenceJob(
+            id=job_id, project_id=project_id, status="succeeded",
+            request_payload_json=json.dumps({
+                "new_tif_path": str(imagery_path),
+                "old_tif_path": str(imagery_path),
+                "year": "2024", "mine_fids": [713],
+            }),
+        ))
+        db.session.commit()
+
+        source_key = imagery_path.relative_to(Path(os.environ["PROJECT_STORAGE_ROOT"])).as_posix()
+        response = self.client.get(
+            f"/api/projects/{project_id}/imagery/preview?source={source_key}&max_size=512"
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        body = self._json(response)["data"]
+        self.assertIn("png_base64", body)
+        self.assertGreater(len(body["png_base64"]), 100)
+        self.assertEqual(body["source_width"], 64)
 
 
 if __name__ == "__main__":

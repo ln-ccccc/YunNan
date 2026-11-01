@@ -9,6 +9,7 @@ from werkzeug.exceptions import HTTPException
 from applications.api.error_responses import business_or_server_failure
 from applications.auth.guard import login_required
 from applications.common.utils.code import SUCCESS
+from applications.common.utils import upload_sessions
 from applications.common.utils.http import fail_api, success_api
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
@@ -49,13 +50,16 @@ from applications.project_hub.service import (
 )
 from applications.project_hub.spatial_service import (
     cancel_spatial_job,
+    complete_basemap_chunked_upload,
     get_project_spatial,
     get_spatial_job,
     import_mine_vector,
+    init_basemap_chunked_upload,
     list_basemap_candidates,
     preview_mine_vector,
     receive_basemap_upload,
     register_basemap,
+    register_basemap_tileset,
     retry_spatial_job,
     list_retained_basemaps,
     reactivate_basemap,
@@ -345,6 +349,74 @@ def project_basemap_upload_api(project_id):
         )
     except Exception as exc:
         return _spatial_failure_response(exc, "底图上传失败", project_id)
+
+
+@project_api.post("/<int:project_id>/spatial/basemap-tileset-register")
+@login_required
+def project_basemap_tileset_register_api(project_id):
+    """甲方预切瓦片包直挂登记（2026-11-01 后续项③）：候选为 incoming/ 下的
+    XYZ 瓦片目录——探测结构后原子拷贝到规范 tile_path 并直接激活（跳过切片），
+    不建 spatial job。"""
+    payload = request.get_json(silent=True) or {}
+    try:
+        return success_api(
+            data=register_basemap_tileset(
+                project_id, payload.get("candidate"), actor=session.get("admin_username") or "system"
+            )
+        )
+    except Exception as exc:
+        return _spatial_failure_response(exc, "瓦片集登记失败", project_id)
+
+
+@project_api.post("/<int:project_id>/spatial/basemap-upload/init")
+@login_required
+def project_basemap_upload_init_api(project_id):
+    """底图分片 init（2026-11-01 后续项①）：底图预检 + 复用 100GB 分片会话。
+    会话暂存 static/upload/.chunks，complete 阶段合并落盘 incoming/。"""
+    payload = request.get_json(silent=True) or {}
+    try:
+        state = init_basemap_chunked_upload(
+            project_id, payload, owner=session.get("admin_username")
+        )
+    except upload_sessions.UploadSessionError as error:
+        return fail_api(str(error)), 400
+    except Exception as exc:
+        return _spatial_failure_response(exc, "底图分片初始化失败", project_id)
+    return success_api(data=state)
+
+
+@project_api.post("/<int:project_id>/spatial/basemap-upload/chunk/<session_id>/<int:index>")
+@login_required
+def project_basemap_upload_chunk_api(project_id, session_id, index):
+    """底图分片接收：octet-stream 原始体，幂等（重传覆盖）。"""
+    try:
+        written = upload_sessions.write_chunk(
+            session_id,
+            index,
+            request.stream,
+            declared_sha256=request.headers.get("X-Chunk-Sha256"),
+            owner=session.get("admin_username"),
+        )
+    except upload_sessions.UploadSessionError as error:
+        return fail_api(str(error)), 400
+    return success_api(data={"session_id": session_id, "index": index, "bytes": written})
+
+
+@project_api.post("/<int:project_id>/spatial/basemap-upload/complete/<session_id>")
+@login_required
+def project_basemap_upload_complete_api(project_id, session_id):
+    """底图分片 complete：合并会话 → incoming/<safe_name>（staging 原子转正），
+    done 幂等。重名 409 / 分块缺失或大小不符 400。"""
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = complete_basemap_chunked_upload(
+            project_id, session_id, payload.get("filename"), owner=session.get("admin_username")
+        )
+        return success_api(data=data)
+    except upload_sessions.UploadSessionError as error:
+        return fail_api(str(error)), 400
+    except Exception as exc:
+        return _spatial_failure_response(exc, "底图分片合并失败", project_id)
 
 
 def _request_zoom(value, default):

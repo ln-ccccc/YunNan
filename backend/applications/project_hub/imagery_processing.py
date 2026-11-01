@@ -75,20 +75,27 @@ def _resolve_source(project, source_key):
         if not text:
             raise ImageryProcessingError("缺少影像来源")
         storage_root = get_storage_root()
-        # 仅接受本项目沙箱内的相对 key（projects/<本项目id>/...）；
+        # 受控根并集（2026-11-01 后续项③）：本项目沙箱（projects/<本项目id>/...）
+        # 或全局投递区 incoming/（原始影像溯源同款并集，fix-plan 批次 3）——
         # 他项目 key / 绝对路径 / 目录遍历一律 400，浏览器不得提交服务器物理路径（AGENTS §6/§9）
-        if not text.startswith(f"projects/{project.id}/"):
+        allowed_roots = [
+            storage_root / "projects" / str(project.id),
+            storage_root / "incoming",
+        ]
+        matched = None
+        for root in allowed_roots:
+            try:
+                path = resolve_storage_path(storage_root, Path(text))
+                path.relative_to(root)
+                matched = path
+                break
+            except ValueError:
+                continue
+        if matched is None:
             raise ImageryProcessingError("影像来源路径不合法")
-        try:
-            path = resolve_storage_path(storage_root, Path(text))
-        except ValueError:
-            raise ImageryProcessingError("影像来源路径不合法") from None
-        try:
-            path.relative_to(storage_root)
-        except ValueError:
-            raise ImageryProcessingError("影像来源路径不合法") from None
-    if not path.is_file():
-        raise ImageryProcessingError("影像文件不存在")
+        path = matched
+        if not path.is_file():
+            raise ImageryProcessingError("影像文件不存在")
     return path
 
 
