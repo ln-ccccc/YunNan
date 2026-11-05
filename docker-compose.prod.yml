@@ -98,6 +98,13 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./docker:/app/docker:ro
       - ./frontend/src:/app/frontend/src:ro
+      # 依赖与源码同源（2026-11-05 迁移审查 P1-5 真身）：镜像基座的 package.json/
+      # node_modules 停留在构建时点，src 引用新包时启动构建必炸 MODULE_NOT_FOUND
+      # （此前靠 compose 之外的手工整目录挂载漂移掩盖，recreate 后即显形）。
+      # node_modules 挂 rw：vue-cli 的 cache-loader 需写 node_modules/.cache；
+      # 已核实 frontend 依赖树无 native 二进制（零 .node），Windows 主树可安全共享。
+      - ./frontend/package.json:/app/frontend/package.json:ro
+      - ./frontend/node_modules:/app/frontend/node_modules
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/ >/dev/null || exit 1"]
       interval: 30s
