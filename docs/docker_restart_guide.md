@@ -192,12 +192,21 @@ docker system prune ...
 - 只重启部分容器时，**miner-api 必须与 backend 一起重启**（或在其后）：backend 重启需约 40s（等 MySQL + 初始化），期间 BFF 放行会得到 502、前端登录卡"登录中"。BFF 已内置连接级单次重试与登录 502 中文文案兜底；`docker compose up -d` 路径已用 `service_healthy` 条件依赖。
 - 前端两容器（frontend/miner-web）入口在启动时执行 `npm run build` 重建 dist：重启后约 1–3 分钟才可访问；磁盘高负载时可达十分钟级。重启前端容器后请以 `curl http://localhost:3000/`、`curl http://localhost:4000/` 确认再验收。
 
-## 8. 宿主内存与 CPU 兜底限制
+## 8. 前端热更纪律（2026-11-05 迁移审查 P1-6，江西 3.4 同款教训）
+
+当前前端两容器是"bind 主树源码 + 启动时 `npm run build`"模式，由此固定两条纪律：
+
+1. **禁止 `docker cp dist` 式热更前端**。启动脚本每次重启都会从源码重新构建 dist，任何 cp 进去的产物都会在下次重启被静默冲掉——江西多个修复曾因此"从未生效"。前端改动一律改主树源码（`frontend/src`、`miner/src`，容器只读 bind），重启对应容器生效。
+2. **重启前端容器 = 重新构建**：1–3 分钟不可用（高磁盘负载十分钟级），且构建失败（依赖缺失/OOM）会让容器起不来。重启前确认主树 `npm run build` 可通过；重启后按 §7 的 curl 两端口确认再验收。
+
+另注意镜像谱系（P1-5）：`yunnan-runtime:current` 镜像内的 dist 只反映**镜像构建时点**的主树，与运行容器实际服务的版本无关。送外测/离线打包前必须按 `docs/offline_deployment_guide.md` 重建镜像，禁止直接复用开发机上的旧 tag。
+
+## 9. 宿主内存与 CPU 兜底限制
 
 - 推理 checkpoint（fp32 约 1.97GB）以 CPU 加载需宿主可用内存 ≥ 约 4.4GB（体积 × 2.2）。**宿主总内存 < 8GB 时，GPU 模型常驻后强制 `device=cpu` 的任务会在加载前被直接拒绝**（错误码 `INSUFFICIENT_HOST_MEMORY_FOR_CPU`），GPU 正常路径不受影响。这是设计行为（R1 归因体系的预检分支），扩内存或释放常驻后自愈。
 - 部署机内存底线与建议见 `docs/design/design-suggestions-2026-11.md` D9（≥8GB，推荐 16GB）。
 
-## 9. Docker Desktop（开发环境）宿主挂载冻结处置
+## 10. Docker Desktop（开发环境）宿主挂载冻结处置
 
 开发机（Docker Desktop + Windows bind mount）在 11GB 级底图复制与其他高 I/O 并发时，可能出现引擎 API 500、`docker` CLI 挂起、宿主挂载路径卡死而宿主磁盘本身空闲——这是 VM 挂载通道死锁，**不是磁盘瓶颈**。处置（2026-10-27 实测有效）：
 

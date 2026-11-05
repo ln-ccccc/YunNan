@@ -48,15 +48,26 @@ function proxyRequest(request, response, proxy) {
     response.writeHead(proxyResponse.statusCode || 502, proxyResponse.headers);
     proxyResponse.pipe(response);
   });
-  proxied.on('error', (error) => {
+  proxied.on('error', () => {
+    // 2026-11-05 迁移审查：不回显 error.message（含上游主机名/端口/DNS 细节，
+    // 泄露内网拓扑）；固定文案足够排障（容器日志里 proxied 抛错仍可见）
     response.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
-    response.end(JSON.stringify({ error: `Proxy failed: ${error.message}` }));
+    response.end(JSON.stringify({ error: 'Proxy failed' }));
   });
   request.pipe(proxied);
 }
 
 http.createServer((request, response) => {
   try {
+    // 显式 origin-form 断言（2026-11-05 迁移审查 P2 纵深，江西 5.3 同款）：
+    // 绝对形请求（GET http://内网IP/... HTTP/1.1）会让 Node 的 req.url 变为
+    // 绝对 URL——此前靠 startsWith('/api/') 前缀巧合挡住 base 覆盖（SSRF），
+    // 这里把巧合升级为显式拒绝，防止未来改前缀匹配时打开旁路。
+    if (!request.url.startsWith('/')) {
+      response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('Bad request form');
+      return;
+    }
     const proxy = proxies.find((item) => request.url.startsWith(item.prefix));
     if (proxy) {
       proxyRequest(request, response, proxy);
