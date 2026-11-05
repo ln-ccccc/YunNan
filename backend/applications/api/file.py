@@ -24,6 +24,12 @@ CHUNKED_UPLOAD_EXTENSIONS = frozenset(
     ext.lower() for ext in IMAGES_WITH_TIFF if ext.lower() not in ("dat", "bin", "hdr")
 )
 
+# 单发通道普通图片硬上限（2026-11-05 生产化检查，迁移审查 P2-4）：此前 1GB 闸门
+# 只查 tif 系栅格，jpg/png/gif 可单发 ≤15GB——Werkzeug 全量内存解析（实测
+# 573MB 峰值 1.78GiB），登录用户可一枚"图片"打爆 backend 内存。512MB 与前端
+# 自动分流分片续传的阈值同源（>512MB 走分片），真实照片/截图远低于此。
+MAX_UPLOAD_IMAGE_SIZE_MB = 512
+
 
 def _chunked_extension_rejection(filename):
     """分片通道扩展名闸门：返回 (body, status) 拒绝响应或 None 放行。"""
@@ -76,6 +82,16 @@ def upload_api():
                 return fail_api(
                     f"影像文件 '{photo.filename}' 大小 ({size_mb:.1f}MB) 超过单发上传硬上限 "
                     f"({MAX_UPLOAD_TIFF_SIZE_MB}MB)，请改用分片续传上传"
+                )
+        elif not is_tiff_file(photo.filename):
+            # 普通图片单发上限（P2-4）：非栅格无逐文件大小闸门，见常量注释
+            photo.seek(0, 2)
+            image_size_mb = photo.tell() / (1024 * 1024)
+            photo.seek(0)
+            if image_size_mb > MAX_UPLOAD_IMAGE_SIZE_MB:
+                return fail_api(
+                    f"图片文件 '{photo.filename}' 大小 ({image_size_mb:.1f}MB) 超过单发上传上限 "
+                    f"({MAX_UPLOAD_IMAGE_SIZE_MB}MB)，请改用分片续传上传"
                 )
 
     data = []

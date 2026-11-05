@@ -57,6 +57,11 @@ class BaseConfig:
 
     # mysql 数据库的配置信息
     SQLALCHEMY_DATABASE_URI = f"mysql+pymysql://{MYSQL_USERNAME}:{quote_plus(MYSQL_PASSWORD)}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
+    # checkout 前发 ping（2026-11-05 生产化检查）：pool_recycle 只保证"池内最长
+    # 存活 3600s"，但 MySQL 重启或 wait_timeout 掐断刚回收窗口内的连接时，
+    # 下一个拿到它的人仍是 "MySQL server has gone away"——pre_ping 把这类
+    # 坏连接换成重连，代价是每 checkout 一次轻量 SELECT 1
+    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
     # 默认日志等级
     LOG_LEVEL = logging.WARN
     #

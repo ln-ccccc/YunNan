@@ -13,6 +13,12 @@ x-app-env: &app-env
   # TLS 终止后置 true，默认 false 不破坏 http 内网部署（2026-10-24 审查 P2-12）
   SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
   FLASK_CONFIG: production
+  # 运行版本自描述（2026-11-05 生产化检查）：宿主 up 前可
+  # export YUNNAN_GIT_SHA=$(git rev-parse --short HEAD) 注入，/api/system/version 对账
+  YUNNAN_GIT_SHA: "${YUNNAN_GIT_SHA:-unknown}"
+  # 切片任务 deadline（2026-11-05 生产化检查）：gdal2tiles 卡死（非取消）时
+  # 轮询循环仍会心跳，此前任务永 running；超时整组终止并落 failed
+  SPATIAL_JOB_TIMEOUT_SECONDS: "${SPATIAL_JOB_TIMEOUT_SECONDS:-21600}"
   TRANSFORMERS_OFFLINE: "1"
   HF_DATASETS_OFFLINE: "1"
   HF_HUB_OFFLINE: "1"
@@ -49,11 +55,21 @@ x-runtime-base: &runtime-base
     - ./config.yaml:/app/config.yaml:ro
     - ./docker:/app/docker:ro
   restart: unless-stopped
+  # 日志轮转（2026-11-05 生产化检查）：json-file 默认无上限，7 容器长跑会
+  # 静默吃满磁盘后所有写入类功能失败；20m×3 = 每容器上限 60MB
+  logging: &default-logging
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
 
 services:
   backend:
     <<: *runtime-base
     container_name: yunnan-backend
+    # 内存上限（2026-11-05 生产化检查）：Docker VM 仅 ~5.8GiB，无上限时任一
+    # 容器失控（如超限上传的内存解析）会吃光全 VM 触发全栈 OOM 而非单容器失败
+    mem_limit: 3072m
     entrypoint: ["/bin/bash", "/app/docker/start-backend.sh"]
     environment:
       <<: *app-env
@@ -87,6 +103,7 @@ services:
   frontend:
     <<: *runtime-base
     container_name: yunnan-frontend
+    mem_limit: 768m
     entrypoint: ["/bin/bash", "/app/docker/start-frontend.sh"]
     environment:
       <<: *app-env
@@ -114,6 +131,7 @@ services:
   miner-api:
     <<: *runtime-base
     container_name: yunnan-miner-api
+    mem_limit: 512m
     entrypoint: ["/bin/bash", "/app/docker/start-miner-api.sh"]
 
     environment:
@@ -157,6 +175,8 @@ services:
     <<: *runtime-base
     image: ${INFERENCE_IMAGE:-yunnan-inference-worker:current}
     container_name: yunnan-inference-worker
+    # CPU 回退路径加载 checkpoint 需 ~4GiB 进程内存，上限给到 4.5GiB
+    mem_limit: 4608m
     entrypoint: ["/bin/bash", "/app/docker/start-inference-worker.sh"]
     environment:
       <<: *app-env
@@ -187,6 +207,7 @@ services:
   spatial-worker:
     <<: *runtime-base
     container_name: yunnan-spatial-worker
+    mem_limit: 2048m
     entrypoint: ["/bin/bash", "/app/docker/start-spatial-worker.sh"]
     environment:
       <<: *app-env
@@ -210,6 +231,7 @@ services:
   miner-web:
     <<: *runtime-base
     container_name: yunnan-miner-web
+    mem_limit: 768m
     entrypoint: ["/bin/bash", "/app/docker/start-miner-web.sh"]
     environment:
       <<: *app-env
@@ -233,7 +255,18 @@ services:
   mysql:
     image: ${MYSQL_IMAGE:-registry.openanolis.cn/openanolis/mysql:8.0.30-8.6}
     container_name: yunnan-mysql
-    command: --default-authentication-plugin=mysql_native_password
+    mem_limit: 1792m
+    # 慢查询日志（2026-11-05 生产化检查）：>2s 的查询落 datadir 下 slow.log，
+    # 排容量问题不再靠猜；轮转随数据卷备份走
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --slow-query-log=1
+      --long-query-time=2
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     environment:
       MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}"
       MYSQL_DATABASE: paddle_rs

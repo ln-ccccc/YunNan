@@ -1,8 +1,14 @@
+import logging
 import os
+import re
+import uuid
 
-from flask import Flask, request
+from flask import Flask, g, request
 
 from applications.auth.guard import ensure_logged_in
+
+_REQUEST_LOGGER = logging.getLogger("yunnan.request")
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 
 
 def _build_allowed_origins(app):
@@ -34,8 +40,15 @@ def create_app(config_name=None):
         config_name = os.getenv('FLASK_CONFIG', 'development')
 
     app.config.from_object(config[config_name])
-    if config_name == 'production' and not os.getenv('SECRET_KEY'):
-        raise RuntimeError('SECRET_KEY is required in production')
+    # 版本端点报告实际生效的配置名（显式传参优先于 env；/api/system/version）
+    app.config["FLASK_CONFIG_NAME"] = config_name
+    # 非 testing 一律拒绝 dev key 回退（2026-11-05 生产化检查，迁移审查 P2-13）：
+    # 此前仅 production 拦截，development 静默用 'dev key' 签会话——配置错误
+    # （如容器 FLASK_CONFIG 误设 development）不会有任何提示
+    if config_name != 'testing' and not os.getenv('SECRET_KEY'):
+        raise RuntimeError(
+            'SECRET_KEY is required (set SECRET_KEY env; testing config is exempt)'
+        )
 
     models.load_all_models()
     init_plugs(app)
@@ -47,6 +60,50 @@ def create_app(config_name=None):
 
     if config_name != 'testing':
         init_script(app)
+
+    # 请求关联 ID（2026-11-05 生产化检查）：前端注入或服务端生成，响应头回显、
+    # 5xx 日志携带——一次失败请求可在四层日志里靠同一 ID 串联，不再肉眼对时间戳
+    @app.before_request
+    def assign_request_id():
+        incoming = request.headers.get("X-Request-Id", "")
+        if _REQUEST_ID_PATTERN.match(incoming):
+            g.request_id = incoming
+        else:
+            g.request_id = uuid.uuid4().hex[:12]
+
+    @app.after_request
+    def echo_request_id(response):
+        response.headers["X-Request-Id"] = g.get("request_id", "")
+        if response.status_code >= 500:
+            _REQUEST_LOGGER.error(
+                "%s %s -> %s request_id=%s",
+                request.method,
+                request.path,
+                response.status_code,
+                g.get("request_id", ""),
+            )
+        return response
+
+    # 缓存策略（2026-11-05 生产化检查，迁移审查 P2-1）：此前全域无 Cache-Control，
+    # 浏览器对 API 响应自行启发式缓存（410 停用/401 响应也可能被中间层缓存），
+    # 而重切后的瓦片又被旧缓存钉住——按资源形态显式声明
+    @app.after_request
+    def apply_cache_policy(response):
+        path = request.path
+        if response.status_code in (401, 403, 410, 429):
+            # 鉴权/限流/停用响应禁止任何层缓存（优先于路径分支：
+            # 401 的 /_uploads 响应绝不能被钉一年）
+            response.headers["Cache-Control"] = "no-store"
+        elif path.startswith("/_uploads/"):
+            # 上传产物文件名为 UUID，内容不可变
+            response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        elif "/tiles/" in path and response.status_code == 200:
+            # 真实瓦片可缓存一天；重切属罕见操作且资源 id 会变（404 不缓存）
+            response.headers.setdefault("Cache-Control", "public, max-age=86400")
+        elif path.startswith("/api/"):
+            # 业务数据默认不缓存（正确性优先；有明确语义的端点可在视图内自行覆盖）
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
 
     system_api(app)
 

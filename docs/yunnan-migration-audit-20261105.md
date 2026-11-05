@@ -165,6 +165,7 @@
 | 1 | P1-1 分片白名单（init+complete 双闸）+ P2-12 complete 属主校验 + P2-15 NODE_ENV + P1-4 前端超时/逃生口 | d51aad6 |
 | 2 | P1-3 spatial 取消整组杀进程组（含真实三进程组 e2e 测试） | 887698f |
 | 3 | P1-6 热更纪律文档化 + P2 纵深（static-server 显式 origin-form 断言/502 脱敏 + 启动依赖预检）+ 本报告 P1-5 定性修正 | 本批 |
+| 4（2026-11-05 下午，生产化加固） | P2-4 单发普通图片 512MB 闸门 / P2-13 SECRET_KEY 非 testing 拒绝回退 / P2-14 登录失败限速（15min×5 锁定）/ P2-5 raster_ops 六处静默失败补日志 / P2-10 wait-for-mysql 预算 60s→180s / P2-1 Cache-Control 分层（API no-store、瓦片 24h、透明兜底 60s、鉴权 410/429 no-store）/ P3-1 miner/.env 权威性注释 / P3-2 Zone.Identifier 清理。**审计未列出的新增**：切片任务 deadline（SPATIAL_JOB_TIMEOUT_SECONDS 默认 6h，卡死任务不再永 running）/ SQLALCHEMY pool_pre_ping / 全容器日志轮转 20m×3 / 容器 mem_limit / /api/system/version 版本自描述（YUNNAN_GIT_SHA 注入）/ X-Request-Id 生成回显+5xx 日志携带 / 前端全局错误留痕（errorSink，两 app）/ 备份脚本 docker/backup_yunnan.sh + docs/backup-restore.md / MySQL 慢查询日志 / GeoView 直连瓦片超 maxZoom 透明兜底（10-28 遗留②收口）。测试：test_production_hardening.py 10 例 | 见 git log |
 
 **验证**：后端全量 2305 passed + 1337 subtests（新增 5 测试）；frontend 容器构建通过；compose config OK；static-server 实测绝对形 400/正常 200；依赖预检三环境实跑（本机 frontend 28 项/miner 10 项、容器 miner-web 14 项全就绪）。
 

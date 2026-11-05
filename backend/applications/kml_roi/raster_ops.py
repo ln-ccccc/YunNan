@@ -1,3 +1,4 @@
+import logging
 import math
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -5,6 +6,10 @@ from typing import Dict, Optional, Tuple
 from affine import Affine
 import cv2
 import numpy as np
+
+# 静默失败治理（2026-11-05 生产化检查，迁移审查 P2-5）：以下 return False
+# 均是"跳过该 fid 继续"的语义，此前无任何日志——图斑缺失排障无从下手
+LOGGER = logging.getLogger(__name__)
 import rasterio
 from applications.common.utils.tiff_processor import read_tiff_as_rgb
 from rasterio.features import geometry_mask
@@ -147,9 +152,11 @@ def crop_polygon_from_raster(raster_path: Path, geom_4326: Dict, out_path: Path)
         try:
             out_image, out_transform = mask(src, [geom_src], crop=True, nodata=0, filled=True)
         except ValueError:
+            LOGGER.warning("kml_roi 多边形裁剪失败（几何不在影像范围内）: %s", raster_path)
             return False
 
         if out_image.size == 0 or out_image.shape[1] == 0 or out_image.shape[2] == 0:
+            LOGGER.warning("kml_roi 多边形裁剪结果为空: %s", raster_path)
             return False
 
         profile = src.profile.copy()
@@ -214,10 +221,12 @@ def crop_bbox_from_raster(raster_path: Path, geom_4326: Dict, out_path: Path) ->
             window = from_bounds(minx, miny, maxx, maxy, src.transform)
             raster_window = Window(0, 0, src.width, src.height)
             window = window.intersection(raster_window).round_offsets().round_lengths()
-        except Exception:
+        except Exception as error:
+            LOGGER.warning("kml_roi bbox 窗口计算失败: %s (%s)", raster_path, error)
             return False
 
         if window.width <= 0 or window.height <= 0:
+            LOGGER.warning("kml_roi bbox 与影像无交集: %s", raster_path)
             return False
 
         out_transform = src.window_transform(window)
@@ -286,7 +295,8 @@ def tif_to_png(tif_path: Path, png_path: Path, resize_to: Optional[Tuple[int, in
             rgb = cv2.resize(rgb, resize_to, interpolation=cv2.INTER_LINEAR)
         png_path.parent.mkdir(parents=True, exist_ok=True)
         return bool(cv2.imwrite(str(png_path), rgb[:, :, ::-1]))
-    except Exception:
+    except Exception as error:
+        LOGGER.warning("kml_roi tif 转 png 失败: %s (%s)", tif_path, error)
         return False
 
 
@@ -378,6 +388,7 @@ def crop_prediction_by_polygon(
     pred_image = cv2.imread(str(pred_image_path), cv2.IMREAD_COLOR)
     pred_mask = cv2.imread(str(pred_mask_path), cv2.IMREAD_UNCHANGED)
     if pred_image is None or pred_mask is None:
+        LOGGER.warning("kml_roi 预测图/掩膜读取失败: %s / %s", pred_image_path, pred_mask_path)
         return False
     if pred_mask.ndim == 3:
         pred_mask = pred_mask[:, :, 0]
@@ -385,6 +396,7 @@ def crop_prediction_by_polygon(
     h, w = pred_mask.shape[:2]
     poly_mask = build_polygon_mask_for_prediction(raster_path, geom_4326, (w, h))
     if poly_mask is None or not np.any(poly_mask):
+        LOGGER.warning("kml_roi 多边形掩膜为空，跳过叠绘: %s", pred_image_path)
         return False
 
     ys, xs = np.where(poly_mask)
@@ -440,6 +452,10 @@ def draw_polygon_boundary_on_prediction(
     pred_mask = cv2.imread(str(pred_mask_path), cv2.IMREAD_UNCHANGED)
     tile_img = cv2.imread(str(tile_image_path), cv2.IMREAD_COLOR)
     if pred_img is None or pred_mask is None or tile_img is None:
+        LOGGER.warning(
+            "kml_roi 后处理输入读取失败: pred=%s mask=%s tile=%s",
+            pred_image_path, pred_mask_path, tile_image_path,
+        )
         return False
     if pred_mask.ndim == 3:
         pred_mask = pred_mask[:, :, 0]

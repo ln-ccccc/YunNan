@@ -1,4 +1,6 @@
 import logging
+import os
+import time
 
 from flask import Blueprint, jsonify
 from sqlalchemy import text
@@ -7,6 +9,9 @@ from applications.extensions import db
 
 system_health = Blueprint("system_health", __name__, url_prefix="/api")
 LOGGER = logging.getLogger(__name__)
+
+# 进程启动时刻（版本端点报告 uptime 用；与容器生命周期近似）
+_PROCESS_STARTED_AT = time.time()
 
 
 @system_health.get("/health")
@@ -47,4 +52,30 @@ def health_api():
             }
         ),
         200 if healthy else 503,
+    )
+
+
+@system_health.get("/system/version")
+def system_version_api():
+    """运行版本自描述（免登录，排障/部署对账用，2026-11-05 生产化检查新增）。
+
+    只暴露非敏感信息：git sha（compose 注入 YUNNAN_GIT_SHA，宿主 up 前可
+    `export YUNNAN_GIT_SHA=$(git rev-parse --short HEAD)`）、Flask 配置模式、
+    进程 uptime。不暴露路径、主机名、库版本指纹——此前审计只能靠 dist 文件
+    日期推断"跑的是什么版本"（P1-5 误判的一半根因）。
+    """
+    from flask import current_app
+
+    return jsonify(
+        {
+            "success": True,
+            "data": {
+                "service": "yunnan-backend",
+                "git_sha": os.getenv("YUNNAN_GIT_SHA", "unknown"),
+                "flask_config": current_app.config.get(
+                    "FLASK_CONFIG_NAME", os.getenv("FLASK_CONFIG", "development")
+                ),
+                "uptime_seconds": int(time.time() - _PROCESS_STARTED_AT),
+            },
+        }
     )

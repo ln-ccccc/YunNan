@@ -54,7 +54,8 @@ test('项目瓦片路由：锯齿边缺瓦片但 zoom 目录存在 → 200 透�
     const r = await get(server, '/tiles/projects/1/2/9/400/999.png');
     assert.equal(r.status, 200);
     assert.deepEqual([...r.body.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
-    assert.match(r.cacheControl || '', /max-age=86400/);
+    // 透明兜底只短缓存（2026-11-05 P2-1：钉 24h 会让重切后旧浏览器透明一天）
+    assert.match(r.cacheControl || '', /max-age=60/);
   } finally {
     server.close();
     fs.rmSync(root, { recursive: true, force: true });

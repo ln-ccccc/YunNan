@@ -48,6 +48,10 @@ export function request(config) {
     if (!reqConfig.silent) {
       showFullScreenLoading();
     }
+    // 请求关联 ID（2026-11-05 生产化检查）：后端回显同值并在 5xx 日志携带，
+    // 用户报障时给出此 ID 即可跨层检索
+    reqConfig.headers["X-Request-Id"] = reqConfig.headers["X-Request-Id"]
+      || `fe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     return reqConfig;
   });
 
@@ -101,8 +105,10 @@ export function request(config) {
         return Promise.reject(createRequestError("network", message, error, silent));
       }
       // HTTP 层错误（4xx/5xx/超时）：非 silent 请求给出提示（silent 轮询由调用方统一收口，
-      // 避免断线自愈窗口内每秒刷屏）
-      const message = error?.response?.data?.msg || "网络异常，请检查后端服务是否启动";
+      // 避免断线自愈窗口内每秒刷屏）；附后端回显的请求编号便于报障检索
+      const requestId = error?.response?.headers?.["x-request-id"];
+      const baseMessage = error?.response?.data?.msg || "网络异常，请检查后端服务是否启动";
+      const message = requestId ? `${baseMessage}（编号 ${requestId}）` : baseMessage;
       if (!silent) ElMessage.error(message);
       return Promise.reject(createRequestError("http", message, error, silent));
     },

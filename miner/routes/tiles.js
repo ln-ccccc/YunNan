@@ -34,10 +34,13 @@ export function createTileRoutes({ projectStorageRoot }) {
       if (!fs.existsSync(zoomDir)) {
         return res.status(404).json({ error: 'Project tile not found' });
       }
-      res.set('Cache-Control', 'public, max-age=86400');
+      // 透明兜底只缓存 60s（2026-11-05 生产化检查，迁移审查 P2-1）：此前钉 24h，
+      // 底图重切修复后旧浏览器仍显示透明一天；真实瓦片长缓存见下方 sendFile
+      res.set('Cache-Control', 'public, max-age=60');
       res.set('Content-Type', 'image/png');
       return res.status(200).end(TRANSPARENT_TILE_PNG);
     }
+    res.set('Cache-Control', 'public, max-age=86400');
     return res.sendFile(tilePath);
   });
   return router;

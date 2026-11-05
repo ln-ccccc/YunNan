@@ -3,7 +3,7 @@ import logging
 from io import BytesIO
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request, send_file, send_from_directory, session
+from flask import Blueprint, current_app, jsonify, request, send_file, send_from_directory, session
 from werkzeug.exceptions import HTTPException
 
 from applications.api.error_responses import business_or_server_failure
@@ -182,6 +182,14 @@ def project_inference_output_api(project_id, fid, filename):
 @project_api.get("/<int:project_id>/map-resources/<int:resource_id>/tiles/<int:z>/<int:x>/<int:y>.png")
 @login_required
 def project_map_tile_api(project_id, resource_id, z, x, y):
+    # 与 BFF 瓦片路由（miner/routes/tiles.js）同款 1×1 透明 PNG：GeoView 编辑器
+    # 直连本路由，超金字塔 maxZoom 的请求此前逐格 404 刷屏（地图渲染正常、纯
+    # 控制台噪音，2026-10-28 发现）；对齐业界惯例以 200+透明兜底（2026-11-05）
+    import base64
+
+    transparent = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
     resource = ProjectSpatialResource.query.filter_by(
         id=resource_id,
         project_id=project_id,
@@ -195,7 +203,9 @@ def project_map_tile_api(project_id, resource_id, z, x, y):
     if resource.min_zoom is not None and z < resource.min_zoom:
         return fail_api("项目底图瓦片不存在"), 404
     if resource.max_zoom is not None and z > resource.max_zoom:
-        return fail_api("项目底图瓦片不存在"), 404
+        response = current_app.response_class(transparent, mimetype="image/png")
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
     try:
         target = resolve_storage_path(
             get_storage_root(),

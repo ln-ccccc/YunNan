@@ -15,8 +15,10 @@ import '@/assets/css/liquid-glass.css'
 
 import JSZIP from "jszip"
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import { installGlobalErrorHandlers } from '@/utils/errorSink'
 
 const app = createApp(App)
+installGlobalErrorHandlers(app)
 app.use(router).use(ElementPlus,{locale: zhCn}).use(JSZIP).mount('#app')
 app.directive('drag',{
     mounted(el, binding, vnode, prevVnode) {

@@ -759,12 +759,13 @@ class TestClassificationResultAPI(unittest.TestCase):
         self.assertEqual(response.data, b"tile-png")
         response.close()
 
-        self.assertEqual(
-            self.client.get(
-                f"/api/projects/{self.project_id}/map-resources/{self.basemap_resource.id}/tiles/5/2/3.png"
-            ).status_code,
-            404,
+        # 超金字塔 maxZoom：200 透明 PNG 兜底（2026-11-05 生产化检查，对齐 BFF
+        # miner/routes/tiles.js 的 J-1 语义——GeoView 直连本路由，逐格 404 刷屏）
+        over_zoom = self.client.get(
+            f"/api/projects/{self.project_id}/map-resources/{self.basemap_resource.id}/tiles/5/2/3.png"
         )
+        self.assertEqual(over_zoom.status_code, 200)
+        self.assertTrue(over_zoom.data.startswith(b"\x89PNG"))
 
         self.basemap_resource.status = "retired"
         db.session.commit()

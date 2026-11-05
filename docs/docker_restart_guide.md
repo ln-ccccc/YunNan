@@ -214,3 +214,12 @@ docker system prune ...
 2. 完整重启 Docker Desktop：`Stop-Service com.docker.service` → 结束 `Docker Desktop`/`com.docker.backend` 进程 → 重新启动 `Docker Desktop.exe`；
 3. 七个容器均为 `restart: unless-stopped`，引擎恢复后自动拉起；进行中的底图复制任务会被 worker 恢复逻辑标记失败并**从头重拷**（部分 `.copying` 会被清理），完成后用空间任务 retry 接口重切即可；
 4. 生产裸机部署无宿主挂载耦合层，不受此问题影响；若交付环境复现同类症状，优先检查存储直通性能而非数据损坏。
+
+## 11. 生产化运维基线（2026-11-05 加固批）
+
+- **版本对账**：重启/送测前建议 `export YUNNAN_GIT_SHA=$(git rev-parse --short HEAD)` 再 `docker compose up -d`，之后 `curl http://localhost:5008/api/system/version` 应返回该 sha——不再靠 dist 文件日期猜版本。
+- **请求编号**：所有后端响应带 `X-Request-Id` 回显（前端自动注入 `fe-*` 前缀）；报障让用户给"编号"，后端 5xx 日志按同 ID 检索。
+- **日志轮转**：全部容器 json-file 已限 20m×3；MySQL 慢查询(>2s)落 `yunnan_mysql_data` 卷内 slow.log。
+- **内存上限**：backend 3G / inference-worker 4.5G / mysql 1.75G / spatial-worker 2G / 前端类 768m / miner-api 512m——单容器失控不再拖垮全栈。
+- **备份**：`bash docker/backup_yunnan.sh`（详见 docs/backup-restore.md），每周与送测前必做。
+- **登录限速**：同一账号 15 分钟内 5 次失败锁定（进程内存计数，重启清零）。

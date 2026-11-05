@@ -238,6 +238,11 @@ def _run_gdal2tiles(job, resource, source, tile_dir, poll_seconds):
     except (TypeError, ValueError, json.JSONDecodeError):
         expected_tiles = 0
     next_progress_check = 0.0
+    # 任务 deadline（2026-11-05 生产化检查）：gdal2tiles 卡死（非取消）时轮询
+    # 循环仍会刷新心跳，任务会永远 running——超时整组终止并落 failed。
+    # 默认 6h（11GB 底图切片实测可达数小时）；--resume 使重提任务断点续切
+    job_deadline_seconds = max(60, int(os.getenv("SPATIAL_JOB_TIMEOUT_SECONDS", "21600")))
+    started_monotonic = time.monotonic()
     # start_new_session（2026-11-05 P1-3）：gdal2tiles 的 multiprocessing 池子进程
     # 与本 worker 同组——取消时必须能整组回收（见 _terminate），否则池子进程孤儿化
     process = subprocess.Popen(command, env=environment, start_new_session=True)
@@ -247,6 +252,11 @@ def _run_gdal2tiles(job, resource, source, tile_dir, poll_seconds):
         if job.cancel_requested:
             _terminate(process)
             raise InterruptedError("任务已取消")
+        if time.monotonic() - started_monotonic > job_deadline_seconds:
+            _terminate(process)
+            raise TimeoutError(
+                f"切片任务超过 {job_deadline_seconds}s 上限被终止（可重提，断点续切）"
+            )
         job.heartbeat_at = datetime.datetime.now()
         _touch_heartbeat()
         now = time.monotonic()
