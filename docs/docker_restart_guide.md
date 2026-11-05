@@ -98,7 +98,9 @@ finally {
 docker ps --filter 'name=yunnan-' --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 ```
 
-上述标准命令默认使用 CPU，不加载 GPU overlay。只有目标机已配置 NVIDIA 驱动和 NVIDIA Container Toolkit 时，才额外加入 `-f docker-compose.gpu.yml`：
+上述标准命令默认使用 CPU，不加载 GPU overlay。只有目标机已配置 NVIDIA 驱动和 NVIDIA Container Toolkit 时，才额外加入 `-f docker-compose.gpu.yml`。
+
+> **陷阱（2026-11-05 实咬）**：带 GPU 的机器若用不带 overlay 的标准命令 `up -d`/`up -d inference-worker` 重建，GPU 会被**静默撤掉**——worker 落 CPU 路径后撞启动内存守卫（VM 可用 < checkpoint×2.2 ≈ 4.04GiB）陷入崩溃循环（本机曾连续重启 1067 次，RestartCount 是判别特征）。判别：`docker logs yunnan-inference-worker | grep effective_device` 应为 `cuda:0`；恢复必须带 `-f docker-compose.gpu.yml` 重建。
 
 ```powershell
 docker compose -p yunnan `
