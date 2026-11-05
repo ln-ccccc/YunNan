@@ -103,7 +103,9 @@ services:
   frontend:
     <<: *runtime-base
     container_name: yunnan-frontend
-    mem_limit: 768m
+    # vue-cli(webpack) 构建峰值超 768m 会被 cgroup 杀（2026-11-05 实测 Killed
+    # 循环）；构建后运行态仅 ~20MiB，上限是封顶不是预留
+    mem_limit: 2048m
     entrypoint: ["/bin/bash", "/app/docker/start-frontend.sh"]
     environment:
       <<: *app-env
