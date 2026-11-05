@@ -370,6 +370,14 @@ class TestChunkedExtensionWhitelistAndCompleteOwner(ChunkedUploadBase):
             os.listdir(self.upload_tmp),
         )
 
+    def test_complete_on_unknown_session_returns_400_not_500(self):
+        """属主校验前置后（P2-12 修复），complete 对不存在会话必须仍走
+        UploadSessionError → 400，不得因校验顺序变化变成 500。"""
+        self.login_as_admin()
+        resp = self._complete(key="e" * 40)
+        self.assertEqual(resp.status_code, 400, resp.get_data(as_text=True))
+        self.assertFalse(resp.get_json().get("success"))
+
     def test_complete_rejects_hijack_by_other_logged_in_session(self):
         """complete 属主校验（P2-12）：B 会话不得抢先完成收割 A 的上传会话。"""
         from werkzeug.security import generate_password_hash
