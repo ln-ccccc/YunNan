@@ -12,6 +12,8 @@ export function createSrc(formdata, options = {}) {
         data:formdata,
         // 上传自带进度通知（getUploadImg）：silent 避免全屏锁死且保证取消按钮可点
         silent: true,
+        // 大文件传输远超默认 60s（573MB 实测 570s）：自带进度+取消，不设客户端超时
+        timeout: 0,
         // 透传上传进度回调与取消信号（8GB 大文件 UX：进度可取消，江西 F2 同款）
         signal: options.signal,
         onUploadProgress: options.onUploadProgress,
@@ -29,7 +31,10 @@ export function imgUpload(data,funUrl){
     return request({
         method:'POST',
         url:`/api/analysis/${funUrl}`,
-        data
+        data,
+        // analysis 系列是同步长端点（semantic_segmentation 服务端 subprocess 推理，
+        // gunicorn 1800s 兜底）：不设客户端超时，UI 锁定由 loading 15s 逃生口解除
+        timeout: 0,
     })
 }
 
@@ -37,7 +42,9 @@ export function prePhotoHandle(data){
     return request({
         method:'POST',
         url:'/api/analysis/image_pre',
-        data
+        data,
+        // 同步预处理：秒级~分钟级，给 5 分钟（不豁免，防悬挂）
+        timeout: 300000,
     })
 }
 
@@ -184,6 +191,8 @@ export async function uploadFilesResumable(fileEntries, meta = {}, options = {})
             },
             silent: true,
             signal: options.signal,
+            // GB 级同卷合并可达分钟（默认 60s 会误杀），取消信号已够用
+            timeout: 0,
         });
         results.push(...(completeResponse?.data?.data || []));
         doneBytes += Number(entry.size) || 0;

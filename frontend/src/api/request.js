@@ -36,6 +36,11 @@ export function request(config) {
   const instance = axios.create({
     baseURL: global.BASEURL,
     withCredentials: true,
+    // 默认超时（2026-11-05 迁移审查 P1-4，江西 2.2 同款）：防后端 worker 被长请求
+    // 占满时非 silent 请求无限 pending 叠加全屏遮罩死锁。长同步端点（analysis 系列 /
+    // 大文件上传/分片合并）由调用方显式传 timeout: 0 或长值豁免——axios 的 request
+    // 级 timeout 优先于实例默认；豁免场景后端 gunicorn 1800s 兜底。
+    timeout: 60000,
   });
 
   instance.interceptors.request.use((reqConfig) => {
@@ -80,6 +85,16 @@ export function request(config) {
         return Promise.reject(createRequestError("auth", error?.response?.data?.msg || "登录已失效"));
       }
       if (!error?.response) {
+        // 超时（2026-11-05）：与断链分开文案——任务可能仍在后端排队/执行，
+        // 提示"服务未启动"会误导排障方向
+        const isTimeout = error?.code === "ECONNABORTED"
+          || error?.code === "ETIMEDOUT"
+          || /timeout of/i.test(error?.message || "");
+        if (isTimeout) {
+          const message = "请求超时，任务可能仍在后端处理，请稍后查看结果";
+          if (!silent) ElMessage.error(message);
+          return Promise.reject(createRequestError("network", message, error, silent));
+        }
         // 网络层断链：任务可能仍在后端执行，调用方按 disconnect 语义区分提示
         const message = "网络异常，请检查后端服务是否启动";
         if (!silent) ElMessage.error(message);

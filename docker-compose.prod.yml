@@ -112,6 +112,9 @@ services:
     environment:
       <<: *app-env
       GEOVIEW_BACKEND_URL: "http://backend:5008"
+      # 生产模式（2026-11-05 迁移审查 P2-15）：未设置时 Express/body-parser 走
+      # dev 模式，错误页会回显堆栈（畸形 JSON 等触发），泄露内部实现
+      NODE_ENV: "production"
     ports:
       - "8000:8000"
     depends_on:

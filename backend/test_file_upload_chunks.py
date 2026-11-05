@@ -327,5 +327,77 @@ class TestChunkedUploadLifecycle(ChunkedUploadBase):
             self.assertEqual(resp.status_code, 404, path)
 
 
+class TestChunkedExtensionWhitelistAndCompleteOwner(ChunkedUploadBase):
+    """分片通道扩展名白名单与 complete 属主校验（2026-11-05 迁移审查 P1-1/P2-12）。
+
+    江西同源教训（5.1+5.6 叠加）：分片通道此前只黑名单 ENVI、无正向白名单，
+    任意后缀（.svg/.html）可经 init/chunk/complete 落盘并被 /_uploads 按扩展名
+    推断的 Content-Type 内联提供（认证内存储型 XSS）；complete 亦缺属主校验。
+    """
+
+    def test_init_rejects_non_whitelisted_extension(self):
+        self.login_as_admin()
+        resp = self._init(filename="evil.svg", size=1024)
+        body = resp.get_json()
+        self.assertEqual(resp.status_code, 400, resp.get_data(as_text=True))
+        self.assertFalse(body.get("success"), body)
+        self.assertIn("分片续传仅支持", str(body.get("msg")))
+
+    def test_init_rejects_envi_with_single_post_guidance(self):
+        self.login_as_admin()
+        resp = self._init(filename="scene.dat", size=1024)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("单次上传", resp.get_json()["msg"])
+
+    def test_complete_rejects_svg_session_created_at_module_layer(self):
+        """complete 侧兜底：绕过 API init（模块层直建 .svg 会话）同样被拒。"""
+        self.login_as_admin()
+        state = upload_sessions.init_session(
+            upload_key="d" * 40,
+            filename="evil.svg",
+            total_size=CHUNK_MB * 1024 * 1024,
+            mime="image/svg+xml",
+            chunk_size=CHUNK_MB * 1024 * 1024,
+            owner="admin",
+        )
+        self._put_chunk(0, b"<svg><script>alert(1)</script></svg>", key=state["session_id"])
+        resp = self._complete(key=state["session_id"])
+        self.assertEqual(resp.status_code, 400, resp.get_data(as_text=True))
+        self.assertIn("仅支持", resp.get_json()["msg"])
+        # 上传根不得残留任何 .svg 落盘产物
+        self.assertFalse(
+            [p for p in os.listdir(self.upload_tmp) if p.lower().endswith(".svg")],
+            os.listdir(self.upload_tmp),
+        )
+
+    def test_complete_rejects_hijack_by_other_logged_in_session(self):
+        """complete 属主校验（P2-12）：B 会话不得抢先完成收割 A 的上传会话。"""
+        from werkzeug.security import generate_password_hash
+
+        from applications.extensions import db
+        from applications.models import AdminUser
+
+        self.login_as_admin()
+        init = self._init().get_json()["data"]
+        self._put_chunk(0, self.payload[:init["chunk_size"]])
+
+        db.session.add(AdminUser(
+            username="operator2",
+            password_hash=generate_password_hash("Secret123!"),
+            is_active=True,
+        ))
+        db.session.commit()
+        other = self.app.test_client()
+        login = other.post("/api/auth/login", json={"username": "operator2", "password": "Secret123!"})
+        self.assertEqual(login.status_code, 200)
+
+        hijack = other.post(
+            f"/api/file/upload/complete/{self.key}",
+            json={"type": "地物分类", "isSlice": True, "keepRawTiff": True},
+        )
+        self.assertEqual(hijack.status_code, 400, hijack.get_data(as_text=True))
+        self.assertIn("无权", hijack.get_json()["msg"])
+
+
 if __name__ == "__main__":
     unittest.main()
