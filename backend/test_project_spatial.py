@@ -856,6 +856,73 @@ class TestProjectSpatialState(unittest.TestCase):
                     os.environ["PROJECT_STORAGE_ROOT"] = previous_root
 
 
+@unittest.skipIf(os.name == "nt", "进程组终止行为依赖 POSIX（标准跑法为 Linux 容器）")
+class TestSpatialTerminateKillsWholeProcessGroup(unittest.TestCase):
+    """取消终止必须整组杀（2026-11-05 迁移审查 P1-3，江西 4.4 同款）。
+
+    gdal2tiles --processes=N 的 multiprocessing 池子进程不在 _terminate 的
+    单点 terminate 范围内——孤儿池会继续切瓦片占 CPU/写盘。江西教训：取消
+    链路不能只靠 mock 单测（曾有取消传参 TypeError 被 mock 静默吞掉），
+    本用例用真实三进程组验证 killpg 行为。
+    """
+
+    PARENT_SCRIPT = (
+        "import os, subprocess, sys\n"
+        "children = [subprocess.Popen(['sleep', '300']) for _ in range(2)]\n"
+        "print(f\"{os.getpid()},{children[0].pid},{children[1].pid}\", flush=True)\n"
+        "for child in children:\n"
+        "    child.wait()\n"
+    )
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # 存在但属他人（zombie 转收尸中）
+
+    def test_terminate_kills_parent_and_pool_children(self):
+        import subprocess as sp
+        import time
+
+        from applications.project_hub.spatial_worker import _terminate
+
+        parent_pid = child_a = child_b = -1
+        parent = sp.Popen(
+            [sys.executable, "-c", self.PARENT_SCRIPT],
+            stdout=sp.PIPE, text=True, start_new_session=True,
+        )
+        try:
+            first_line = parent.stdout.readline().strip()
+            parent_pid, child_a, child_b = (int(part) for part in first_line.split(","))
+            deadline = time.time() + 10
+            while time.time() < deadline and not (self._alive(child_a) and self._alive(child_b)):
+                time.sleep(0.05)
+            self.assertTrue(self._alive(parent_pid) and self._alive(child_a) and self._alive(child_b),
+                            "前置条件：父进程与两个池子进程应均在运行")
+
+            _terminate(parent)
+
+            deadline = time.time() + 10
+            while time.time() < deadline and (self._alive(child_a) or self._alive(child_b)):
+                time.sleep(0.05)
+            self.assertFalse(self._alive(child_a) or self._alive(child_b),
+                             "killpg 应整组回收 gdal2tiles 式 multiprocessing 池子进程，"
+                             "不得留孤儿继续切瓦片")
+            self.assertNotEqual(parent.poll(), None, "父进程应收口退出")
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+            for pid in (parent_pid, child_a, child_b):
+                try:
+                    os.killpg(os.getpgid(int(pid)), 9)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+
+
 if __name__ == "__main__":
     unittest.main()
 

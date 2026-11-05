@@ -191,11 +191,28 @@ def _copy_source_to_project(resource, storage_root):
 
 
 def _terminate(process):
-    process.terminate()
+    """整组终止（2026-11-05 迁移审查 P1-3，江西 4.4 同款）：gdal2tiles
+    --processes=N 自带 multiprocessing 池——只 terminate 父 PID 会留下孤儿池
+    子进程继续切瓦片占 CPU/写盘。_run_gdal2tiles 以 start_new_session 启动，
+    这里 killpg 整组杀；进程已收尸/平台无 killpg（Windows 开发机）时回退单点。
+    """
+    import signal
+
+    def _kill_group_or_one(sig):
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except (AttributeError, ProcessLookupError, PermissionError):
+            # AttributeError=平台无 killpg；ProcessLookupError=组已无活进程
+            try:
+                process.send_signal(sig)
+            except (ProcessLookupError, OSError):
+                pass
+
+    _kill_group_or_one(signal.SIGTERM)
     try:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        process.kill()
+        _kill_group_or_one(signal.SIGKILL)
         process.wait(timeout=10)
 
 
@@ -221,7 +238,9 @@ def _run_gdal2tiles(job, resource, source, tile_dir, poll_seconds):
     except (TypeError, ValueError, json.JSONDecodeError):
         expected_tiles = 0
     next_progress_check = 0.0
-    process = subprocess.Popen(command, env=environment)
+    # start_new_session（2026-11-05 P1-3）：gdal2tiles 的 multiprocessing 池子进程
+    # 与本 worker 同组——取消时必须能整组回收（见 _terminate），否则池子进程孤儿化
+    process = subprocess.Popen(command, env=environment, start_new_session=True)
     while process.poll() is None:
         time.sleep(poll_seconds)
         db.session.expire(job)
