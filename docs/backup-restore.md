@@ -3,17 +3,28 @@
 ## 备份
 
 ```bash
-bash docker/backup_yunnan.sh              # 常规（不含模型权重）
-bash docker/backup_yunnan.sh --with-model # 含 9.5GB 权重
-bash docker/backup_yunnan.sh --keep 8     # 保留最近 8 份（默认 5）
+bash docker/backup_yunnan.sh                       # 常规（不含模型权重、不含可再生目录）
+bash docker/backup_yunnan.sh --with-regenerable    # 额外含 basemaps 源副本 + tiles 瓦片
+bash docker/backup_yunnan.sh --with-model          # 额外含 9.5GB 权重
+bash docker/backup_yunnan.sh --keep 5              # 保留最近 5 份（默认 3）
 ```
 
 产物在 `backups/yunnan_backup_<时间戳>/`：MySQL 逻辑备份（gzip）、
 `yunnan_backend_static` / `yunnan_miner_uploads` / `yunnan_miner_outputs` 三卷 tar、
-`project_storage` tar（不含 `incoming/dali` 离线底图 bind，主树 `maps/` 有原件）、
-`manifest.json`（git sha + 每个产物 sha256）。
+`project_storage` tar、`manifest.json`（git sha + 每个产物 sha256）。
 
-不含：`yunnan_hf_cache`（可重建）、`yunnan_inference_runtime`（任务暂存）。
+**默认排除（2026-11-06 首次实测 45GB 工作区后定的取舍）**：
+- `projects/*/basemaps/`——底图源副本，原件在主树 `maps/` 或 `incoming/`
+- `projects/*/tiles/`——瓦片金字塔，可由源影像重切恢复
+- `trash/`——已删项目暂存（实测 18GB），误删恢复走 trash API 三步流程，不靠备份
+- `incoming/dali`——离线底图 bind，主树 `maps/` 有原件
+- `yunnan_hf_cache`（可重建）、`yunnan_inference_runtime`（任务暂存）
+
+排除后单份约 12GB 量级（大头是上传原始影像卷 3.2GB + inputs 副本 + DB 485MB）；
+含 `--with-regenerable` 单份再增 20GB+，仅在源影像将不再保留时使用。
+**恢复默认备份后，basemap 需从 maps/ 重新导入、瓦片需重切**——恢复演练请把这一步计入时间。
+活栈运行时 tar 可能报"file changed as we read it"并提示告警（脚本已排除健康探针；
+产物仍可用），追求严格时点一致请在业务静默期执行。
 
 建议频率：每周一次 + 大批量数据导入/删除前临时一次。**送测/迁移前必做一次。**
 

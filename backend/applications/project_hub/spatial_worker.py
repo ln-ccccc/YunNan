@@ -241,7 +241,7 @@ def _run_gdal2tiles(job, resource, source, tile_dir, poll_seconds):
     # 任务 deadline（2026-11-05 生产化检查）：gdal2tiles 卡死（非取消）时轮询
     # 循环仍会刷新心跳，任务会永远 running——超时整组终止并落 failed。
     # 默认 6h（11GB 底图切片实测可达数小时）；--resume 使重提任务断点续切
-    job_deadline_seconds = max(60, int(os.getenv("SPATIAL_JOB_TIMEOUT_SECONDS", "21600")))
+    job_deadline_seconds = max(1, int(os.getenv("SPATIAL_JOB_TIMEOUT_SECONDS", "21600")))
     started_monotonic = time.monotonic()
     # start_new_session（2026-11-05 P1-3）：gdal2tiles 的 multiprocessing 池子进程
     # 与本 worker 同组——取消时必须能整组回收（见 _terminate），否则池子进程孤儿化

@@ -923,6 +923,130 @@ class TestSpatialTerminateKillsWholeProcessGroup(unittest.TestCase):
                     pass
 
 
+class TestSpatialJobDeadlineKillsHangingProcess(unittest.TestCase):
+    """切片任务 deadline（2026-11-05 生产化检查）：gdal2tiles 卡死（非取消）时
+    轮询循环仍会刷新心跳、任务永远 running——SPATIAL_JOB_TIMEOUT_SECONDS 超时后
+    必须整组终止（复用 _terminate 的 killpg）并抛 TimeoutError 落 failed。
+    真实三进程组验证（与 TestSpatialTerminateKillsWholeProcessGroup 同源教训：
+    mock 测不准进程组行为）。
+    """
+
+    HANG_SCRIPT = (
+        "import os, subprocess, sys\n"
+        "children = [subprocess.Popen(['sleep', '300']) for _ in range(2)]\n"
+        "print(f\"{os.getpid()},{children[0].pid},{children[1].pid}\", flush=True)\n"
+        "for child in children:\n"
+        "    child.wait()\n"
+    )
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+    def test_deadline_terminates_hanging_group_and_raises(self):
+        import subprocess as sp
+        import tempfile
+        import time as time_mod
+        import types
+        import unittest.mock as mock
+
+        from applications.project_hub import spatial_worker
+
+        real_popen = sp.Popen
+        spawned = []
+
+        def _fake_popen(_command, env, start_new_session):
+            handle = real_popen(
+                [sys.executable, "-c", self.HANG_SCRIPT],
+                stdout=sp.PIPE, text=True, start_new_session=True,
+            )
+            spawned.append(handle)
+            return handle
+
+        job_stub = types.SimpleNamespace(
+            cancel_requested=False, heartbeat_at=None, progress=0.0,
+        )
+        resource_stub = types.SimpleNamespace(
+            min_zoom=10, max_zoom=12, bounds_json="[[100.0, 25.0, 101.0, 26.0]]",
+        )
+        db_stub = types.SimpleNamespace(
+            session=types.SimpleNamespace(expire=lambda *_: None, commit=lambda: None),
+        )
+
+        try:
+            with mock.patch.dict(os.environ, {"SPATIAL_JOB_TIMEOUT_SECONDS": "1"}), \
+                    mock.patch.object(spatial_worker.subprocess, "Popen", side_effect=_fake_popen), \
+                    mock.patch.object(spatial_worker, "db", db_stub):
+                started = time_mod.monotonic()
+                with self.assertRaises(TimeoutError) as raised:
+                    spatial_worker._run_gdal2tiles(
+                        job_stub, resource_stub, Path("unused-source.tif"),
+                        Path(tempfile.mkdtemp(prefix="deadline-tiles-")), poll_seconds=0.05,
+                    )
+                elapsed = time_mod.monotonic() - started
+                self.assertIn("上限", str(raised.exception))
+                self.assertLess(elapsed, 30, "1s deadline 应快速触发，而不是等满真实切片时长")
+            self.assertTrue(spawned, "应真实拉起子进程（非 mock 空转）")
+            self.assertNotEqual(spawned[0].poll(), None,
+                                "deadline 路径必须经 _terminate 收口卡死进程（killpg 整组）")
+        finally:
+            for handle in spawned:
+                if handle.poll() is None:
+                    try:
+                        os.killpg(os.getpgid(handle.pid), 9)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        handle.kill()
+
+    def test_deadline_env_floor_allows_one_second(self):
+        """下限 1s：显式配置小值（测试/调试）不被 max(60) 钳住。"""
+        import tempfile
+        import types
+        import unittest.mock as mock
+
+        from applications.project_hub import spatial_worker
+
+        job_stub = types.SimpleNamespace(
+            cancel_requested=False, heartbeat_at=None, progress=0.0,
+        )
+        resource_stub = types.SimpleNamespace(
+            min_zoom=10, max_zoom=12, bounds_json="[[100.0, 25.0, 101.0, 26.0]]",
+        )
+        db_stub = types.SimpleNamespace(
+            session=types.SimpleNamespace(expire=lambda *_: None, commit=lambda: None),
+        )
+        import subprocess as sp
+        real_popen = sp.Popen
+        hang = real_popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True,
+        )
+        try:
+            def _fake_popen(_command, env, start_new_session):
+                return hang
+
+            with mock.patch.dict(os.environ, {"SPATIAL_JOB_TIMEOUT_SECONDS": "1"}), \
+                    mock.patch.object(spatial_worker.subprocess, "Popen", side_effect=_fake_popen), \
+                    mock.patch.object(spatial_worker, "db", db_stub):
+                import time as time_mod
+                started = time_mod.monotonic()
+                with self.assertRaises(TimeoutError):
+                    spatial_worker._run_gdal2tiles(
+                        job_stub, resource_stub, Path("unused.tif"),
+                        Path(tempfile.mkdtemp(prefix="deadline-floor-")), poll_seconds=0.05,
+                    )
+                self.assertLess(time_mod.monotonic() - started, 10)
+        finally:
+            try:
+                os.killpg(os.getpgid(hang.pid), 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                hang.kill()
+
+
 if __name__ == "__main__":
     unittest.main()
 
