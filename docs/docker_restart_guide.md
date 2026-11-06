@@ -225,3 +225,14 @@ docker system prune ...
 - **内存上限**：backend 3G / inference-worker 4.5G / mysql 1.75G / spatial-worker 2G / 前端类 768m / miner-api 512m——单容器失控不再拖垮全栈。
 - **备份**：`bash docker/backup_yunnan.sh`（详见 docs/backup-restore.md），每周与送测前必做。
 - **登录限速**：同一账号 15 分钟内 5 次失败锁定（进程内存计数，重启清零）。
+
+## 12. Docker vhdx 位置（2026-11-06 迁移，exFAT 教训）
+
+- Docker 数据盘实际位置：`D:\DockerDesktopWSL\disk\docker_data.vhdx`（约 60GB，NTFS），
+  `C:\Users\Administrator\AppData\Local\Docker\wsl\disk` 是指向它的 junction。
+- **F 盘是 exFAT，绝对不可放 WSL/Docker 的 vhdx**：WSL 官方仅支持 NTFS。历史上 vhdx
+  曾长期放在 F 盘 exFAT 上"凑合能跑"，2026-11-06 执行 `wsl --manage --set-sparse` 后
+  bootstrapper 即报 `CreateFile ... Incorrect function` 起不来——sparse 转换在 exFAT 上
+  做不干净。迁移到 D 盘 NTFS 后恢复，数据零丢失。
+- 附带卡点：Docker Desktop 拉不起 WSL 时先查 `Get-Service LxssManager` 是否 Stopped
+  （wsl --shutdown 后偶发不自动恢复），`Start-Service LxssManager` 后重启 Docker Desktop。
