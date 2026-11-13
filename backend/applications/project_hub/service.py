@@ -155,21 +155,94 @@ def list_projects(filters=None):
     return {"items": items, "count": len(items)}
 
 
+_PROJECT_NAME_MAX = 255
+_PROJECT_TEXT_MAX = 255
+_PROJECT_REMARK_MAX = 65535
+_PROJECT_YEAR_MIN = 1900
+_PROJECT_YEAR_MAX = 2100
+_PROJECT_MINES_MAX = 1000
+
+
+def _validated_optional_year(value, label):
+    """年份字段：可缺（None=草稿未填），出现即必须为 int（bool 排除）且范围合理。"""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label}必须为整数年份")
+    if not (_PROJECT_YEAR_MIN <= value <= _PROJECT_YEAR_MAX):
+        raise ValueError(f"{label}超出合理范围（{_PROJECT_YEAR_MIN}-{_PROJECT_YEAR_MAX}）")
+    return value
+
+
+def _validated_project_fields(payload):
+    """create/update 共用的字段校验（2026-11-14 审查问题22）：草稿字段可缺，
+    但出现即必须类型正确——返回归一化后的可写字段 dict，不包含未出现的字段。"""
+    fields = {}
+    if "name" in payload:
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("项目名称不能为空")
+        name = name.strip()
+        if len(name) > _PROJECT_NAME_MAX:
+            raise ValueError(f"项目名称长度不能超过 {_PROJECT_NAME_MAX} 字符")
+        fields["name"] = name
+    for field, label in (("region", "区域"), ("manager", "负责人")):
+        if field in payload:
+            value = payload.get(field)
+            if value is not None:
+                if not isinstance(value, str):
+                    raise ValueError(f"{label}必须为字符串")
+                value = value.strip() or None
+                if value is not None and len(value) > _PROJECT_TEXT_MAX:
+                    raise ValueError(f"{label}长度不能超过 {_PROJECT_TEXT_MAX} 字符")
+            fields[field] = value
+    if "remark" in payload:
+        value = payload.get("remark")
+        if value is not None:
+            if not isinstance(value, str):
+                raise ValueError("备注必须为字符串")
+            if len(value) > _PROJECT_REMARK_MAX:
+                raise ValueError(f"备注长度不能超过 {_PROJECT_REMARK_MAX} 字符")
+        fields["remark"] = value
+    for field, label in (
+        ("monitor_start_year", "监测起始年份"),
+        ("monitor_end_year", "监测结束年份"),
+    ):
+        if field in payload:
+            fields[field] = _validated_optional_year(payload.get(field), label)
+    return fields
+
+
+def _validated_mine_fid(value):
+    """FID 校验：int（bool 排除）；纯数字字符串保留兼容（推理接口 mine_fids 同款）。"""
+    if isinstance(value, bool):
+        raise ValueError("矿山 FID 必须为整数")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    raise ValueError("矿山 FID 必须为整数")
+
+
 def create_project(payload, actor="system"):
-    name = str(payload.get("name") or "").strip()
-    if not name:
+    fields = _validated_project_fields(payload)
+    if "name" not in fields:
         raise ValueError("项目名称不能为空")
     status = str(payload.get("status") or "draft").strip()
     if status not in ALLOWED_PROJECT_STATUSES:
         raise ValueError("项目状态不合法")
+    start = fields.get("monitor_start_year")
+    end = fields.get("monitor_end_year")
+    if start is not None and end is not None and start > end:
+        raise ValueError("监测起始年份不能晚于结束年份")
     project = Project(
-        name=name,
-        region=str(payload.get("region") or "").strip() or None,
-        manager=str(payload.get("manager") or "").strip() or None,
-        remark=str(payload.get("remark") or "").strip() or None,
+        name=fields["name"],
+        region=fields.get("region"),
+        manager=fields.get("manager"),
+        remark=fields.get("remark"),
         status=status,
-        monitor_start_year=payload.get("monitor_start_year"),
-        monitor_end_year=payload.get("monitor_end_year"),
+        monitor_start_year=start,
+        monitor_end_year=end,
     )
     db.session.add(project)
     db.session.flush()
@@ -186,14 +259,18 @@ def create_project(payload, actor="system"):
 
 def update_project(project_id, payload, actor="system"):
     project = _get_project_or_404(project_id)
-    for field in ("name", "region", "manager", "remark", "monitor_start_year", "monitor_end_year"):
-        if field in payload:
-            setattr(project, field, payload.get(field))
+    fields = _validated_project_fields(payload)
     if "status" in payload:
         status = str(payload.get("status") or "").strip()
         if status not in ALLOWED_PROJECT_STATUSES:
             raise ValueError("项目状态不合法")
-        project.status = status
+        fields["status"] = status
+    start = fields["monitor_start_year"] if "monitor_start_year" in fields else project.monitor_start_year
+    end = fields["monitor_end_year"] if "monitor_end_year" in fields else project.monitor_end_year
+    if start is not None and end is not None and start > end:
+        raise ValueError("监测起始年份不能晚于结束年份")
+    for field, value in fields.items():
+        setattr(project, field, value)
     _append_activity(
         project.id,
         "project_updated",
@@ -207,13 +284,20 @@ def update_project(project_id, payload, actor="system"):
 
 def replace_project_mines(project_id, mines, actor="system"):
     project = _get_project_or_404(project_id)
-    mines = mines or []
+    if mines is None:
+        mines = []
+    if not isinstance(mines, list):
+        raise ValueError("矿山列表必须为数组")
+    if len(mines) > _PROJECT_MINES_MAX:
+        raise ValueError(f"矿山绑定数量不能超过 {_PROJECT_MINES_MAX} 条")
     project.mines[:] = []
     db.session.flush()
     for item in mines:
+        if not isinstance(item, dict):
+            raise ValueError("矿山绑定项必须为对象")
         project.mines.append(
             ProjectMineBinding(
-                mine_fid=int(item["mine_fid"]),
+                mine_fid=_validated_mine_fid(item.get("mine_fid")),
                 mine_name_snapshot=str(item.get("mine_name_snapshot") or "").strip() or None,
                 city_snapshot=str(item.get("city_snapshot") or "").strip() or None,
                 area_snapshot=item.get("area_snapshot"),

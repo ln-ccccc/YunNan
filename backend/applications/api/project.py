@@ -233,8 +233,13 @@ def project_list_api():
 @project_api.post("")
 @login_required
 def project_create_api():
+    payload, error = _json_object_payload()
+    if error is not None:
+        return error
     try:
-        return success_api(data=create_project(request.json or {}, actor=_request_actor()))
+        return success_api(data=create_project(payload, actor=_request_actor()))
+    except ValueError as exc:
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         return _project_hub_failure_response(exc, "项目创建失败")
 
@@ -278,10 +283,15 @@ def project_detail_api(project_id):
 @project_api.patch("/<int:project_id>")
 @login_required
 def project_update_api(project_id):
+    payload, error = _json_object_payload()
+    if error is not None:
+        return error
     try:
         return success_api(
-            data=update_project(project_id, request.json or {}, actor=_request_actor())
+            data=update_project(project_id, payload, actor=_request_actor())
         )
+    except ValueError as exc:
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         return _project_hub_failure_response(exc, "项目更新失败", project_id)
 
@@ -289,14 +299,19 @@ def project_update_api(project_id):
 @project_api.put("/<int:project_id>/mines")
 @login_required
 def project_replace_mines_api(project_id):
+    payload, error = _json_object_payload()
+    if error is not None:
+        return error
     try:
         return success_api(
             data=replace_project_mines(
                 project_id,
-                (request.json or {}).get("mines") or [],
+                payload.get("mines") or [],
                 actor=_request_actor(),
             )
         )
+    except ValueError as exc:
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         return _project_hub_failure_response(exc, "矿山绑定更新失败", project_id)
 
