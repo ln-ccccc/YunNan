@@ -216,40 +216,48 @@ def upload_session_complete_api(session_id):
     dest_path = upload_root / f"{uuid.uuid4()}{suffix}"
 
     # done 幂等：complete 成功过（响应丢失/批次重试/双标签并发）直接复用上次结果，
-    # 不重新合并、不重复入库（2026-09-22 数据流审查 P1）
-    existing_result = upload_sessions.session_is_done(session_id)
-    if existing_result is not None:
-        return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': existing_result})
-
+    # 不重新合并、不重复入库（2026-09-22 数据流审查 P1）。
+    # 整段持会话锁（问题12，2026-11-14 审查）：多 Gunicorn worker / 双标签页并发
+    # complete 串行化——两方同时看到"未 done"而各自合并入库重复建 Photo 的窗口
+    # 关闭；第二者在锁内必然看到 done 并复用上次结果
     try:
-        upload_sessions.assemble_session(session_id, dest_path)
-        upload_results = upload_curd.upload_one_from_path(
-            str(dest_path),
-            session['filename'],
-            payload.get('mime') or 'image/tiff',
-            type_=type_,
-            enable_slicing=is_slice,
-            keep_tiff_raw=keep_raw_tiff,
-        )
-    except upload_sessions.UploadSessionError as error:
-        dest_path.unlink(missing_ok=True)
-        return fail_api(str(error)), 400
-    except ValueError as error:
-        dest_path.unlink(missing_ok=True)
-        return fail_api(str(error))
-    except Exception as error:
-        dest_path.unlink(missing_ok=True)
-        return business_or_server_failure(error, "文件上传失败", logger=LOGGER)
+        with upload_sessions.session_lock(session_id):
+            existing_result = upload_sessions.session_is_done(session_id)
+            if existing_result is not None:
+                return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': existing_result})
 
-    data = []
-    for file_url, photo_id, display_name, raw_tiff_path in upload_results:
-        data.append({
-            'src': file_url,
-            'filename': display_name,
-            'photo_id': photo_id,
-            'raw_tiff_path': raw_tiff_path,
-        })
-    # 成功后写完成态而非删目录（幂等；过期由 sweep 清理）
-    upload_sessions.mark_session_done(session_id, data)
-    return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': data})
+            try:
+                upload_sessions.assemble_session(session_id, dest_path)
+                upload_results = upload_curd.upload_one_from_path(
+                    str(dest_path),
+                    session['filename'],
+                    payload.get('mime') or 'image/tiff',
+                    type_=type_,
+                    enable_slicing=is_slice,
+                    keep_tiff_raw=keep_raw_tiff,
+                )
+            except upload_sessions.UploadSessionError as error:
+                dest_path.unlink(missing_ok=True)
+                return fail_api(str(error)), 400
+            except ValueError as error:
+                dest_path.unlink(missing_ok=True)
+                return fail_api(str(error))
+            except Exception as error:
+                dest_path.unlink(missing_ok=True)
+                return business_or_server_failure(error, "文件上传失败", logger=LOGGER)
+
+            data = []
+            for file_url, photo_id, display_name, raw_tiff_path in upload_results:
+                data.append({
+                    'src': file_url,
+                    'filename': display_name,
+                    'photo_id': photo_id,
+                    'raw_tiff_path': raw_tiff_path,
+                })
+            # 成功后写完成态而非删目录（幂等；过期由 sweep 清理）。
+            # 仍在锁内：释放锁与写 done 之间的空档会让并发方重复合并入库
+            upload_sessions.mark_session_done(session_id, data)
+            return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': data})
+    except upload_sessions.UploadSessionError as error:
+        return fail_api(str(error)), 400
 

@@ -13,8 +13,10 @@
   "分块 + 组装副本 + 最终副本" 的三倍磁盘峰值。
 - 每次 init 顺带清扫超过 STALE_DAYS 的陈旧会话，防暂存目录无界增长。
 """
+import contextlib
 import hashlib
 import json
+import os
 import re
 import shutil
 import time
@@ -195,43 +197,114 @@ def session_state(session_id: str) -> dict:
 
 
 def write_chunk(session_id: str, index: int, stream, declared_sha256=None, owner=None) -> int:
-    state = _load_session(session_id)
-    _ensure_session_owner(state, owner)
-    index = int(index)
-    expected = _expected_chunk_size(state, index)
-    session_dir = _session_dir(session_id)
-    # tmp 名带唯一后缀：abort 后重试与旧连接的残留写各不相扰，rename 原子落位
-    tmp_path = session_dir / f".chunk_{index}.{uuid.uuid4().hex}.bin.tmp"
-    digest = hashlib.sha256()
-    written = 0
+    # 持锁写块（问题12）：complete 持锁写 done 与本函数持锁写块串行化后，
+    # 关闭"迟到分块把 done 状态用旧 state 写回覆盖"的窗口
+    with session_lock(session_id):
+        state = _load_session(session_id)
+        _ensure_session_owner(state, owner)
+        if state.get("done"):
+            raise UploadSessionError("上传已完成，分块写入被拒绝；请刷新页面查看上传结果")
+        index = int(index)
+        expected = _expected_chunk_size(state, index)
+        session_dir = _session_dir(session_id)
+        # tmp 名带唯一后缀：abort 后重试与旧连接的残留写各不相扰，rename 原子落位
+        tmp_path = session_dir / f".chunk_{index}.{uuid.uuid4().hex}.bin.tmp"
+        digest = hashlib.sha256()
+        written = 0
+        try:
+            with tmp_path.open("wb") as out:
+                while True:
+                    block = stream.read(1024 * 1024)
+                    if not block:
+                        break
+                    written += len(block)
+                    if written > expected:
+                        raise UploadSessionError(
+                            f"分块 {index} 超出预期大小（{written} > {expected} 字节），请检查文件是否已变化"
+                        )
+                    digest.update(block)
+                    out.write(block)
+            if written != expected:
+                raise UploadSessionError(
+                    f"分块 {index} 大小不符（收到 {written}，预期 {expected} 字节）"
+                )
+            if declared_sha256 and digest.hexdigest() != str(declared_sha256).lower():
+                raise UploadSessionError(f"分块 {index} 校验和不匹配，请重传该分块")
+            tmp_path.replace(session_dir / f"chunk_{index}.bin")
+        except UploadSessionError:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        except OSError as error:
+            tmp_path.unlink(missing_ok=True)
+            raise UploadSessionError(f"分块写入失败: {error}") from error
+        _save_session(session_dir, state)
+        return written
+
+
+def _try_lock_fd(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_fd(fd: int) -> None:
     try:
-        with tmp_path.open("wb") as out:
-            while True:
-                block = stream.read(1024 * 1024)
-                if not block:
-                    break
-                written += len(block)
-                if written > expected:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path, timeout: float):
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                _try_lock_fd(fd)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
                     raise UploadSessionError(
-                        f"分块 {index} 超出预期大小（{written} > {expected} 字节），请检查文件是否已变化"
+                        f"上传会话正被其他请求处理，已等待 {int(timeout)} 秒未获得锁，请稍后重试"
                     )
-                digest.update(block)
-                out.write(block)
-        if written != expected:
-            raise UploadSessionError(
-                f"分块 {index} 大小不符（收到 {written}，预期 {expected} 字节）"
-            )
-        if declared_sha256 and digest.hexdigest() != str(declared_sha256).lower():
-            raise UploadSessionError(f"分块 {index} 校验和不匹配，请重传该分块")
-        tmp_path.replace(session_dir / f"chunk_{index}.bin")
-    except UploadSessionError:
-        tmp_path.unlink(missing_ok=True)
-        raise
-    except OSError as error:
-        tmp_path.unlink(missing_ok=True)
-        raise UploadSessionError(f"分块写入失败: {error}") from error
-    _save_session(session_dir, state)
-    return written
+                time.sleep(0.05)
+        yield
+    finally:
+        try:
+            _unlock_fd(fd)
+        finally:
+            os.close(fd)
+
+
+def session_lock(session_id: str, timeout: float = 600.0):
+    """会话级跨进程互斥锁（问题12，2026-11-14 审查）。
+
+    生产环境是多个 Gunicorn worker 进程，threading.Lock 挡不住跨进程的
+    并发 complete/write_chunk；这里用会话目录内 .lock 文件的 OS 文件锁
+    （flock / msvcrt.locking），锁挂在 fd 上，持有进程崩溃由内核释放，
+    不留死锁。complete 全程持锁，write_chunk 短持锁后释放。
+    """
+    session_dir = _session_dir(session_id)
+    if not session_dir.is_dir():
+        # 不存在的会话按 _load_session 的口径报错，而不是留下空目录
+        _load_session(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+    return _file_lock(session_dir / ".lock", timeout)
 
 
 def _ensure_session_owner(state: dict, owner) -> None:
