@@ -1,47 +1,38 @@
 import express from 'express';
-import fs from 'fs';
-import path from 'path';
 
-// 1×1 透明 PNG：底图锯齿边缘在 bbox 内但磁盘无瓦片的格子以 200+透明回给，
-// 消除整屏 404 控制台噪音（业界惯例，MapLibre#1845/OSM 同做法）。
-// 仅当该 zoom 目录存在（=资源确实切到此级）时兜底；zoom 目录或 .active
-// 缺失仍 404——资源级异常不被透明瓦片掩盖（R3 瓦片巡检语义不变）。
-const TRANSPARENT_TILE_PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-  'base64'
-);
-
-export function createTileRoutes({ projectStorageRoot }) {
+// 2026-11-14 审查问题29：BFF 瓦片路由改为纯传输层——转发 Flask
+// /api/projects/<id>/map-resources/<rid>/tiles/<z>/<x>/<y>.png。
+// 激活判定（DB status）、锯齿边缺格透明兜底（zoom 目录存在 → 1×1 透明 +
+// max-age=60）、真实瓦片长缓存（max-age=86400）等业务与缓存语义全部在后端；
+// BFF 不读 project_storage、不判断 .active 标记，存储结构变化不再牵动 Node 侧。
+// 鉴权双保险：本路由挂 authGuard（会话经 Flask 校验），转发携带 cookie，
+// 后端 @login_required 兜底。
+export function createTileRoutes({ backendBaseUrl, fetchImpl = globalThis.fetch }) {
   const router = express.Router();
   // projectId/resourceId 为可枚举数字，调用方必须挂 authGuard：
   // 裸路由会被未登录客户端整库拉取底图（2026-09-20 审查 P1）
-  router.get('/projects/:projectId/:resourceId/:z/:x/:y.png', (req, res) => {
+  router.get('/projects/:projectId/:resourceId/:z/:x/:y.png', async (req, res) => {
     const segments = ['projectId', 'resourceId', 'z', 'x', 'y'].map((key) => String(req.params[key] || ''));
     if (!segments.every((value) => /^\d+$/.test(value))) {
       return res.status(400).json({ error: 'Invalid tile path' });
     }
     const [projectId, resourceId, z, x, y] = segments;
-    const tileRoot = path.resolve(projectStorageRoot, 'projects', projectId, 'tiles', resourceId);
-    if (!fs.existsSync(path.join(tileRoot, '.active'))) {
-      return res.status(404).json({ error: 'Project basemap is not active' });
-    }
-    const zoomDir = path.join(tileRoot, z);
-    const tilePath = path.resolve(zoomDir, x, `${y}.png`);
-    if (!tilePath.startsWith(`${tileRoot}${path.sep}`)) {
-      return res.status(400).json({ error: 'Invalid tile path' });
-    }
-    if (!fs.existsSync(tilePath)) {
-      if (!fs.existsSync(zoomDir)) {
-        return res.status(404).json({ error: 'Project tile not found' });
+    try {
+      const upstream = await fetchImpl(
+        `${backendBaseUrl}/api/projects/${projectId}/map-resources/${resourceId}/tiles/${z}/${x}/${y}.png`,
+        { headers: { cookie: req.headers.cookie || '' } }
+      );
+      const contentType = upstream.headers.get('content-type');
+      const cacheControl = upstream.headers.get('cache-control');
+      if (contentType) res.set('Content-Type', contentType);
+      if (cacheControl) res.set('Cache-Control', cacheControl);
+      return res.status(upstream.status).send(Buffer.from(await upstream.arrayBuffer()));
+    } catch (error) {
+      console.error('[tiles] 后端瓦片转发失败:', error?.message || error);
+      if (!res.headersSent) {
+        return res.status(502).json({ error: '瓦片服务暂时不可用，请稍后重试' });
       }
-      // 透明兜底只缓存 60s（2026-11-05 生产化检查，迁移审查 P2-1）：此前钉 24h，
-      // 底图重切修复后旧浏览器仍显示透明一天；真实瓦片长缓存见下方 sendFile
-      res.set('Cache-Control', 'public, max-age=60');
-      res.set('Content-Type', 'image/png');
-      return res.status(200).end(TRANSPARENT_TILE_PNG);
     }
-    res.set('Cache-Control', 'public, max-age=86400');
-    return res.sendFile(tilePath);
   });
   return router;
 }

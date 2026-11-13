@@ -220,7 +220,8 @@ class TestTileOverZoomTransparentFallback(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json()["data"]["id"]
 
-    def test_over_max_zoom_returns_transparent_png(self):
+    def _seed_active_basemap(self):
+        """造一个 min10/max12 的激活底图，z=12/x=3400 只有 1600.png 一格瓦片。"""
         from applications.models import ProjectSpatialResource
 
         project_id = self._create_project()
@@ -241,6 +242,10 @@ class TestTileOverZoomTransparentFallback(unittest.TestCase):
         ))
         db.session.commit()
         resource = ProjectSpatialResource.query.filter_by(project_id=project_id).first()
+        return project_id, resource
+
+    def test_over_max_zoom_returns_transparent_png(self):
+        project_id, resource = self._seed_active_basemap()
 
         real = self.client.get(
             f"/api/projects/{project_id}/map-resources/{resource.id}/tiles/12/3400/1600.png"
@@ -266,6 +271,38 @@ class TestTileOverZoomTransparentFallback(unittest.TestCase):
             f"/api/projects/{project_id}/map-resources/999999/tiles/13/3400/1600.png"
         )
         self.assertEqual(missing.status_code, 404)
+
+    def test_zoom_dir_exists_missing_tile_returns_transparent_short_cache(self):
+        """锯齿边缺格但 zoom 目录存在 → 200 透明 + 短缓存（对齐 BFF J-1 兜底，
+        2026-11-14 审查问题29：瓦片语义收敛到后端，BFF 改纯转发后此语义归 Flask）。"""
+        project_id, resource = self._seed_active_basemap()
+
+        missing_tile = self.client.get(
+            f"/api/projects/{project_id}/map-resources/{resource.id}/tiles/12/3400/1599.png"
+        )
+        self.assertEqual(missing_tile.status_code, 200, missing_tile.data[:40])
+        self.assertEqual(missing_tile.headers["Content-Type"], "image/png")
+        self.assertTrue(missing_tile.data.startswith(b"\x89PNG"))
+        # 透明兜底只短缓存：底图重切修复后旧浏览器不被钉一天（BFF 同款 P2-1 语义）
+        self.assertIn("max-age=60", missing_tile.headers.get("Cache-Control", ""))
+
+        # zoom 目录整体缺失仍是 404——资源级异常不被透明瓦片掩盖
+        # （z=11 在 min/max 范围内但未切级；对齐旧 BFF"仅该 zoom 目录存在才兜底"）
+        no_zoom_dir = self.client.get(
+            f"/api/projects/{project_id}/map-resources/{resource.id}/tiles/11/3400/1600.png"
+        )
+        self.assertEqual(no_zoom_dir.status_code, 404)
+
+    def test_real_tile_sets_long_cache_header(self):
+        """真实瓦片显式长缓存（对齐 BFF max-age=86400；缺省 send_from_directory
+        无 max-age，浏览器每次重验）。"""
+        project_id, resource = self._seed_active_basemap()
+
+        real = self.client.get(
+            f"/api/projects/{project_id}/map-resources/{resource.id}/tiles/12/3400/1600.png"
+        )
+        self.assertEqual(real.status_code, 200)
+        self.assertIn("max-age=86400", real.headers.get("Cache-Control", ""))
 
 
 if __name__ == "__main__":

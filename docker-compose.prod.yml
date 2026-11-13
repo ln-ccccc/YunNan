@@ -161,12 +161,11 @@ services:
       - ./miner/NDWI_by_fid_2year_avg.xlsx:/app/miner/NDWI_by_fid_2year_avg.xlsx:ro
       - ./miner/NDSI_by_fid_2year_avg.xlsx:/app/miner/NDSI_by_fid_2year_avg.xlsx:ro
       - miner-outputs:/app/miner/change_matrix_outputs
-      - miner-uploads:/app/miner/uploads
       - backend-static:/app/backend/static
       - hf-cache:/root/.cache/huggingface
-      # 只读保持（2026-10-31 架构审查）：底图上传由 BFF 流式转发到后端权威端点
-      # 落盘，BFF 不落盘业务数据（受控存储接口归后端）
-      - ./project_storage:/project_storage:ro
+      # BFF 零磁盘依赖（2026-10-31 底图上传转发 + 2026-11-14 审查问题29 瓦片
+      # 转发与 KML 死端点删除）：不挂 project_storage 与 miner-uploads，
+      # 存储/激活规则变化只需改后端
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/auth/session >/dev/null || exit 1"]
       interval: 30s
