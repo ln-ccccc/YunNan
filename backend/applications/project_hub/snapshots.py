@@ -387,10 +387,9 @@ def import_backup_manifest(project_id, manifest, actor="system"):
     except Exception:
         db.session.rollback()
         raise
-    # overview 装配在 service 层；延迟 import 避免循环（H3 拆分边界）
-    from applications.project_hub.service import get_project_overview
-
-    return get_project_overview(project.id)
+    # 快照域只返回标识符，overview 由 API/装配层读取（2026-11-14 审查问题28：
+    # 拆掉 snapshots→service 延迟导入环）
+    return {"project_id": project.id}
 
 def restore_backup(project_id, backup_id, actor="system"):
     project = _get_project_or_404(project_id)
@@ -485,7 +484,6 @@ def restore_backup(project_id, backup_id, actor="system"):
     except Exception:
         db.session.rollback()
         raise
-    # overview 装配在 service 层；延迟 import 避免循环（H3 拆分边界）
-    from applications.project_hub.service import get_project_overview
-
-    return get_project_overview(project.id)
+    # 快照域只返回标识符，overview 由 API/装配层读取（2026-11-14 审查问题28：
+    # 拆掉 snapshots→service 延迟导入环）
+    return {"project_id": project.id, "backup_id": backup.id}

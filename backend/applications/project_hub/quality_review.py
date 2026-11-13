@@ -13,64 +13,16 @@
 - 复核对象优先 current（人工修订后）矢量，为空回落 auto，两者皆空
   （vector_failed 等）返回零值报告而非报错。
 """
-import math
 from datetime import datetime, timezone
 
 from applications.common.utils.utc_time import to_utc_z
+from applications.project_hub._geometry import geometry_area_m2, ring_area_m2
 
 DEFAULT_SMALL_AREA_THRESHOLD_M2 = 100.0
 MAX_SMALL_AREA_THRESHOLD_M2 = 1_000_000.0
 MAX_SUSPECTS = 200
 
-_SPHERE_RADIUS_M = 6371008.8
-
 _AREA_PROPERTY_ALIASES = ("area", "TBTYMJ_1", "TBTYMJ")
-
-
-def ring_area_m2(ring):
-    """单环球面面积（m²，带符号：逆时针为正）。重复首尾点与单点环按 0 处理。"""
-    if not ring or len(ring) < 3:
-        return 0.0
-    total = 0.0
-    prev_lon = None
-    prev_lat = None
-    first_lon = None
-    first_lat = None
-    for point in ring:
-        try:
-            lon = math.radians(float(point[0]))
-            lat = math.radians(float(point[1]))
-        except (TypeError, ValueError, IndexError):
-            return 0.0
-        if prev_lon is not None:
-            total += (lon - prev_lon) * (2.0 + math.sin(prev_lat) + math.sin(lat))
-        else:
-            first_lon, first_lat = lon, lat
-        prev_lon, prev_lat = lon, lat
-    if prev_lon is not None and first_lon is not None:
-        total += (first_lon - prev_lon) * (2.0 + math.sin(prev_lat) + math.sin(first_lat))
-    return total * _SPHERE_RADIUS_M * _SPHERE_RADIUS_M / 2.0
-
-
-def geometry_area_m2(geometry):
-    """GeoJSON Polygon/MultiPolygon 绝对面积（m²，外环减内环，环方向不敏感）。"""
-    if not isinstance(geometry, dict):
-        return 0.0
-    geom_type = geometry.get("type")
-    if geom_type == "Polygon":
-        rings = [geometry.get("coordinates") or []]
-    elif geom_type == "MultiPolygon":
-        rings = geometry.get("coordinates") or []
-    else:
-        return 0.0
-    total = 0.0
-    for polygon in rings:
-        if not polygon:
-            continue
-        exterior = abs(ring_area_m2(polygon[0]))
-        holes = sum(abs(ring_area_m2(ring)) for ring in polygon[1:])
-        total += max(exterior - holes, 0.0)
-    return total
 
 
 def _ring_centroid(ring):

@@ -10,13 +10,13 @@ import time
 from pathlib import Path
 
 from applications.extensions import db
-from applications.models.project import ProjectActivityLog
 from applications.models.project_spatial import ProjectSpatialJob, ProjectSpatialResource
 
 logger = logging.getLogger(__name__)
 
-# 激活新底图时保留的历史底图数量（不含当前激活的那一张）
-RETAINED_BASEMAP_KEEP = 2
+# 底图激活状态机归空间领域服务（2026-11-14 审查问题28：拆掉 service 对 worker
+# 的反向延迟导入），worker 只调用；方向固定 worker→service
+from applications.project_hub.spatial_service import activate_basemap
 from applications.project_hub.spatial_storage import ensure_storage_layout, resolve_storage_path
 
 
@@ -118,19 +118,6 @@ def claim_next_job(worker_id):
                 resource.status = "processing"
                 db.session.commit()
             return job
-
-
-def _activity(project_id, event_type, payload, actor="system"):
-    import json
-
-    db.session.add(
-        ProjectActivityLog(
-            project_id=project_id,
-            event_type=event_type,
-            actor=actor or "system",
-            payload_json=json.dumps(payload, ensure_ascii=False),
-        )
-    )
 
 
 def _atomic_copy2(source, target):
@@ -269,74 +256,6 @@ def _run_gdal2tiles(job, resource, source, tile_dir, poll_seconds):
         raise RuntimeError(f"gdal2tiles 失败，退出码 {process.returncode}")
 
 
-def _activate_basemap(job, resource, storage_root, actor="system"):
-    """底图激活状态机唯一真源：互斥下线旧 active → 置 succeeded → 写新 .active
-    标记 → commit（失败回滚标记）→ commit 成功后才删旧标记与超量历史目录。
-    切片 worker 与瓦片集直挂登记（spatial_service.register_basemap_tileset）
-    共用，勿在本函数外复制此流程。"""
-    previous_active = ProjectSpatialResource.query.filter_by(
-        project_id=resource.project_id,
-        resource_type="basemap",
-        status="active",
-    ).all()
-    for previous in previous_active:
-        previous.status = "retained"
-    resource.status = "active"
-    resource.error_message = None
-    job.status = "succeeded"
-    job.stage = "completed"
-    job.progress = 100.0
-    job.heartbeat_at = datetime.datetime.now()
-    retained = (
-        ProjectSpatialResource.query.filter_by(
-            project_id=resource.project_id,
-            resource_type="basemap",
-            status="retained",
-        )
-        .order_by(ProjectSpatialResource.version.desc())
-        .all()
-    )
-    obsolete_dirs = []
-    previous_markers = []
-    for previous in previous_active:
-        if previous.tile_path:
-            previous_markers.append(resolve_storage_path(storage_root, previous.tile_path) / ".active")
-    # 历史底图保护：只清理超出保留数量的最旧资源，保留最近 2 个历史底图。
-    # 原逻辑 retained[1:] 会在每次激活时把更早的历史底图连库记录、原图与瓦片
-    # 一起永久删除——生产上 10GB 级原图被静默清除是事故（2026-09-09 上线前实测）。
-    for obsolete in retained[RETAINED_BASEMAP_KEEP:]:
-        obsolete_dirs.extend(
-            [
-                storage_root / "projects" / str(obsolete.project_id) / "basemaps" / str(obsolete.id),
-                storage_root / "projects" / str(obsolete.project_id) / "tiles" / str(obsolete.id),
-            ]
-        )
-        _activity(
-            resource.project_id,
-            "spatial_resource_removed",
-            {"resource_id": obsolete.id, "resource_type": "basemap", "version": obsolete.version},
-            actor=actor,
-        )
-        db.session.delete(obsolete)
-    _activity(
-        resource.project_id,
-        "spatial_resource_activated",
-        {"resource_id": resource.id, "resource_type": "basemap", "version": resource.version},
-        actor=actor,
-    )
-    active_marker = resolve_storage_path(storage_root, resource.tile_path) / ".active"
-    active_marker.write_text(str(resource.id), encoding="ascii")
-    try:
-        db.session.commit()
-    except Exception:
-        active_marker.unlink(missing_ok=True)
-        raise
-    for marker in previous_markers:
-        marker.unlink(missing_ok=True)
-    for obsolete_dir in obsolete_dirs:
-        shutil.rmtree(obsolete_dir, ignore_errors=True)
-
-
 def process_job(job, poll_seconds=1.0):
     resource = ProjectSpatialResource.query.filter_by(id=job.resource_id, project_id=job.project_id).first()
     if resource is None:
@@ -352,7 +271,7 @@ def process_job(job, poll_seconds=1.0):
         _run_gdal2tiles(job, resource, source, tile_dir, poll_seconds)
         if not any(tile_dir.rglob("*.png")):
             raise RuntimeError("切片完成但未生成 PNG 瓦片")
-        _activate_basemap(job, resource, storage_root)
+        activate_basemap(job, resource, storage_root)
     except InterruptedError as exc:
         job.status = "cancelled"
         job.stage = "cancelled"
