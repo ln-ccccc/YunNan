@@ -35,6 +35,7 @@ from applications.project_hub.service import (
     create_export,
     create_project,
     delete_project,
+    ProjectUndeleteNotAllowed,
     get_project_assets,
     get_project_detail,
     get_project_overview,
@@ -46,6 +47,7 @@ from applications.project_hub.service import (
     replace_project_mines,
     restore_backup,
     restore_project,
+    undelete_project,
     update_project,
 )
 from applications.project_hub.spatial_service import (
@@ -833,6 +835,25 @@ def project_dataset_create_api(project_id):
         return fail_api(str(exc))
     except Exception as exc:
         return _project_hub_failure_response(exc, "影像登记失败", project_id)
+
+
+@project_api.post("/<int:project_id>/undelete")
+@login_required
+def project_undelete_api(project_id):
+    """从回收站恢复已删除项目（问题14 第一阶段：运维恢复接口）。
+
+    trash 目录按删除事件持久化位置移回 + 软删位清除；与 POST /restore
+    （归档→active）是不同通道：undelete 只回到 archived。文档见
+    development_guide.md 回收站恢复一节。
+    """
+    try:
+        return success_api(data=undelete_project(project_id, actor=_request_actor()))
+    except ProjectUndeleteNotAllowed as exc:
+        return fail_api(str(exc), status=409)
+    except ValueError as exc:
+        return fail_api(str(exc), status=404)
+    except Exception as exc:
+        return business_or_server_failure(exc, "项目恢复失败", logger=LOGGER)
 
 
 @project_api.get("/<int:project_id>/timeline")
