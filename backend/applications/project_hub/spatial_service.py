@@ -17,6 +17,9 @@ from applications.project_hub.spatial_storage import ensure_storage_layout, reso
 
 
 MAX_MINE_VECTOR_BYTES = 50 * 1024 * 1024
+# 历史边界保留策略：与底图 RETAINED_BASEMAP_KEEP 对齐保留最近 2 个；
+# 被活动任务引用的版本另行保护（见 _active_job_referenced_mine_resource_ids）
+RETAINED_MINE_VECTOR_KEEP = 2
 SUPPORTED_MINE_EXTENSIONS = {".geojson", ".json", ".kml"}
 FIELD_CANDIDATES = {
     "fid": ("FID_1", "FID", "OBJECTID", "id"),
@@ -315,6 +318,35 @@ def _activity(
     )
 
 
+def _active_job_referenced_mine_resource_ids(project_id):
+    """queued/running 推理任务引用的矿山边界资源 ID（问题6）：任务 payload
+    绑定了具体 mine_resource_id 与边界文件路径，被引用的版本清理时必须保留，
+    否则连续导入新边界会把排队/运行中任务的输入静默删除。"""
+    from applications.models.inference_job import InferenceJob
+
+    referenced = set()
+    jobs = InferenceJob.query.filter_by(project_id=int(project_id)).filter(
+        InferenceJob.status.in_(("queued", "running"))
+    )
+    for job in jobs:
+        payload = job.request_payload_json
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                continue
+        if not isinstance(payload, dict):
+            continue
+        resource_id = payload.get("mine_resource_id")
+        if isinstance(resource_id, int):
+            referenced.add(resource_id)
+        # 旧 payload 兜底：kml_path 形如 .../mines/<resource_id>/mines.geojson
+        match = re.search(r"[\\/]mines[\\/]([0-9]+)[\\/]", str(payload.get("kml_path") or ""))
+        if match:
+            referenced.add(int(match.group(1)))
+    return referenced
+
+
 def _editable_project(project_id):
     project = Project.query.filter_by(id=project_id, deleted_at=None).first()
     if project is None:
@@ -397,7 +429,21 @@ def import_mine_vector(project_id, filename, content, field_mapping=None, actor=
             .all()
         )
         removed_paths = []
-        for obsolete in retained[1:]:
+        referenced_ids = _active_job_referenced_mine_resource_ids(project_id)
+        for obsolete in retained[RETAINED_MINE_VECTOR_KEEP:]:
+            if obsolete.id in referenced_ids:
+                _activity(
+                    project_id,
+                    "spatial_resource_retained_active_job",
+                    {
+                        "resource_id": obsolete.id,
+                        "resource_type": obsolete.resource_type,
+                        "version": obsolete.version,
+                    },
+                    actor=actor,
+                    target={"type": "spatial_resource", "id": str(obsolete.id)},
+                )
+                continue
             removed_paths.append(resolve_storage_path(storage_root, Path(obsolete.source_path).parent))
             _activity(
                 project_id,
