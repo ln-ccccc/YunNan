@@ -755,7 +755,7 @@ class TestInferenceJobAPI(unittest.TestCase):
 
     def test_recover_abandoned_jobs_fails_previous_process_including_same_id(self):
         from applications.inference.jobs import recover_abandoned_jobs
-        from applications.models.inference_job import InferenceJob
+        from applications.models.inference_job import InferenceJob, InferenceWorkerState
 
         # worker 是容器入口进程时 PID 恒为 1，重启前后 worker_id 完全相同：
         # 启动回收必须同样回收同 id 遗留任务，否则任务永久孤儿（H-2 演练发现 R6）
@@ -766,17 +766,89 @@ class TestInferenceJobAPI(unittest.TestCase):
             InferenceJob(id="done", status="succeeded", worker_id="worker-host:41", request_payload_json="{}"),
         ]
         self.db.session.add_all(jobs)
+        # other-host:7 持有者心跳新鲜（活跃并行 Worker）：按租约判定不回收
+        self.db.session.add(
+            InferenceWorkerState(
+                worker_id="other-host:7",
+                requested_device="auto",
+                effective_device="cpu",
+                update_time=datetime.datetime.now(),
+            )
+        )
         self.db.session.commit()
 
-        changed = recover_abandoned_jobs("worker-host", "worker-host:42")
+        changed = recover_abandoned_jobs("worker-host:42")
 
         self.assertEqual(changed, 2)
         self.assertEqual(InferenceJob.query.get("old").status, "failed")
-        self.assertEqual(InferenceJob.query.get("old").error_code, "WORKER_RESTARTED")
+        self.assertEqual(InferenceJob.query.get("old").error_code, "WORKER_LEASE_EXPIRED")
         self.assertEqual(InferenceJob.query.get("same_id").status, "failed")
         self.assertEqual(InferenceJob.query.get("same_id").error_code, "WORKER_RESTARTED")
         self.assertEqual(InferenceJob.query.get("other").status, "running")
         self.assertEqual(InferenceJob.query.get("done").status, "succeeded")
+
+    def test_recover_abandoned_jobs_uses_holder_lease_not_hostname(self):
+        # 容器重建会改变主机名（2026-11-14 审查问题26）：按主机名前缀匹配的
+        # 回收对新主机标识的 Worker 永远失效，强杀后遗留任务卡死 running。
+        # 验收：强杀后以不同主机标识启动 Worker，遗留任务必须进入明确可诊断终态。
+        from applications.inference.jobs import WORKER_LEASE_STALE_SECONDS, recover_abandoned_jobs
+        from applications.models.inference_job import InferenceJob, InferenceWorkerState
+
+        now = datetime.datetime.now()
+        jobs = [
+            InferenceJob(id="no_heartbeat", status="running", worker_id="recreated-host:1", request_payload_json="{}"),
+            InferenceJob(id="stale_heartbeat", status="running", worker_id="recreated-host:2", request_payload_json="{}"),
+            InferenceJob(id="fresh_heartbeat", status="running", worker_id="other-host:7", request_payload_json="{}"),
+            InferenceJob(id="no_holder", status="running", worker_id=None, request_payload_json="{}"),
+            InferenceJob(id="queued_keep", status="queued", worker_id=None, request_payload_json="{}"),
+        ]
+        self.db.session.add_all(jobs)
+        self.db.session.add(
+            InferenceWorkerState(
+                worker_id="recreated-host:2",
+                requested_device="auto",
+                effective_device="cuda:0",
+                update_time=now - datetime.timedelta(seconds=WORKER_LEASE_STALE_SECONDS + 30),
+            )
+        )
+        self.db.session.add(
+            InferenceWorkerState(
+                worker_id="other-host:7",
+                requested_device="auto",
+                effective_device="cuda:0",
+                update_time=now,
+            )
+        )
+        self.db.session.commit()
+
+        changed = recover_abandoned_jobs("brand-new-host:1", now=now)
+
+        self.assertEqual(changed, 3)
+        for job_id in ("no_heartbeat", "stale_heartbeat", "no_holder"):
+            self.assertEqual(InferenceJob.query.get(job_id).status, "failed", job_id)
+            self.assertEqual(InferenceJob.query.get(job_id).error_code, "WORKER_LEASE_EXPIRED", job_id)
+        # 诊断信息可定位持有者
+        self.assertIn("recreated-host:1", InferenceJob.query.get("no_heartbeat").error_message)
+        # 心跳新鲜的持有者仍活跃（并行 Worker 或租约窗口内），不回收
+        self.assertEqual(InferenceJob.query.get("fresh_heartbeat").status, "running")
+        self.assertEqual(InferenceJob.query.get("queued_keep").status, "queued")
+
+    def test_recover_abandoned_jobs_only_touches_running_via_conditional_update(self):
+        # 回收是条件更新：已完成/已认领的任务不受波及，重复回收幂等
+        from applications.inference.jobs import recover_abandoned_jobs
+        from applications.models.inference_job import InferenceJob
+
+        self.db.session.add_all(
+            [
+                InferenceJob(id="done", status="failed", worker_id="dead-host:1", request_payload_json="{}"),
+                InferenceJob(id="cancelled", status="cancelled", worker_id="dead-host:2", request_payload_json="{}"),
+            ]
+        )
+        self.db.session.commit()
+
+        self.assertEqual(recover_abandoned_jobs("brand-new-host:1"), 0)
+        self.assertEqual(InferenceJob.query.get("done").status, "failed")
+        self.assertEqual(InferenceJob.query.get("cancelled").status, "cancelled")
 
     def test_distribute_outputs_publishes_staged_files_with_atomic_replace(self):
         from applications.kml_roi.tiles import distribute_outputs

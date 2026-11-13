@@ -81,10 +81,11 @@ docker exec cugrs-inference-worker \
 | `CUDA_OUT_OF_MEMORY` | GPU 显存不足，允许时用 CPU 重跑 |
 | `GPU_INFERENCE_FAILED` | 其他 GPU 推理失败 |
 | `WORKER_RESTARTED` | Worker 进程重启，上一进程中的运行任务已明确置为失败 |
+| `WORKER_LEASE_EXPIRED` | 运行任务的持有者心跳租约过期（Worker 被强杀或容器重建后失联），任务置为失败并可从错误信息定位原持有者 |
 | `JOB_TIMEOUT` | 任务在瓦片边界检查时超过配置时限 |
 
 只要 `INFERENCE_CPU_FALLBACK=true`，GPU 探测/加载失败会回退 CPU；任务、API 和界面必须同时显示 `effective_device`、`fallback_reason` 和 `warnings`。
-同一容器中的 Worker 进程重启时，无法安全续跑的旧 `running` 任务不会永久悬挂，而会以 `WORKER_RESTARTED` 结束；新的排队任务随后继续领取。
+Worker 重启或被强杀后，无法安全续跑的旧 `running` 任务不会永久悬挂：回收按**持有者心跳租约**判定（不依赖主机名——容器重建会改变主机名），Worker 启动时回收一次、空闲轮询周期随 30s 心跳兜底回收（租约 90s），同 id 重启以 `WORKER_RESTARTED`、失联持有者以 `WORKER_LEASE_EXPIRED` 结束；新的排队任务随后继续领取。
 
 ## 5. 版本和离线包
 

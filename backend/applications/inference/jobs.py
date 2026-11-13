@@ -125,6 +125,11 @@ def _database_dependencies():
     return db, InferenceJob
 
 
+# 持有者心跳租约时长：与 serialize_worker_capability 的 stale 阈值一致（3×30s 心跳周期）。
+# 空闲期每 ≤30s publish_worker_capability 刷新心跳；运行期以任务进度回调兜底刷新
+WORKER_LEASE_STALE_SECONDS = 90
+
+
 def publish_worker_capability(worker_id, resolution):
     from applications.extensions import db
     from applications.models.inference_job import InferenceWorkerState
@@ -330,29 +335,63 @@ def claim_next_job(worker_id):
             return InferenceJob.query.filter_by(id=candidate.id).first()
 
 
-def recover_abandoned_jobs(worker_host, current_worker_id):
-    """将同一容器中上一个 Worker 进程遗留的运行任务置为可诊断失败。
+def recover_abandoned_jobs(current_worker_id, *, now=None, lease_stale_seconds=WORKER_LEASE_STALE_SECONDS):
+    """将持有者已失联（心跳租约过期/无心跳记录）的运行任务置为可诊断失败。
 
-    回收仅在进程启动、首次认领之前调用：此刻本进程名下不可能有 running 任务，
-    同主机前缀（含与本进程同 id 的任务，worker 作为容器入口进程时 PID 恒为 1，
-    重启前后 worker_id 完全相同）的 running 任务一律属于已死的前任进程。
+    判定依据是持有者心跳而非主机名：容器重建会改变主机名，按主机名前缀
+    匹配的回收对新主机标识的 Worker 永远失效，强杀后遗留任务卡死 running
+    （2026-11-14 审查问题26）。
+    - 持有者心跳行缺失或超过租约时长未更新 → 执行者已失联，回收为
+      WORKER_LEASE_EXPIRED；心跳新鲜的持有者（并行 Worker 或租约窗口内的
+      前任）不动，交给后续周期。
+    - worker_id 与当前进程相同的 running 任务一律属于已死的前任进程：
+      回收仅在进程启动（首次认领之前）与空闲轮询周期触发，此刻本进程名下
+      不可能有 running 任务（worker 作为容器入口进程时 PID 恒为 1，重启
+      前后 worker_id 完全相同，H-2 演练发现 R6）。
+    回收走条件更新（status=running 且持有者不变），与持有者的并发完成写入不冲突。
     """
     db, InferenceJob = _database_dependencies()
-    now = datetime.datetime.now()
-    changed = InferenceJob.query.filter(
-        InferenceJob.status == "running",
-        InferenceJob.worker_id.like(f"{worker_host}:%"),
-    ).update(
-        {
-            "status": "failed",
-            "error_code": "WORKER_RESTARTED",
-            "error_message": "推理 Worker 进程已重启，原运行任务无法安全续跑",
-            "finished_at": now,
-            "update_time": now,
-        },
-        synchronize_session=False,
-    )
-    db.session.commit()
+    from applications.models.inference_job import InferenceWorkerState
+
+    now = now or datetime.datetime.now()
+    stale_before = now - datetime.timedelta(seconds=lease_stale_seconds)
+    live_holders = {
+        state.worker_id
+        for state in InferenceWorkerState.query.filter(
+            InferenceWorkerState.update_time >= stale_before
+        ).all()
+    }
+    changed = 0
+    for job in InferenceJob.query.filter(InferenceJob.status == "running").all():
+        holder = job.worker_id
+        if holder == current_worker_id:
+            error_code = "WORKER_RESTARTED"
+            error_message = "推理 Worker 进程已重启，原运行任务无法安全续跑"
+        elif holder in live_holders:
+            continue
+        elif holder:
+            error_code = "WORKER_LEASE_EXPIRED"
+            error_message = f"推理任务持有者 {holder} 心跳租约已过期，任务无法安全续跑"
+        else:
+            error_code = "WORKER_LEASE_EXPIRED"
+            error_message = "推理任务无持有者记录，心跳租约已过期，任务无法安全续跑"
+        holder_filter = InferenceJob.worker_id == holder if holder else InferenceJob.worker_id.is_(None)
+        updated = InferenceJob.query.filter(
+            InferenceJob.id == job.id,
+            InferenceJob.status == "running",
+            holder_filter,
+        ).update(
+            {
+                "status": "failed",
+                "error_code": error_code,
+                "error_message": error_message,
+                "finished_at": now,
+                "update_time": now,
+            },
+            synchronize_session=False,
+        )
+        db.session.commit()
+        changed += updated
     return changed
 
 
