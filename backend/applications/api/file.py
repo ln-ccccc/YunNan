@@ -215,41 +215,57 @@ def upload_session_complete_api(session_id):
         return rejection[0], rejection[1]
     dest_path = upload_root / f"{uuid.uuid4()}{suffix}"
 
-    # done 幂等：complete 成功过（响应丢失/批次重试/双标签并发）直接复用上次结果，
+    # done 幂等：complete 成功过（响应丢失/批次重试）直接复用上次结果，
     # 不重新合并、不重复入库（2026-09-22 数据流审查 P1）
     existing_result = upload_sessions.session_is_done(session_id)
     if existing_result is not None:
         return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': existing_result})
 
+    # 并发 complete 互斥（2026-11-14 审查问题33）：done 快路径与 mark_session_done
+    # 之间的 check-then-act 竞态——双标签页/批次重试并发 complete 会各自合并、
+    # 各自入库双份照片（生产 gunicorn 多 worker 为真多进程竞态，进程内锁不够）。
+    # O_EXCL 哨兵跨进程互斥；后到方等待先到方完成态，原样返回同一结果。
+    if not upload_sessions.try_acquire_complete_lock(session_id):
+        existing_result = upload_sessions.wait_session_done(session_id)
+        if existing_result is not None:
+            return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': existing_result})
+        return fail_api('上传会话正在完成中，请稍后重试'), 409
     try:
-        upload_sessions.assemble_session(session_id, dest_path)
-        upload_results = upload_curd.upload_one_from_path(
-            str(dest_path),
-            session['filename'],
-            payload.get('mime') or 'image/tiff',
-            type_=type_,
-            enable_slicing=is_slice,
-            keep_tiff_raw=keep_raw_tiff,
-        )
-    except upload_sessions.UploadSessionError as error:
-        dest_path.unlink(missing_ok=True)
-        return fail_api(str(error)), 400
-    except ValueError as error:
-        dest_path.unlink(missing_ok=True)
-        return fail_api(str(error))
-    except Exception as error:
-        dest_path.unlink(missing_ok=True)
-        return business_or_server_failure(error, "文件上传失败", logger=LOGGER)
+        # 锁内 double-check：先到方可能在本请求读取会话状态之后、加锁之前已完成
+        existing_result = upload_sessions.session_is_done(session_id)
+        if existing_result is not None:
+            return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': existing_result})
+        try:
+            upload_sessions.assemble_session(session_id, dest_path)
+            upload_results = upload_curd.upload_one_from_path(
+                str(dest_path),
+                session['filename'],
+                payload.get('mime') or 'image/tiff',
+                type_=type_,
+                enable_slicing=is_slice,
+                keep_tiff_raw=keep_raw_tiff,
+            )
+        except upload_sessions.UploadSessionError as error:
+            dest_path.unlink(missing_ok=True)
+            return fail_api(str(error)), 400
+        except ValueError as error:
+            dest_path.unlink(missing_ok=True)
+            return fail_api(str(error))
+        except Exception as error:
+            dest_path.unlink(missing_ok=True)
+            return business_or_server_failure(error, "文件上传失败", logger=LOGGER)
 
-    data = []
-    for file_url, photo_id, display_name, raw_tiff_path in upload_results:
-        data.append({
-            'src': file_url,
-            'filename': display_name,
-            'photo_id': photo_id,
-            'raw_tiff_path': raw_tiff_path,
-        })
-    # 成功后写完成态而非删目录（幂等；过期由 sweep 清理）
-    upload_sessions.mark_session_done(session_id, data)
-    return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': data})
+        data = []
+        for file_url, photo_id, display_name, raw_tiff_path in upload_results:
+            data.append({
+                'src': file_url,
+                'filename': display_name,
+                'photo_id': photo_id,
+                'raw_tiff_path': raw_tiff_path,
+            })
+        # 成功后写完成态而非删目录（幂等；过期由 sweep 清理）
+        upload_sessions.mark_session_done(session_id, data)
+        return jsonify({'msg': '上传成功', 'code': 0, 'success': True, 'data': data})
+    finally:
+        upload_sessions.release_complete_lock(session_id)
 

@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import uuid
+from itertools import islice
 from pathlib import Path
 
 from osgeo import gdal, ogr, osr
@@ -574,8 +575,10 @@ def list_retained_basemaps(project_id):
 def reactivate_basemap(project_id, resource_id, actor="system"):
     """重新激活 retained 历史底图：互斥激活（旧 active 置 retained）。
 
-    前提是瓦片目录与 .active 标记仍在其自身 resource 目录中（激活期只改
-    状态与标记，不复制数据——性能计划遗留项的收敛实现）。
+    前提是瓦片目录及其数据仍在自身 resource 目录中（激活期只改状态与标记，
+    不复制数据——性能计划遗留项的收敛实现）。不要求 .active 标记存在：
+    激活状态机 commit 后会删除旧标记（_activate_basemap），真实流程产生的
+    retained 底图本就没有 .active（2026-11-14 审查问题33）。
     """
     if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
         raise ValueError(f"项目不存在: {project_id}")
@@ -594,7 +597,10 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         storage_root,
         Path("projects") / str(project_id) / "tiles" / str(target.id),
     )
-    if not (target_tile_dir / ".active").is_file():
+    has_tiles = target_tile_dir.is_dir() and any(
+        islice(target_tile_dir.rglob("*.png"), 1)
+    )
+    if not has_tiles:
         raise ValueError("该底图的瓦片数据已被清理，无法重新激活")
 
     current_active = (
@@ -957,8 +963,8 @@ def complete_basemap_chunked_upload(project_id, session_id, filename, owner):
     from applications.common.utils import upload_sessions
 
     upload_sessions.ensure_session_owner(session_id, owner)
-    done = upload_sessions.session_is_done(session_id)
-    if done is not None:
+
+    def _done_response(done):
         # done 幂等：返回上次实际落盘的文件（而非本次请求名——改名重试会指向
         # 不存在的文件，2026-11-01 审查项）；改名属于客户端不一致，明确 409
         previous = done[0] if isinstance(done, list) and done else {}
@@ -972,27 +978,45 @@ def complete_basemap_chunked_upload(project_id, session_id, filename, owner):
             "size_bytes": int(previous.get("size_bytes") or 0),
             "candidate": previous.get("candidate") or f"incoming/{safe_name}",
         }
-    final_path = _incoming_root() / safe_name
-    if final_path.exists():
-        raise Conflict("incoming/ 已存在同名底图，请重命名后重试")
-    staging_path = _incoming_root() / f"{safe_name}.staging"
-    try:
-        from applications.common.utils.upload_sessions import assemble_session
 
-        assembled = assemble_session(session_id, staging_path)
-        size_bytes = assembled.stat().st_size
-        os.replace(staging_path, final_path)
-    except Exception:
-        staging_path.unlink(missing_ok=True)
-        raise
-    upload_sessions.mark_session_done(
-        session_id, [{"filename": safe_name, "size_bytes": size_bytes, "candidate": f"incoming/{safe_name}"}]
-    )
-    return {
-        "filename": safe_name,
-        "size_bytes": size_bytes,
-        "candidate": f"incoming/{safe_name}",
-    }
+    done = upload_sessions.session_is_done(session_id)
+    if done is not None:
+        return _done_response(done)
+    # 并发 complete 互斥（2026-11-14 审查问题33，与 photos 通道同构）：
+    # 两个并发 complete 会共用同一 .staging 临时名交错写坏合并产物；
+    # O_EXCL 哨兵跨进程互斥，后到方等待先到方完成态后原样返回
+    if not upload_sessions.try_acquire_complete_lock(session_id):
+        done = upload_sessions.wait_session_done(session_id)
+        if done is not None:
+            return _done_response(done)
+        raise Conflict("上传会话正在完成中，请稍后重试")
+    try:
+        done = upload_sessions.session_is_done(session_id)
+        if done is not None:
+            return _done_response(done)
+        final_path = _incoming_root() / safe_name
+        if final_path.exists():
+            raise Conflict("incoming/ 已存在同名底图，请重命名后重试")
+        staging_path = _incoming_root() / f"{safe_name}.staging"
+        try:
+            from applications.common.utils.upload_sessions import assemble_session
+
+            assembled = assemble_session(session_id, staging_path)
+            size_bytes = assembled.stat().st_size
+            os.replace(staging_path, final_path)
+        except Exception:
+            staging_path.unlink(missing_ok=True)
+            raise
+        upload_sessions.mark_session_done(
+            session_id, [{"filename": safe_name, "size_bytes": size_bytes, "candidate": f"incoming/{safe_name}"}]
+        )
+        return {
+            "filename": safe_name,
+            "size_bytes": size_bytes,
+            "candidate": f"incoming/{safe_name}",
+        }
+    finally:
+        upload_sessions.release_complete_lock(session_id)
 
 
 def detect_tileset_directory(directory):

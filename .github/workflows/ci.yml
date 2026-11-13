@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-tests:
+    # 固定 Python 环境关键测试组（2026-11-14 审查问题33）。
+    # 明确不在本组覆盖（跳过项，证据须在真实环境另行报告）：
+    # - test_inference_image_contract：需真实 torch 模型与 GPU 推理（requirements-hf.txt）
+    # - test_yunnan_project_seed：读取仓库根 miner/yunnan.kml（3.3MB 真实数据，
+    #   .gitignore 排除不入库），需带真实数据的环境执行
+    # - MySQL 特有并发/方言行为：本组使用 SQLite testing 配置
+    # - tests/browser 浏览器脚本与真实 GIS/GPU 验收：人工/专项环境执行
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安装 GDAL 系统库（API 测试链顶层依赖 osgeo）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgdal-dev gdal-bin
+          gdal-config --version
+      - name: 安装 Python 依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy
+          pip install "GDAL==$(gdal-config --version)"
+          pip install -r requirements.txt
+      - name: 运行后端测试（真实数据/GPU 依赖组除外）
+        run: |
+          MODULES=$(ls test_*.py | grep -v '^test_inference_image_contract\.py$' | grep -v '^test_yunnan_project_seed\.py$' | sed 's/\.py$//' | tr '\n' ' ')
+          echo "modules: $MODULES"
+          python -m unittest $MODULES
+
+  miner:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: miner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: miner/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

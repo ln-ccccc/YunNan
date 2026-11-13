@@ -407,5 +407,81 @@ class TestChunkedExtensionWhitelistAndCompleteOwner(ChunkedUploadBase):
         self.assertIn("无权", hijack.get_json()["msg"])
 
 
+class TestCompleteConcurrencyGuard(ChunkedUploadBase):
+    """并发 complete 互斥（2026-11-14 审查问题33）。
+
+    done 检查与 mark_session_done 之间的 check-then-act 竞态：双标签页并发
+    complete 时两个请求都能通过 done 快路径检查，各自合并、各自调用
+    upload_one_from_path → 双份照片入库（生产 gunicorn 2 worker × 4 thread
+    为真多进程竞态，测试以双线程 + barrier 加宽窗口代表同一 interleaving）。
+    修复后：O_EXCL 哨兵锁跨进程互斥，后到方等待先到方完成态后原样返回。
+    """
+
+    def _upload_all_chunks(self, init_data):
+        chunk_size = init_data["chunk_size"]
+        for index in range(init_data["total_chunks"]):
+            block = self.payload[index * chunk_size:(index + 1) * chunk_size]
+            resp = self._put_chunk(index, block, sha=_sha256(block))
+            self.assertEqual(resp.status_code, 200)
+
+    def test_concurrent_complete_ingests_once(self):
+        import threading
+        import time as _time
+
+        from applications.api import file as file_api
+        from applications.extensions import db
+        from applications.models import Photo
+
+        self.login_as_admin()
+        init = self._init().get_json()["data"]
+        self._upload_all_chunks(init)
+
+        second = self.app.test_client()
+        login = second.post(
+            "/api/auth/login", json={"username": "admin", "password": "Secret123!"}
+        )
+        self.assertEqual(login.status_code, 200)
+
+        barrier = threading.Barrier(2)
+        original_ingest = file_api.upload_curd.upload_one_from_path
+
+        def slow_ingest(*args, **kwargs):
+            # 入库前延迟：先到方的完成态写入被推迟，保证后到方必然先越过
+            # done 快路径检查（复现窗口；加锁后后到方根本不会走到这里）
+            _time.sleep(0.5)
+            return original_ingest(*args, **kwargs)
+
+        results = {}
+
+        def run_complete(client, label):
+            barrier.wait(timeout=10)
+            response = client.post(
+                f"/api/file/upload/complete/{self.key}",
+                json={"type": "地物分类", "isSlice": True, "keepRawTiff": True},
+            )
+            results[label] = (response.status_code, response.get_json(silent=True))
+
+        with patch.object(
+            file_api.upload_curd, "upload_one_from_path", side_effect=slow_ingest
+        ):
+            threads = [
+                threading.Thread(target=run_complete, args=(self.client, "a")),
+                threading.Thread(target=run_complete, args=(second, "b")),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=60)
+        self.assertFalse(any(thread.is_alive() for thread in threads), "complete 未在超时内返回")
+
+        db.session.expire_all()
+        self.assertEqual(Photo.query.count(), 1, "并发 complete 只允许一次入库")
+        for label in ("a", "b"):
+            status_code, body = results[label]
+            self.assertEqual(status_code, 200, (label, body))
+            self.assertTrue(body["success"], (label, body))
+        self.assertEqual(results["a"][1]["data"][0]["photo_id"], results["b"][1]["data"][0]["photo_id"])
+
+
 if __name__ == "__main__":
     unittest.main()
