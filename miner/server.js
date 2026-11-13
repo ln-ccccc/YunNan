@@ -10,7 +10,6 @@ import { createTileRoutes } from './routes/tiles.js';
 import { authBackend } from './services/authBackend.js';
 import { relayBackendResponse, requireMinerAuth } from './services/authProxy.js';
 import { inferenceBackend } from './services/inferenceBackend.js';
-import { saveKmlUpload } from './services/kmlUpload.js';
 
 dotenv.config();
 
@@ -24,9 +23,10 @@ if (/wsl|\\\\wsl\\.localhost/i.test(startupCwd)) {
 
 // Enable CORS and JSON parsing
 app.use(cors());
-// 大体积 JSON 仅限确需大请求体的路由（KML 文本、矿山 GeoJSON 导入，前端另有 50MB 上限）；
-// 全局默认收到 1MB，避免未登录面（如 /api/auth/login）被打大体（2026-09-20 审查 P2）
-app.use('/api/kml', express.json({ limit: '60mb' }));
+// 大体积 JSON 仅限确需大请求体的路由（矿山 GeoJSON 导入，前端另有 50MB 上限）；
+// 全局默认收到 1MB，避免未登录面（如 /api/auth/login）被打大体（2026-09-20 审查 P2）。
+// /api/kml/upload 死端点已删（2026-11-14 审查问题29）：全仓无前端调用方，
+// KML 内容由解译流程直接提交 Flask，BFF 不落盘业务数据。
 app.use('/api/projects', express.json({ limit: '60mb' }));
 app.use(express.json({ limit: '1mb' }));
 const authGuard = requireMinerAuth({ sessionApi: authBackend.session });
@@ -82,15 +82,14 @@ app.get('/tiles/:z/:x/:y.png', (req, res) => {
   return res.status(410).json({ error: '全局瓦片接口已停用，请使用项目瓦片地址' });
 });
 
-const projectStorageRoot = path.resolve(process.env.PROJECT_STORAGE_ROOT || '/project_storage');
 // 项目瓦片与 change-matrix 同为项目数据出口，必须同过 authGuard：
-// projectId/resourceId 为可枚举数字，裸路由会被未登录客户端整库拉取底图（2026-09-20 审查 P1）
-app.use('/tiles', authGuard, createTileRoutes({ projectStorageRoot }));
+// projectId/resourceId 为可枚举数字，裸路由会被未登录客户端整库拉取底图（2026-09-20 审查 P1）。
+// 瓦片语义（激活/透明兜底/缓存头）全在后端，BFF 纯转发（2026-11-14 审查问题29）
+const backendBaseUrl = (process.env.GEOVIEW_BACKEND_URL || 'http://localhost:5008').replace(/\/$/, '');
+app.use('/tiles', authGuard, createTileRoutes({ backendBaseUrl }));
 
 const changeMatrixStaticDir = path.resolve(process.cwd(), 'change_matrix_outputs');
 app.use('/change-matrix-outputs', authGuard, express.static(changeMatrixStaticDir));
-
-const defaultKmlUploadRoot = path.resolve(process.cwd(), 'uploads', 'kml');
 
 // Global Dali files are intentionally not loaded. Project map endpoints read
 // only the active resources registered for the requested project.
@@ -110,28 +109,6 @@ const retiredGlobalMapEndpoints = [
 app.all(retiredGlobalMapEndpoints, authGuard, (_req, res) => {
   res.status(410).json({ error: '全局地图接口已停用，请使用带项目 ID 的接口' });
 });
-
-app.use('/api/kml', authGuard);
-app.post('/api/kml/upload', (req, res) => {
-  try {
-    const result = saveKmlUpload({
-      uploadRoot: defaultKmlUploadRoot,
-      filename: req.body?.filename,
-      content: req.body?.content
-    });
-    // 服务器绝对路径只进服务端日志，不回显给浏览器（AGENTS §6，2026-09-20 审查 P1）
-    console.log(`[kml] 上传成功: ${result.kml_path} -> ${result.kml_path_absolute}`);
-    res.json({ kml_path: result.kml_path });
-  } catch (err) {
-    // 上传异常细节（含文件系统错误）只进服务端日志，不回显给浏览器
-    console.error('[kml] 上传失败:', err);
-    res.status(400).json({
-      error: 'KML 上传失败',
-      next: '请确认文件扩展名为 .kml，且文件内容非空'
-    });
-  }
-});
-
 
 app.use('/api/inference', authGuard);
 const INFERENCE_GATEWAY_ERROR = { success: false, code: 1, msg: '推理服务暂时不可用，请稍后重试' };

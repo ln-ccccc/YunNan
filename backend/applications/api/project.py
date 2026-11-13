@@ -214,8 +214,21 @@ def project_map_tile_api(project_id, resource_id, z, x, y):
     except ValueError:
         return fail_api("瓦片坐标非法"), 404
     if not target.is_file():
+        # 锯齿边缺格兜底（2026-11-14 审查问题29，对齐 BFF J-1 语义）：底图锯齿
+        # 边缘在 bbox 内但磁盘无瓦片的格子以 200+透明回给，消除整屏 404 噪音；
+        # 仅当该 zoom 目录存在（=资源确实切到此级）时兜底，zoom 目录缺失仍 404
+        # ——资源级异常不被透明瓦片掩盖。透明只缓存 60s：重切修复后旧浏览器
+        # 不被钉一天（BFF 2026-11-05 P2-1 同款）。BFF 瓦片路由已改纯转发，
+        # 此语义的唯一真源在本端点。
+        if target.parent.parent.is_dir():
+            response = current_app.response_class(transparent, mimetype="image/png")
+            response.headers["Cache-Control"] = "public, max-age=60"
+            return response
         return fail_api("项目底图瓦片不存在"), 404
-    return send_from_directory(str(target.parent), target.name)
+    response = send_from_directory(str(target.parent), target.name)
+    # 真实瓦片长缓存（对齐 BFF max-age=86400；瓦片内容不可变——重切换资源目录）
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @project_api.get("")
