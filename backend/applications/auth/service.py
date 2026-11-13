@@ -28,19 +28,17 @@ def sync_admin_from_env():
             db.session.commit()
         except IntegrityError:
             # gunicorn 多 worker 首次启动空库竞态：另一 worker 已插入同名账号，
-            # 回滚后改为更新（否则该 worker 会陷入崩溃重启循环——江西 03247b9 同款修复）
+            # 回滚后直接采用已存在账号（同一环境变量建号，密码相同——
+            # 2026-11-14 审查问题20：不再覆盖，避免与"已有账号不覆盖"语义分叉）
             db.session.rollback()
             user = AdminUser.query.filter_by(username=username).first()
             if user is None:
                 raise
-            user.password_hash = password_hash
-            user.is_active = True
-            db.session.commit()
+            return user
         return user
 
-    user.password_hash = password_hash
-    user.is_active = True
-    db.session.commit()
+    # 已有账号不覆盖：环境变量只用于首次建号，密码权威在数据库——
+    # 页面改密不会在 gunicorn 重启时被回退（2026-11-14 审查问题20）
     return user
 
 
@@ -59,12 +57,7 @@ def authenticate_admin(username, password):
 
 
 def change_admin_password(user_id, old_password, new_password):
-    """管理员自助改密：验旧密码 + 更新 hash。
-
-    注意：部署环境 ADMIN_PASSWORD 环境变量会在 gunicorn 重启时经
-    sync_admin_from_env 覆盖回旧值——改密后如重启需同步更新 .env，
-    接口返回中带提示。
-    """
+    """管理员自助改密：验旧密码 + 更新 hash + 递增会话版本（旧会话立即失效）。"""
     from applications.models import AdminUser
 
     if not new_password or len(str(new_password)) < 8:
@@ -75,5 +68,6 @@ def change_admin_password(user_id, old_password, new_password):
     if not check_password_hash(user.password_hash, old_password or ""):
         raise PermissionError("原口令不正确")
     user.password_hash = generate_password_hash(str(new_password))
+    user.session_version = (user.session_version or 1) + 1
     db.session.commit()
     return user

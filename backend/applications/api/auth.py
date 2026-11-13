@@ -3,6 +3,7 @@ import time
 
 from flask import Blueprint, jsonify, request, session
 
+from applications.auth.guard import is_session_valid
 from applications.auth.service import authenticate_admin, change_admin_password
 from applications.common.utils.http import success_api
 
@@ -84,6 +85,7 @@ def login_api():
     session.permanent = True
     session["admin_user_id"] = user.id
     session["admin_username"] = user.username
+    session["admin_session_version"] = user.session_version or 1
     return success_api(data={"authenticated": True, "username": user.username})
 
 
@@ -91,8 +93,8 @@ def login_api():
 def session_api():
     return success_api(
         data={
-            "authenticated": bool(session.get("admin_user_id")),
-            "username": session.get("admin_username"),
+            "authenticated": is_session_valid(),
+            "username": session.get("admin_username") if is_session_valid() else None,
         }
     )
 
@@ -100,7 +102,7 @@ def session_api():
 @auth_api.post("/change-password")
 def change_password_api():
     """管理员自助改密：session 中的账号 + 旧口令验证 + 新口令落库。"""
-    if not session.get("admin_user_id"):
+    if not is_session_valid():
         return jsonify(success=False, code=401, msg="未登录"), 401
     payload = request.json or {}
     try:

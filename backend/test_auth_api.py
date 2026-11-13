@@ -71,9 +71,16 @@ class TestAuthAPI(unittest.TestCase):
         self.app.config["ADMIN_USERNAME"] = "admin"
         self.app.config["ADMIN_PASSWORD"] = "Secret123!"
 
-        # 预置"另一 worker 已插入"的行，但让本次调用竞态窗口内的第一次查询看不到它，
-        # UNIQUE 冲突回滚后的复查走真实查询
-        seeded = AdminUser(username="admin", password_hash="placeholder", is_active=True)
+        # 预置"另一 worker 已插入"的行（同环境变量建号，hash 即 env 密码），但让本次
+        # 调用竞态窗口内的第一次查询看不到它，UNIQUE 冲突回滚后的复查走真实查询。
+        # 2026-11-14 审查问题20：竞态分支不再覆盖已存在账号，故预置 hash 必须真实
+        from werkzeug.security import generate_password_hash
+
+        seeded = AdminUser(
+            username="admin",
+            password_hash=generate_password_hash("Secret123!"),
+            is_active=True,
+        )
         db.session.add(seeded)
         db.session.commit()
 
