@@ -106,6 +106,13 @@ def _safe_mean(values):
     return float(np.mean(values))
 
 
+def _preview_stretch_bounds(values, valid_mask):
+    """预览 2%/98% 拉伸范围只在有效像元上统计（问题10）：波段掩膜隐藏的
+    云/极端像元不得拉爆对比度，与指数统计同一掩膜口径。"""
+    reference = values[valid_mask] if valid_mask.any() else values
+    return np.percentile(reference, 2), np.percentile(reference, 98)
+
+
 def _safe_fid(value):
     text = str(value).strip()
     return int(text) if text.isdigit() else text
@@ -250,6 +257,11 @@ def spectral_index_calculation(
             first_band = src.read(first_band_idx).astype(np.float32)
             second_band = src.read(second_band_idx).astype(np.float32)
             nodata = src.nodata
+            # 波段掩膜交集（.msk/内部掩膜，如云影隐藏）：nodata=None 时掩膜
+            # 仍可能隐藏无效像元，统计与预览都必须排除（问题10）
+            band_valid = (src.read_masks(first_band_idx) > 0) & (
+                src.read_masks(second_band_idx) > 0
+            )
 
             if img_name.lower().endswith((".tif", ".tiff")):
                 if band_count >= 3:
@@ -263,16 +275,19 @@ def spectral_index_calculation(
                     preview_g = src.read(green_idx).astype(np.float32)
                     preview_b = src.read(blue_idx).astype(np.float32)
                     preview_rgb = np.stack([preview_r, preview_g, preview_b], axis=-1)
-                    low = np.percentile(preview_rgb, 2)
-                    high = np.percentile(preview_rgb, 98)
+                    preview_valid = (
+                        (src.read_masks(red_idx) > 0)
+                        & (src.read_masks(green_idx) > 0)
+                        & (src.read_masks(blue_idx) > 0)
+                    )
+                    low, high = _preview_stretch_bounds(preview_rgb, preview_valid)
                     if high > low:
                         preview_rgb = (preview_rgb - low) / (high - low)
                     preview_rgb = np.clip(preview_rgb, 0.0, 1.0)
                     preview_u8 = (preview_rgb * 255.0).astype(np.uint8)
                 else:
                     preview_gray = src.read(1).astype(np.float32)
-                    low = np.percentile(preview_gray, 2)
-                    high = np.percentile(preview_gray, 98)
+                    low, high = _preview_stretch_bounds(preview_gray, src.read_masks(1) > 0)
                     if high > low:
                         preview_gray = (preview_gray - low) / (high - low)
                     preview_gray = np.clip(preview_gray, 0.0, 1.0)
@@ -288,7 +303,9 @@ def spectral_index_calculation(
         index_data = (first_band - second_band) / denominator
         index_data = np.clip(index_data, -1.0, 1.0)
         normalized = ((index_data + 1.0) / 2.0 * 255.0).astype(np.uint8)
-        valid_mask = np.isfinite(index_data) & (np.abs(raw_denominator) >= 1e-6)
+        valid_mask = (
+            np.isfinite(index_data) & (np.abs(raw_denominator) >= 1e-6) & band_valid
+        )
         if nodata is not None:
             valid_mask &= (first_band != nodata) & (second_band != nodata)
 
@@ -335,8 +352,8 @@ def spectral_index_calculation(
                 "index_type": index_type,
                 "year": str(year or ""),
                 "band_map": {first_band_name: first_band_idx, second_band_name: second_band_idx},
-                "min": float(np.min(index_data)),
-                "max": float(np.max(index_data)),
+                "min": float(np.min(image_values)) if image_values.size else None,
+                "max": float(np.max(image_values)) if image_values.size else None,
                 "mean": _safe_mean(result_values),
                 "mean_scope": "mine_boundary" if use_boundary else "image",
                 "image_mean": _safe_mean(image_values),
