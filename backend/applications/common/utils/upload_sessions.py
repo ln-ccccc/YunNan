@@ -15,6 +15,7 @@
 """
 import hashlib
 import json
+import logging
 import re
 import shutil
 import time
@@ -24,6 +25,8 @@ from pathlib import Path
 from flask import current_app
 
 from applications.common.utils.tiff_processor import UPLOAD_SESSION_MAX_TOTAL_MB
+
+LOGGER = logging.getLogger(__name__)
 
 
 SESSION_STAGING_DIRNAME = ".chunks"
@@ -229,7 +232,9 @@ def write_chunk(session_id: str, index: int, stream, declared_sha256=None, owner
         raise
     except OSError as error:
         tmp_path.unlink(missing_ok=True)
-        raise UploadSessionError(f"分块写入失败: {error}") from error
+        # OSError 原文含暂存目录物理路径，不拼入对客户端消息（2026-11-14 审查问题21）
+        LOGGER.warning("分块写入失败 session=%s index=%s: %s", session_id, index, error)
+        raise UploadSessionError("分块写入失败，请重试该分块") from error
     _save_session(session_dir, state)
     return written
 
@@ -294,7 +299,9 @@ def assemble_session(session_id: str, dest_path: Path) -> Path:
         raise
     except OSError as error:
         tmp_path.unlink(missing_ok=True)
-        raise UploadSessionError(f"分块合并失败: {error}") from error
+        # 同上：OSError 原文含目标物理路径，不外显
+        LOGGER.warning("分块合并失败 session=%s: %s", session_id, error)
+        raise UploadSessionError("分块合并失败，请重新上传") from error
     return dest_path
 
 
