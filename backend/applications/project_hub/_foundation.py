@@ -136,6 +136,48 @@ def _get_project_or_404(project_id):
         raise ValueError(f"项目不存在: {project_id}")
     return project
 
+
+ACTIVE_JOB_STATUSES = ("queued", "running")
+
+
+def _project_has_active_jobs(project_id):
+    """项目是否存在 queued/running 的推理或空间任务（删除门禁的共享判定，
+    2026-11 问题5）。SQLite 测试环境下忽略 FOR UPDATE 语义，窗口由
+    delete_project 锁内复查 + 创建侧行锁在 MySQL 下封闭。"""
+    from applications.models.inference_job import InferenceJob
+    from applications.models.project_spatial import ProjectSpatialJob
+
+    inference_active = (
+        InferenceJob.query.filter(
+            InferenceJob.project_id == project_id,
+            InferenceJob.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .first()
+        is not None
+    )
+    if inference_active:
+        return True
+    return (
+        ProjectSpatialJob.query.filter(
+            ProjectSpatialJob.project_id == project_id,
+            ProjectSpatialJob.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .first()
+        is not None
+    )
+
+
+def _lock_project_row(project_id):
+    """SELECT ... FOR UPDATE 锁定项目行，删除与任务创建共享同一行锁序列化
+    （MySQL InnoDB 真互斥；SQLite 忽略 FOR UPDATE，由测试接缝覆盖逻辑）。
+    项目不存在时返回 None——调用方自行决定 404 或拒绝。"""
+    return (
+        db.session.query(Project.id)
+        .filter_by(id=project_id, deleted_at=None)
+        .with_for_update()
+        .first()
+    )
+
 def record_inference_failure(project_id, payload=None, actor="system"):
     """推理任务失败的审计事件（推理 worker 失败路径经此公共服务函数写入，
     推理运行时模块自身不直接操作项目域表）。项目不存在时静默跳过。

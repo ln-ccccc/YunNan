@@ -161,6 +161,7 @@ Response 至少包含：
 - `GET /api/projects/{project_id}/overview` 和 `GET /api/projects/{project_id}/assets` 是 Project Hub 的公开只读聚合入口；浏览器经 Miner BFF 调用，不能根据底层表名或存储路径自行推断资源状态。
 - 旧 `GET /api/projects/{project_id}` 仅用于兼容历史客户端；新 Miner 工作台不得调用或转发其详情响应，BFF 也不得为导出读取该旧详情。
 - 矿山矢量预览和 `GET /api/projects/{project_id}/geojson` 会保留普通业务属性，但会递归过滤属性名为 `file_path`、`source_path`、`normalized_path`、`tile_path`、`manifest_path`、`output_dir` 的字段（大小写不敏感）；禁止把这些保留名当作矿山字段映射。导入时会把用户选定的 FID 映射规范为公开 `FID_1`，供地图、资产和自动导出使用。
+- 项目删除与任务创建共享 Project 行锁（2026-11 问题5 契约）：`DELETE /api/projects/{id}` 在行锁内复查归档状态与 queued/running 任务——存在进行中的推理（InferenceJob）或空间（ProjectSpatialJob）任务时返回 `409`（“请先取消或等待任务结束”），项目目录不动；推理任务创建、底图切片登记、瓦片包直挂、空间任务重试与分类成果发布同样先取同一行锁，与删除串行化。归档项目允许取消空间任务（取消清理后即可删除）；已删除项目拒绝创建一切新任务。
 
 ### 项目工作台验证
 

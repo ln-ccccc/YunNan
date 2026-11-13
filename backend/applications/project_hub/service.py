@@ -61,6 +61,8 @@ from applications.project_hub._foundation import (
     _json_load,
     _log_storage_cleanup_failure,
     _mark_backup_failed,
+    _lock_project_row,
+    _project_has_active_jobs,
     _mark_export_failed,
     _parse_iso_datetime,
     _rollback_after_storage_failure,
@@ -399,11 +401,18 @@ def delete_project(project_id, actor="system"):
     - DB 软删（deleted_at 置位，审计轨迹保留，列表默认过滤）；
     - project_storage/projects/<id>/ 整目录移入 trash/<id>_<时间戳>/（不物理清除，
       误删可人工移回恢复）；
-    - 活动项目必须先归档，防止误删在建数据。
+    - 活动项目必须先归档，防止误删在建数据；
+    - 行锁内复查归档状态与 queued/running 任务（2026-11 问题5）：删除与任务
+      创建共享 Project 行锁，防止"检查通过后任务落库、目录已被移走"的 TOCTOU。
     """
     project = _get_project_or_404(project_id)
+    _lock_project_row(project.id)
     if project.status != "archived":
         raise ProjectDeleteNotAllowed("仅已归档项目可以删除，请先归档项目")
+    if _project_has_active_jobs(project.id):
+        raise ProjectDeleteNotAllowed(
+            "项目存在进行中（queued/running）的推理或空间任务，请先取消或等待任务结束后再删除"
+        )
 
     from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
