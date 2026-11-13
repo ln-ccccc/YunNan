@@ -101,6 +101,15 @@ Failure:
 `project_storage` 对 BFF 保持只读）；落盘使用 `.staging` 原子转正，与底图候选
 列表的 `_is_incomplete_copy_name` 契约对齐。
 
+### 空间写入口的生命周期约束（问题18，2026-11-14）
+
+`can_configure_spatial = not archived` 在服务层统一执行：配置类写入——矿山
+导入、底图登记/直挂、重新激活、单发上传、分片 init/complete、任务重试——
+归档项目一律 `200`+`success:false`（`归档项目不允许修改空间资源`），与瓦片
+直挂登记既有行为一致；前端禁用按钮只是展示层。**例外**：取消任务
+（`POST /spatial/jobs/{id}/cancel`）是运维安全动作，归档项目仍允许取消
+排队/运行中的任务，仅已删除项目拒绝。
+
 ### 底图分片续传通道（>64MB 自动分流，总上限 100GB）
 
 `POST /api/projects/{id}/spatial/basemap-upload/init`（JSON）：`upload_key`
