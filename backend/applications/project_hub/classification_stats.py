@@ -2,7 +2,7 @@
 """分类成果统计口径改造（2026-10-31 方案 b）。
 
 人工在编辑器修订矢量后，按审校后矢量重算两类统计并回写发布产物：
-- 地类占比：球面鞋带面积（复用 quality_review.geometry_area_m2，与 stats/质检
+- 地类占比：球面鞋带面积（复用 _geometry.geometry_area_m2，与 stats/质检
   同源口径）按 class_code 聚合归一化，写入 class_ratio_percent.json 的 revised
   块——推理口径 series_percent 原值保留，消费端优先 revised、无则回落。
 - 变化矩阵：把各年审校后矢量（current FC，v0 auto 亦属矢量口径）rasterize 到
@@ -24,7 +24,7 @@ from rasterio.features import rasterize
 from rasterio.warp import transform_geom
 
 from applications.kml_roi.change_matrix import CLASS_NAMES
-from applications.project_hub.quality_review import geometry_area_m2
+from applications.project_hub._geometry import geometry_area_m2
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 LOGGER = logging.getLogger(__name__)

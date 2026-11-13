@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from osgeo import gdal, ogr, osr
@@ -322,6 +323,80 @@ def _editable_project(project_id):
     if project.status == "archived":
         raise ValueError("归档项目不允许修改空间资源")
     return project
+
+
+# 激活新底图时保留的历史底图数量（不含当前激活的那一张）
+RETAINED_BASEMAP_KEEP = 2
+
+
+def activate_basemap(job, resource, storage_root, actor="system"):
+    """底图激活状态机唯一真源：互斥下线旧 active → 置 succeeded → 写新 .active
+    标记 → commit（失败回滚标记）→ commit 成功后才删旧标记与超量历史目录。
+    切片 worker（spatial_worker.process_job）与瓦片集直挂登记
+    （register_basemap_tileset）共用，勿在本函数外复制此流程。
+    归属空间领域服务（2026-11-14 审查问题28：拆掉 service→worker 反向依赖，
+    方向固定为 worker→service）。"""
+    previous_active = ProjectSpatialResource.query.filter_by(
+        project_id=resource.project_id,
+        resource_type="basemap",
+        status="active",
+    ).all()
+    for previous in previous_active:
+        previous.status = "retained"
+    resource.status = "active"
+    resource.error_message = None
+    job.status = "succeeded"
+    job.stage = "completed"
+    job.progress = 100.0
+    job.heartbeat_at = datetime.now()
+    retained = (
+        ProjectSpatialResource.query.filter_by(
+            project_id=resource.project_id,
+            resource_type="basemap",
+            status="retained",
+        )
+        .order_by(ProjectSpatialResource.version.desc())
+        .all()
+    )
+    obsolete_dirs = []
+    previous_markers = []
+    for previous in previous_active:
+        if previous.tile_path:
+            previous_markers.append(resolve_storage_path(storage_root, previous.tile_path) / ".active")
+    # 历史底图保护：只清理超出保留数量的最旧资源，保留最近 2 个历史底图。
+    # 原逻辑 retained[1:] 会在每次激活时把更早的历史底图连库记录、原图与瓦片
+    # 一起永久删除——生产上 10GB 级原图被静默清除是事故（2026-09-09 上线前实测）。
+    for obsolete in retained[RETAINED_BASEMAP_KEEP:]:
+        obsolete_dirs.extend(
+            [
+                storage_root / "projects" / str(obsolete.project_id) / "basemaps" / str(obsolete.id),
+                storage_root / "projects" / str(obsolete.project_id) / "tiles" / str(obsolete.id),
+            ]
+        )
+        _activity(
+            resource.project_id,
+            "spatial_resource_removed",
+            {"resource_id": obsolete.id, "resource_type": "basemap", "version": obsolete.version},
+            actor=actor,
+        )
+        db.session.delete(obsolete)
+    _activity(
+        resource.project_id,
+        "spatial_resource_activated",
+        {"resource_id": resource.id, "resource_type": "basemap", "version": resource.version},
+        actor=actor,
+    )
+    active_marker = resolve_storage_path(storage_root, resource.tile_path) / ".active"
+    active_marker.write_text(str(resource.id), encoding="ascii")
+    try:
+        db.session.commit()
+    except Exception:
+        active_marker.unlink(missing_ok=True)
+        raise
+    for marker in previous_markers:
+        marker.unlink(missing_ok=True)
+    for obsolete_dir in obsolete_dirs:
+        shutil.rmtree(obsolete_dir, ignore_errors=True)
 
 
 def import_mine_vector(project_id, filename, content, field_mapping=None, actor="system"):
@@ -1067,7 +1142,7 @@ def register_basemap_tileset(project_id, candidate, actor="system"):
     """甲方预切瓦片包直挂登记（2026-11-01 后续项③）：跳过切片直接激活。
 
     与 register_basemap 的差异：候选是 XYZ 瓦片目录而非单幅影像——探测结构后
-    将瓦片原子拷贝到规范 tile_path，再调用 spatial_worker._activate_basemap
+    将瓦片原子拷贝到规范 tile_path，再调用本域的 activate_basemap
     激活状态机（互斥下线旧 active / .active 标记 commit 成功后才删旧 /
     保留最近 2 份历史 / activity 日志），并登记一条即时 succeeded 的 job
     供任务面板溯源。版本号取 func.max(version)+1（count 会因历史清理回退
@@ -1075,8 +1150,6 @@ def register_basemap_tileset(project_id, candidate, actor="system"):
     此前直挂重复实现激活流程导致版本/归档/回滚规则与切片通道分叉）。
     """
     import uuid as _uuid
-
-    from applications.project_hub.spatial_worker import _activate_basemap
 
     project = _editable_project(project_id)
     candidate_relative = str(candidate or "").strip()
@@ -1155,7 +1228,7 @@ def register_basemap_tileset(project_id, candidate, actor="system"):
     )
     # 激活/互斥下线/标记时序/历史保留/commit 全部复用切片通道的状态机（含
     # spatial_resource_activated 事件与 job 终态、heartbeat 设置）
-    _activate_basemap(job, resource, ensure_storage_layout(), actor=actor)
+    activate_basemap(job, resource, ensure_storage_layout(), actor=actor)
     return {
         "resource_id": resource.id,
         "tile_path": resource.tile_path,

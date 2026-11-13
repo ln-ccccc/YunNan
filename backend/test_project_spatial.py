@@ -728,7 +728,7 @@ class TestProjectSpatialState(unittest.TestCase):
         import tempfile
 
         from applications.models.project_spatial import ProjectSpatialJob
-        from applications.project_hub.spatial_worker import _activate_basemap
+        from applications.project_hub.spatial_service import activate_basemap
 
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
@@ -797,7 +797,7 @@ class TestProjectSpatialState(unittest.TestCase):
         db.session.add(job)
         db.session.commit()
 
-        _activate_basemap(job, new_resource, storage_root)
+        activate_basemap(job, new_resource, storage_root)
 
         self.assertEqual(new_resource.status, "active")
         self.assertEqual(resources[3].status, "retained")

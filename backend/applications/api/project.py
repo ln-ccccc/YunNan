@@ -958,11 +958,12 @@ def project_backup_import_api(project_id):
     if not isinstance(payload, dict) or not isinstance(payload.get("manifest"), dict):
         return fail_api("请求必须包含 manifest 对象", status=422)
     try:
-        return success_api(
-            data=import_backup_manifest(
-                project_id, payload["manifest"], actor=_request_actor()
-            )
+        imported = import_backup_manifest(
+            project_id, payload["manifest"], actor=_request_actor()
         )
+        # 快照域只返回标识符；overview 装配在 API 层（2026-11-14 审查问题28：
+        # 拆掉 snapshots→service 延迟导入环），HTTP 响应结构不变
+        return success_api(data=get_project_overview(imported["project_id"]))
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
     except ValueError as exc:
@@ -1014,9 +1015,9 @@ def project_backup_manifest_download_api(project_id, backup_id):
 @login_required
 def project_backup_restore_api(project_id, backup_id):
     try:
-        return success_api(
-            data=restore_backup(project_id, backup_id, actor=_request_actor())
-        )
+        restored = restore_backup(project_id, backup_id, actor=_request_actor())
+        # 快照域只返回标识符；overview 装配在 API 层（同上），HTTP 响应结构不变
+        return success_api(data=get_project_overview(restored["project_id"]))
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
     except ValueError as exc:
