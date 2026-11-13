@@ -13,7 +13,14 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
 from applications import create_app
 from applications.extensions import db
-from applications.models.project import Project, ProjectMineBinding
+from applications.models.inference_job import InferenceJob
+from applications.models.project import (
+    Project,
+    ProjectActivityLog,
+    ProjectDataset,
+    ProjectExportRecord,
+    ProjectMineBinding,
+)
 from applications.project_hub.service import create_backup, ProjectDeleteNotAllowed, delete_project
 from test_project_api import TestProjectAPI
 
@@ -234,6 +241,275 @@ class TestBackupImport(ProjectManageBase):
             json={"manifest": {"snapshot_version": 1}},
         )
         self.assertEqual(response.status_code, 401)
+
+    def test_import_creates_new_identity_with_explicit_dataset_mapping(self):
+        """问题3 跨环境规则：导入生成新身份并显式记录 源ID→新ID 映射，
+        旧引用不得视为新环境有效引用（映射随事件与导入存档可查）。"""
+        self.login_as_admin()
+        target = self._create_project("映射目标")
+        manifest = self._build_manifest(999, name="映射项目")
+        manifest["datasets"] = [
+            {"id": 501, "dataset_kind": "imagery", "display_name": "源影像A",
+             "file_path": f"projects/{target}/inputs/imagery/map_a.tif"},
+            {"id": 502, "dataset_kind": "imagery", "display_name": "源影像B",
+             "file_path": f"projects/{target}/inputs/imagery/map_b.tif"},
+        ]
+        response = self.client.post(
+            f"/api/projects/{target}/backups/import",
+            json={"manifest": manifest},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        rows = {d.id for d in db.session.get(Project, target).datasets}
+        self.assertEqual(len(rows), 2)
+        event = (
+            ProjectActivityLog.query.filter_by(project_id=target, event_type="project_imported")
+            .order_by(ProjectActivityLog.id.desc())
+            .first()
+        )
+        payload = json.loads(event.payload_json)
+        mapping = payload["dataset_id_map"]
+        self.assertEqual(sorted(mapping), ["501", "502"])
+        for source_id, new_id in mapping.items():
+            self.assertIn(new_id, rows)
+            self.assertNotEqual(int(source_id), new_id, "跨环境导入必须生成新身份")
+        # 导入存档携带映射，供追溯新旧引用
+        archived = sorted(
+            (self.storage_root / "projects" / str(target) / "imports").glob("manifest_*.json")
+        )[-1]
+        archived_data = json.loads(archived.read_text(encoding="utf-8"))
+        self.assertEqual(archived_data["import_result"]["dataset_id_map"], mapping)
+
+    def test_import_keeps_target_dataset_referenced_by_jobs(self):
+        """问题3 引用保护同口径：目标项目被推理任务引用的登记不随导入删除。"""
+        self.login_as_admin()
+        target = self._create_project("引用保护目标")
+        referenced = ProjectDataset(
+            project_id=target,
+            dataset_kind="imagery",
+            display_name="目标既有影像",
+            file_path=f"projects/{target}/inputs/imagery/keep.tif",
+        )
+        db.session.add(referenced)
+        db.session.flush()
+        db.session.add(InferenceJob(
+            id="job-import-keep-1",
+            project_id=target,
+            request_payload_json=json.dumps(
+                {"project_id": target, "dataset_id": referenced.id}
+            ),
+        ))
+        db.session.commit()
+        response = self.client.post(
+            f"/api/projects/{target}/backups/import",
+            json={"manifest": self._build_manifest(
+                999, dataset_path_prefix=f"projects/{target}/inputs/imagery",
+            )},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertIsNotNone(
+            db.session.get(ProjectDataset, referenced.id),
+            "被任务引用的目标登记必须保留",
+        )
+        event = (
+            ProjectActivityLog.query.filter_by(project_id=target, event_type="project_imported")
+            .order_by(ProjectActivityLog.id.desc())
+            .first()
+        )
+        payload = json.loads(event.payload_json)
+        self.assertIn(referenced.id, payload["retained_dataset_ids"])
+
+
+class TestBackupRestoreIdentity(ProjectManageBase):
+    """问题3+4（2026-11 审查）：恢复按记录身份原位更新，不删表重建；
+    审计只追加；旧快照缺身份时限制恢复范围。"""
+
+    def _register_dataset(self, project_id, display_name, filename):
+        return self._json(self.client.post(
+            f"/api/projects/{project_id}/datasets",
+            json={
+                "dataset_kind": "imagery",
+                "display_name": display_name,
+                "storage_key": self._create_incoming_tif(filename),
+            },
+        ))["data"]["id"]
+
+    def _make_export_record(self, project_id, artifact="ledger.csv"):
+        record = ProjectExportRecord(
+            project_id=project_id,
+            format="csv",
+            file_path=f"projects/{project_id}/exports/pending/{artifact}",
+            status="completed",
+            request_params_json="{}",
+        )
+        db.session.add(record)
+        db.session.flush()
+        export_dir = (
+            self.storage_root / "projects" / str(project_id) / "exports" / str(record.id)
+        )
+        export_dir.mkdir(parents=True, exist_ok=True)
+        (export_dir / artifact).write_text("id,name\n1,demo\n", encoding="utf-8")
+        db.session.commit()
+        return record.id
+
+    def _restore(self, project_id, backup_id):
+        response = self.client.post(
+            f"/api/projects/{project_id}/backups/{backup_id}/restore", json={}
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        return self._json(response)
+
+    def _restore_event_payload(self, project_id):
+        event = (
+            ProjectActivityLog.query.filter_by(
+                project_id=project_id, event_type="backup_restored"
+            )
+            .order_by(ProjectActivityLog.id.desc())
+            .first()
+        )
+        self.assertIsNotNone(event)
+        return json.loads(event.payload_json)
+
+    def test_restore_preserves_identity_and_reference_targets(self):
+        self.login_as_admin()
+        project_id = self._create_project("身份保留项目")
+        dataset_id = self._register_dataset(project_id, "快照时影像", "identity-a.tif")
+        export_id = self._make_export_record(project_id)
+        db.session.add(InferenceJob(
+            id="job-restore-identity-1",
+            project_id=project_id,
+            request_payload_json=json.dumps(
+                {"project_id": project_id, "dataset_id": dataset_id}
+            ),
+        ))
+        db.session.commit()
+        backup_id = self._json(self.client.post(
+            f"/api/projects/{project_id}/backups", json={"scope": "metadata_index"}
+        ))["data"]["id"]
+
+        # 快照后的演化：改名、新增登记、新增导出
+        db.session.get(ProjectDataset, dataset_id).display_name = "快照后改名"
+        post_dataset_id = self._register_dataset(project_id, "快照后新增", "identity-b.tif")
+        post_export_id = self._make_export_record(project_id, "post.csv")
+
+        self._restore(project_id, backup_id)
+
+        dataset = db.session.get(ProjectDataset, dataset_id)
+        self.assertIsNotNone(dataset, "快照时数据集必须保留原身份（不删表重建）")
+        self.assertEqual(dataset.display_name, "快照时影像", "快照时记录恢复到快照时刻字段值")
+        self.assertIsNotNone(
+            db.session.get(ProjectExportRecord, export_id),
+            "快照时导出记录是不可变历史，不得删除",
+        )
+        self.assertIsNotNone(
+            db.session.get(ProjectExportRecord, post_export_id),
+            "快照后导出记录必须保留",
+        )
+        artifact = (
+            self.storage_root / "projects" / str(project_id)
+            / "exports" / str(export_id) / "ledger.csv"
+        )
+        self.assertTrue(artifact.is_file(), "原导出物理文件必须仍可按原记录 ID 定位下载")
+        payload = json.loads(
+            db.session.get(InferenceJob, "job-restore-identity-1").request_payload_json
+        )
+        self.assertIsNotNone(
+            db.session.get(ProjectDataset, payload["dataset_id"]),
+            "历史任务载荷 dataset_id 必须仍能定位输入",
+        )
+        self.assertIsNone(
+            db.session.get(ProjectDataset, post_dataset_id),
+            "快照后新增且未被引用的登记按恢复语义移除",
+        )
+
+    def test_restore_keeps_referenced_dataset_added_after_snapshot(self):
+        self.login_as_admin()
+        project_id = self._create_project("引用保留项目")
+        self._register_dataset(project_id, "快照时影像", "keepref-a.tif")
+        backup_id = self._json(self.client.post(
+            f"/api/projects/{project_id}/backups", json={"scope": "metadata_index"}
+        ))["data"]["id"]
+
+        post_dataset_id = self._register_dataset(project_id, "快照后被引用影像", "keepref-b.tif")
+        db.session.add(InferenceJob(
+            id="job-restore-keepref-1",
+            project_id=project_id,
+            request_payload_json=json.dumps(
+                {"project_id": project_id, "dataset_id": post_dataset_id}
+            ),
+        ))
+        db.session.commit()
+
+        self._restore(project_id, backup_id)
+
+        self.assertIsNotNone(
+            db.session.get(ProjectDataset, post_dataset_id),
+            "快照后新增但被任务引用的登记不得删除（引用保护）",
+        )
+        payload = self._restore_event_payload(project_id)
+        self.assertIn(post_dataset_id, payload["retained_referenced_datasets"])
+
+    def test_restore_appends_audit_instead_of_truncating_history(self):
+        self.login_as_admin()
+        project_id = self._create_project("审计追加项目")
+        self._register_dataset(project_id, "快照时影像", "audit-a.tif")
+        backup_id = self._json(self.client.post(
+            f"/api/projects/{project_id}/backups", json={"scope": "metadata_index"}
+        ))["data"]["id"]
+
+        self._register_dataset(project_id, "快照后新增", "audit-b.tif")
+        events_before = [
+            a.id for a in ProjectActivityLog.query.filter_by(project_id=project_id).all()
+        ]
+
+        self._restore(project_id, backup_id)
+
+        events_after = [
+            a.id for a in ProjectActivityLog.query.filter_by(project_id=project_id).all()
+        ]
+        for activity_id in events_before:
+            self.assertIn(activity_id, events_after, "快照后活动不得随恢复消失（审计只追加）")
+        payload = self._restore_event_payload(project_id)
+        self.assertEqual(payload["backup_id"], backup_id)
+        self.assertIn("restored", payload)
+
+    def test_restore_legacy_manifest_limits_scope_without_guessing(self):
+        self.login_as_admin()
+        project_id = self._create_project("旧快照项目")
+        dataset_id = self._register_dataset(project_id, "快照时影像", "legacy-a.tif")
+        backup_id = self._json(self.client.post(
+            f"/api/projects/{project_id}/backups", json={"scope": "metadata_index"}
+        ))["data"]["id"]
+
+        # 改写为旧版 manifest（序列化不含记录 id），模拟历史快照
+        manifest_path = (
+            self.storage_root / "projects" / str(project_id)
+            / "snapshots" / str(backup_id) / "manifest.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for dataset in manifest["datasets"]:
+            dataset.pop("id", None)
+        for mine in manifest["mines"]:
+            mine.pop("id", None)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+        db.session.get(Project, project_id).name = "旧快照项目-改名"
+        db.session.get(ProjectDataset, dataset_id).display_name = "快照后改名"
+        db.session.commit()
+
+        self._restore(project_id, backup_id)
+
+        dataset = db.session.get(ProjectDataset, dataset_id)
+        self.assertIsNotNone(dataset)
+        self.assertEqual(
+            dataset.display_name, "快照后改名",
+            "旧快照缺记录身份：不得猜测关联重建，数据集段跳过",
+        )
+        self.assertEqual(
+            db.session.get(Project, project_id).name, "旧快照项目",
+            "summary 段仍按快照恢复（限制范围≠拒绝恢复）",
+        )
+        payload = self._restore_event_payload(project_id)
+        self.assertIn("datasets", payload["skipped_sections"])
 
 
 class TestDeleteServiceDirect(ProjectManageBase):
