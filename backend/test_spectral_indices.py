@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 import rasterio
 from openpyxl import load_workbook
@@ -441,6 +442,139 @@ class TestSpectralIndicesAPI(unittest.TestCase):
         output = storage_root / f"projects/{project['id']}/outputs/indices/9002.json"
         payload = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(payload["ndvi"]["data"], [{"year": 2024, "value": 0.5}])
+
+
+class TestSpectralBandMaskHandling(TestSpectralIndicesAPI):
+    """问题10：光谱指数统计与预览必须尊重栅格波段掩膜。
+
+    nodata=None 但波段带掩膜（internal mask/.msk，如云影隐藏）时，
+    被掩藏的极端像元不得进入指数统计（min/max/mean/valid_pixel_count）
+    或预览 2%/98% 拉伸范围。"""
+
+    def _make_masked_tif(self, band_count=4, extreme_band_idx=None, hide_all=False, basename_prefix="mask"):
+        fname = f"{basename_prefix}_{uuid.uuid4().hex[:8]}.tif"
+        fpath = os.path.join(self.up_dir, fname)
+        height, width = 16, 16
+        transform = from_origin(0, 0, 1, 1)
+
+        base = np.linspace(10, 200, num=height * width, dtype=np.float32).reshape(height, width)
+        bands = [base + (i * 3) for i in range(band_count)]
+        arr = np.stack(bands, axis=0)
+        if hide_all:
+            mask = np.zeros((height, width), dtype=np.uint8)
+        else:
+            mask = np.full((height, width), 255, dtype=np.uint8)
+            if extreme_band_idx is not None:
+                # 32/256 = 12.5% 像元为被掩膜隐藏的极端值，超过预览拉伸的
+                # 2%/98% 分位容忍度，足以把拉伸范围拉爆
+                arr[extreme_band_idx - 1, 0:4, width - 8 : width] = 1.0e6
+                mask[0:4, width - 8 : width] = 0
+
+        with rasterio.open(
+            fpath,
+            "w",
+            driver="GTiff",
+            height=height,
+            width=width,
+            count=band_count,
+            dtype=np.float32,
+            transform=transform,
+        ) as dst:
+            dst.write(arr)
+        with rasterio.open(fpath, "r+") as dst:
+            dst.write_mask(mask)
+
+        self.created_upload_files.append(fpath)
+        self.created_upload_files.append(fpath + ".msk")
+        return fname
+
+    def _latest_meta(self):
+        latest = Analysis.query.filter_by(type=8).order_by(Analysis.id.desc()).first()
+        self.assertIsNotNone(latest)
+        return latest, json.loads(latest.data)
+
+    def _preview_gray_mean(self, latest):
+        self.assertTrue(latest.before_img.startswith(generate_url))
+        local = os.path.join(self.generate_dir, latest.before_img[len(generate_url):])
+        self.assertTrue(os.path.exists(local))
+        return float(cv2.imread(local, cv2.IMREAD_GRAYSCALE).mean())
+
+    def test_masked_extreme_pixels_excluded_from_stats(self):
+        tif = self._make_masked_tif(band_count=4, extreme_band_idx=4)
+        status, body = self._post_spectral(
+            {
+                "list": [up_url + tif],
+                "index_type": "NDVI",
+                "year": "2024",
+                "band_map": {"nir": 4, "red": 3},
+            }
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["code"], 0)
+        self._record_result_files(body["data"])
+        latest, meta = self._latest_meta()
+        # 正常像元 NDVI = 3/(2b+15) ∈ (0.007, 0.086) 全正；极端像元若泄漏会 clip 到 +1
+        self.assertLess(meta["max"], 0.1)
+        self.assertGreater(meta["min"], 0.0)
+        self.assertEqual(meta["valid_pixel_count"], 224)
+
+    def test_preview_stretch_ignores_masked_extreme_pixels(self):
+        tif = self._make_masked_tif(band_count=4, extreme_band_idx=1)
+        status, body = self._post_spectral(
+            {
+                "list": [up_url + tif],
+                "index_type": "NDVI",
+                "year": "2024",
+                "band_map": {"nir": 4, "red": 3},
+            }
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["code"], 0)
+        self._record_result_files(body["data"])
+        latest, _ = self._latest_meta()
+        # 极端像元若进入拉伸范围，98% 分位被拉到 ~1e6，正常像元全被压成黑
+        self.assertGreater(self._preview_gray_mean(latest), 30.0)
+
+    def test_gray_preview_stretch_ignores_masked_extreme_pixels(self):
+        tif = self._make_masked_tif(band_count=2, extreme_band_idx=1)
+        status, body = self._post_spectral(
+            {
+                "list": [up_url + tif],
+                "index_type": "NDVI",
+                "year": "2024",
+                "band_map": {"nir": 1, "red": 2},
+            }
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["code"], 0)
+        self._record_result_files(body["data"])
+        latest, meta = self._latest_meta()
+        # 正常像元 NDVI = -3/(2b+3) ∈ (-0.13, -0.015) 全负；极端泄漏会 clip 到 +1
+        self.assertLess(meta["max"], 0.0)
+        self.assertGreater(self._preview_gray_mean(latest), 30.0)
+
+    def test_all_pixels_masked_yields_null_stats_without_crash(self):
+        tif = self._make_masked_tif(hide_all=True)
+        status, body = self._post_spectral(
+            {
+                "list": [up_url + tif],
+                "index_type": "NDVI",
+                "year": "2024",
+                "band_map": {"nir": 4, "red": 3},
+            }
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["code"], 0)
+        self._record_result_files(body["data"])
+        _, meta = self._latest_meta()
+        self.assertIsNone(meta["min"])
+        self.assertIsNone(meta["max"])
+        self.assertIsNone(meta["mean"])
+        self.assertEqual(meta["valid_pixel_count"], 0)
 
 
 if __name__ == "__main__":
