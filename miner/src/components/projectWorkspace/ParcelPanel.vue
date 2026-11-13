@@ -8,7 +8,7 @@
           type="text"
           placeholder="按矿山 ID 过滤"
           class="fid-input"
-          @keyup.enter="loadSummary"
+          @keyup.enter="applyFilter"
         >
         <button class="secondary-btn" type="button" :disabled="loading" @click="loadSummary">
           {{ loading ? '加载中…' : '刷新' }}
@@ -49,6 +49,7 @@
 <script setup>
 import axios from 'axios';
 import { computed, onMounted, ref, watch } from 'vue';
+import { createSelectionGate } from '../../projectWorkspace/projectWorkspaceViewModel.js';
 import { formatDate } from '../../utils/formatDate.js';
 
 const props = defineProps({
@@ -65,6 +66,8 @@ const limit = 20;
 const loading = ref(false);
 const error = ref('');
 const fidFilter = ref('');
+// 请求代次（问题16）：A 项目慢响应不得覆盖 B 项目数据
+const requestGate = createSelectionGate();
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
 
@@ -75,23 +78,35 @@ const formatTime = (value) => {
 };
 
 const loadSummary = async () => {
+  const projectId = props.projectId;
+  const revision = requestGate.next();
   loading.value = true;
   error.value = '';
   try {
     const params = new URLSearchParams({ page: String(page.value), limit: String(limit) });
     if (fidFilter.value.trim()) params.set('fid', fidFilter.value.trim());
     const res = await axios.get(
-      `${MINER_API_BASE_URL}/api/projects/${props.projectId}/mines/parcel-summary?${params}`,
+      `${MINER_API_BASE_URL}/api/projects/${projectId}/mines/parcel-summary?${params}`,
     );
+    if (!requestGate.isCurrent(revision) || props.projectId !== projectId) return;
     const data = res.data?.data || {};
     items.value = data.items || [];
     total.value = data.count || 0;
-    if (page.value > totalPages.value) page.value = totalPages.value;
+    if (page.value > totalPages.value) {
+      page.value = totalPages.value;
+      loadSummary();
+    }
   } catch (e) {
+    if (!requestGate.isCurrent(revision) || props.projectId !== projectId) return;
     error.value = e?.response?.data?.msg || '图斑清单读取失败';
   } finally {
-    loading.value = false;
+    if (requestGate.isCurrent(revision)) loading.value = false;
   }
+};
+
+const applyFilter = () => {
+  page.value = 1;
+  loadSummary();
 };
 
 const turn = (next) => {
@@ -100,6 +115,9 @@ const turn = (next) => {
 };
 
 watch(() => props.projectId, () => {
+  requestGate.next();
+  items.value = [];
+  total.value = 0;
   page.value = 1;
   fidFilter.value = '';
   loadSummary();

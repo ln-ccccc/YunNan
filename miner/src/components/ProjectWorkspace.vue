@@ -80,6 +80,7 @@
             :mine-preview="spatialUi.minePreview"
             :retained-basemaps="retainedBasemaps"
         :retained-loading="retainedBasemapsLoading"
+        :retained-error="retainedBasemapsError"
         @load-retained-basemaps="loadRetainedBasemaps"
         @reactivate-basemap="reactivateBasemap"
         :basemap-candidates="spatialUi.basemapCandidates"
@@ -285,6 +286,11 @@ function beginProjectRequest({ reset = false } = {}) {
 function resetSpatialUiForProjectChange() {
   minePreviewGate.next();
   spatialMutationGate.next();
+  // 历史底图：切项目立即清空旧数据并作废在途请求（问题16）
+  retainedBasemapGate.next();
+  retainedBasemaps.value = [];
+  retainedBasemapsError.value = '';
+  retainedBasemapsLoading.value = false;
   Object.assign(spatialUi, {
     open: false,
     busy: false,
@@ -675,19 +681,28 @@ async function registerDataset(payload) {
 // M5.4：历史底图（retained）加载与重新激活
 const retainedBasemaps = ref([]);
 const retainedBasemapsLoading = ref(false);
+const retainedBasemapsError = ref('');
+const retainedBasemapGate = createSelectionGate();
 
 async function loadRetainedBasemaps() {
-  if (!currentProjectId.value) return;
+  const projectId = currentProjectId.value;
+  if (!projectId) return;
+  // 写入前核对代次与项目 ID（问题16）：A 项目慢响应不得覆盖 B 项目数据；
+  // 读取失败单独展示，不得伪装成"没有历史底图"
+  const revision = retainedBasemapGate.next();
   retainedBasemapsLoading.value = true;
+  retainedBasemapsError.value = '';
   try {
     const res = await axios.get(
-      `/api/projects/${currentProjectId.value}/spatial/basemaps/retained`,
+      `/api/projects/${projectId}/spatial/basemaps/retained`,
     );
+    if (!retainedBasemapGate.isCurrent(revision) || currentProjectId.value !== projectId) return;
     retainedBasemaps.value = res.data?.data?.items || [];
-  } catch (_) {
-    retainedBasemaps.value = [];
+  } catch (e) {
+    if (!retainedBasemapGate.isCurrent(revision) || currentProjectId.value !== projectId) return;
+    retainedBasemapsError.value = e?.response?.data?.msg || e?.message || '历史底图读取失败';
   } finally {
-    retainedBasemapsLoading.value = false;
+    if (retainedBasemapGate.isCurrent(revision)) retainedBasemapsLoading.value = false;
   }
 }
 
