@@ -921,9 +921,26 @@ def init_basemap_chunked_upload(project_id, payload, owner):
     if project is None:
         raise ValueError(f"项目不存在: {project_id}")
     safe_name = validate_basemap_filename(payload.get("filename"))
+    from applications.common.utils import upload_sessions
+
+    # 会话已完成的恢复入口（问题13，2026-11-14 审查）：complete 成功但响应丢失
+    # （网络断/页面刷新）时，重开页面的 init 会被下方 incoming 同名 Conflict 挡死，
+    # 用户无法得知上传其实已成功。先查会话完成态：文件名一致直接带回 done+result，
+    # 前端据此短路整个续传流程；改名属于客户端不一致，明确 409。
+    try:
+        previous = upload_sessions.session_state(payload.get("upload_key"))
+    except upload_sessions.UploadSessionError:
+        previous = None
+    if previous is not None and previous.get("done"):
+        results = previous.get("result") or []
+        done_name = results[0].get("filename") if results else None
+        if done_name == safe_name:
+            return previous
+        raise Conflict(
+            f"该上传会话已按文件名 {done_name} 完成，与本次请求的 {safe_name} 不一致"
+        )
     if (_incoming_root() / safe_name).exists():
         raise Conflict("incoming/ 已存在同名底图，请重命名后重试")
-    from applications.common.utils import upload_sessions
 
     total_size = payload.get("total_size")
     try:
@@ -957,42 +974,47 @@ def complete_basemap_chunked_upload(project_id, session_id, filename, owner):
     from applications.common.utils import upload_sessions
 
     upload_sessions.ensure_session_owner(session_id, owner)
-    done = upload_sessions.session_is_done(session_id)
-    if done is not None:
-        # done 幂等：返回上次实际落盘的文件（而非本次请求名——改名重试会指向
-        # 不存在的文件，2026-11-01 审查项）；改名属于客户端不一致，明确 409
-        previous = done[0] if isinstance(done, list) and done else {}
-        previous_name = previous.get("filename")
-        if previous_name and previous_name != safe_name:
-            raise Conflict(
-                f"该上传会话已按文件名 {previous_name} 完成，与本次请求的 {safe_name} 不一致"
-            )
-        return {
-            "filename": previous_name or safe_name,
-            "size_bytes": int(previous.get("size_bytes") or 0),
-            "candidate": previous.get("candidate") or f"incoming/{safe_name}",
-        }
     final_path = _incoming_root() / safe_name
-    if final_path.exists():
-        raise Conflict("incoming/ 已存在同名底图，请重命名后重试")
     staging_path = _incoming_root() / f"{safe_name}.staging"
-    try:
-        from applications.common.utils.upload_sessions import assemble_session
+    # 整段持会话锁（问题12，2026-11-14 审查）：多 worker 并发 complete 会交错写
+    # 共享 staging（<name>.staging 按文件名而非会话命名）互相截断损坏——
+    # done 判定 + assemble + os.replace + 写完成态串行化后，第二者在锁内
+    # 必然看到 done 并复用上次落盘结果
+    with upload_sessions.session_lock(session_id):
+        done = upload_sessions.session_is_done(session_id)
+        if done is not None:
+            # done 幂等：返回上次实际落盘的文件（而非本次请求名——改名重试会指向
+            # 不存在的文件，2026-11-01 审查项）；改名属于客户端不一致，明确 409
+            previous = done[0] if isinstance(done, list) and done else {}
+            previous_name = previous.get("filename")
+            if previous_name and previous_name != safe_name:
+                raise Conflict(
+                    f"该上传会话已按文件名 {previous_name} 完成，与本次请求的 {safe_name} 不一致"
+                )
+            return {
+                "filename": previous_name or safe_name,
+                "size_bytes": int(previous.get("size_bytes") or 0),
+                "candidate": previous.get("candidate") or f"incoming/{safe_name}",
+            }
+        if final_path.exists():
+            raise Conflict("incoming/ 已存在同名底图，请重命名后重试")
+        try:
+            from applications.common.utils.upload_sessions import assemble_session
 
-        assembled = assemble_session(session_id, staging_path)
-        size_bytes = assembled.stat().st_size
-        os.replace(staging_path, final_path)
-    except Exception:
-        staging_path.unlink(missing_ok=True)
-        raise
-    upload_sessions.mark_session_done(
-        session_id, [{"filename": safe_name, "size_bytes": size_bytes, "candidate": f"incoming/{safe_name}"}]
-    )
-    return {
-        "filename": safe_name,
-        "size_bytes": size_bytes,
-        "candidate": f"incoming/{safe_name}",
-    }
+            assembled = assemble_session(session_id, staging_path)
+            size_bytes = assembled.stat().st_size
+            os.replace(staging_path, final_path)
+        except Exception:
+            staging_path.unlink(missing_ok=True)
+            raise
+        upload_sessions.mark_session_done(
+            session_id, [{"filename": safe_name, "size_bytes": size_bytes, "candidate": f"incoming/{safe_name}"}]
+        )
+        return {
+            "filename": safe_name,
+            "size_bytes": size_bytes,
+            "candidate": f"incoming/{safe_name}",
+        }
 
 
 def detect_tileset_directory(directory):

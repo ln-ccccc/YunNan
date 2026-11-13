@@ -77,6 +77,12 @@ export function createProjectWorkspaceApi({ http = axios, baseUrl = '' } = {}) {
           chunk_size: DEFAULT_CHUNK_SIZE_BYTES,
         },
       ));
+      // 会话已完成（complete 成功但响应丢失后重开页面）：init 直接带回 done+result，
+      // 短路整个续传流程，不再被重名冲突挡死（2026-11-14 审查问题13）
+      if (initState?.done) {
+        onProgress?.(100);
+        return initState.result?.[0] || initState;
+      }
       const received = new Set(initState?.received || []);
       const plan = planChunks(file.size, initState?.chunk_size || DEFAULT_CHUNK_SIZE_BYTES);
       if (plan.length === 0) throw new Error(`底图 ${file.name} 无法规划分片（大小 ${file.size}）`);
