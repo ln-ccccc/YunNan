@@ -409,7 +409,26 @@ def list_project_assets(project, asset_type=None, status=None):
             )
         )
 
-    results = ClassificationResult.query.filter_by(project_id=project_id).all()
+    # 与下方修订查询同理只取轻量列：ClassificationResult 整行会连带拉出
+    # roi_geometry_json / auto / current_feature_collection_json 三个
+    # MEDIUMTEXT（单成果矢量 64KB+），概览/资产热路径不得触碰（问题23）
+    results = (
+        ClassificationResult.query.filter_by(project_id=project_id)
+        .options(
+            load_only(
+                ClassificationResult.id,
+                ClassificationResult.mine_fid,
+                ClassificationResult.year,
+                ClassificationResult.mine_resource_id,
+                ClassificationResult.current_revision_no,
+                ClassificationResult.vector_status,
+                ClassificationResult.vector_error,
+                ClassificationResult.create_time,
+                ClassificationResult.update_time,
+            )
+        )
+        .all()
+    )
     result_identities = {(result.mine_fid, result.year) for result in results}
     result_ids = {result.id for result in results}
     datasets = ProjectDataset.query.filter_by(project_id=project_id).all()

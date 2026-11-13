@@ -4,6 +4,9 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import func
+from sqlalchemy.orm import selectinload
+
 from applications.extensions import db
 from applications.models.inference_job import InferenceJob
 from applications.models.project import (
@@ -40,6 +43,7 @@ from applications.project_hub.overview import (
     ACTION_CODE_BY_EVENT_TYPE,
     _build_project_counts,
     _is_unsafe_activity_value,
+    _recent_activities,
     _serialize_overview_activity,
     _serialize_overview_activity_list,
     _serialize_overview_summary,
@@ -82,51 +86,76 @@ LOGGER = logging.getLogger(__name__)
 
 def _project_list_features():
     """项目 → 图斑要素数（M1 看板）：每 (fid, year) 取最新一条成果（同年多任务
-    不重复计数），合计其 feature_count 冗余列。"""
+    不重复计数），合计其 feature_count 冗余列。聚合在 SQL 完成（分组 MAX(id)
+    再回连求和），不再把全库成果行拉进内存逐行挑最新（问题23 热路径）。"""
     from applications.models.classification_result import ClassificationResult
 
+    latest_ids = db.session.query(func.max(ClassificationResult.id)).group_by(
+        ClassificationResult.project_id,
+        ClassificationResult.mine_fid,
+        ClassificationResult.year,
+    )
     rows = (
         db.session.query(
             ClassificationResult.project_id,
-            ClassificationResult.mine_fid,
-            ClassificationResult.year,
-            ClassificationResult.id,
-            ClassificationResult.feature_count,
+            func.sum(ClassificationResult.feature_count),
         )
-        .order_by(ClassificationResult.id.desc())
+        .filter(ClassificationResult.id.in_(latest_ids))
+        .group_by(ClassificationResult.project_id)
         .all()
     )
-    latest = {}
-    for project_id, mine_fid, year, result_id, feature_count in rows:
-        key = (project_id, mine_fid, year)
-        if key not in latest:
-            latest[key] = feature_count or 0
-    totals = {}
-    for (project_id, _fid, _year), count in latest.items():
-        totals[project_id] = totals.get(project_id, 0) + count
-    return totals
+    return {project_id: int(total or 0) for project_id, total in rows}
 
 
 def _project_list_latest_inference():
-    """项目 → 最近一次推理任务（状态/时间），供项目卡片"最新解译进度"。"""
-    latest = (
-        InferenceJob.query.filter(InferenceJob.project_id.isnot(None))
-        .order_by(InferenceJob.project_id, InferenceJob.create_time.desc())
+    """项目 → 最近一次推理任务（状态/时间），供项目卡片"最新解译进度"。
+    SQL 按项目取 create_time 最新行且只选四列——此前整表加载任务实体，
+    result_json/warnings_json/request_payload_json 同为 MEDIUMTEXT（问题23）。
+    同秒并列时取 update_time 较新者，不依赖数据库返回顺序。"""
+    latest_time = (
+        db.session.query(
+            InferenceJob.project_id.label("project_id"),
+            func.max(InferenceJob.create_time).label("max_create"),
+        )
+        .filter(InferenceJob.project_id.isnot(None))
+        .group_by(InferenceJob.project_id)
+        .subquery()
+    )
+    rows = (
+        db.session.query(
+            InferenceJob.id,
+            InferenceJob.project_id,
+            InferenceJob.status,
+            InferenceJob.create_time,
+            InferenceJob.update_time,
+        )
+        .join(
+            latest_time,
+            (InferenceJob.project_id == latest_time.c.project_id)
+            & (InferenceJob.create_time == latest_time.c.max_create),
+        )
+        .order_by(InferenceJob.update_time.desc(), InferenceJob.id.asc())
         .all()
     )
     summary = {}
-    for job in latest:
-        if job.project_id not in summary:
-            summary[job.project_id] = {
-                "job_id": job.id,
-                "status": job.status,
-                "create_time": job.create_time,
+    for job_id, project_id, status, create_time, _update_time in rows:
+        if project_id not in summary:
+            summary[project_id] = {
+                "job_id": job_id,
+                "status": status,
+                "create_time": create_time,
             }
     return summary
 
 
 def list_projects(filters=None):
-    query = Project.query.filter_by(deleted_at=None).order_by(Project.update_time.desc())
+    query = (
+        Project.query.filter_by(deleted_at=None)
+        # 计数字段批量预加载：否则 len(project.mines/datasets) 对每个项目
+        # 各发一条全量加载查询（N+1，问题23 热路径）
+        .options(selectinload(Project.mines), selectinload(Project.datasets))
+        .order_by(Project.update_time.desc())
+    )
     filters = filters or {}
     if filters.get("name"):
         query = query.filter(Project.name.like(f"%{filters['name']}%"))
@@ -283,7 +312,9 @@ def get_project_detail(project_id):
         "summary": _serialize_summary(project),
         "mines": ProjectMineBindingSchema(many=True).dump(project.mines),
         "datasets": ProjectDatasetSchema(many=True).dump(project.datasets),
-        "recent_activity": ProjectActivityLogSchema(many=True).dump(project.activities[:20]),
+        "recent_activity": ProjectActivityLogSchema(many=True).dump(
+            _recent_activities(project.id)
+        ),
         "timeline": get_project_timeline(project_id)["items"],
         "exports": ProjectExportRecordSchema(many=True).dump(project.exports),
         "backups": ProjectBackupRecordSchema(many=True).dump(project.backups),
@@ -324,7 +355,9 @@ def get_project_overview(project_id):
             "blockers": blockers,
             "next_actions": build_next_actions(readiness),
             "counts": _build_project_counts(project, assets),
-            "recent_activity": _serialize_overview_activity_list(project.activities[:20]),
+            "recent_activity": _serialize_overview_activity_list(
+                _recent_activities(project.id)
+            ),
         }
     )
 

@@ -2,7 +2,9 @@
 """项目概览/摘要序列化域（H3 拆分，2026-10-01）：summary DTO、overview 空间三键
 （M2：readiness+资产单轨派生）、活动时间线安全序列化与看板计数。契约不变。"""
 
+from applications.extensions import db
 from applications.models.inference_job import InferenceJob
+from applications.models.project import ProjectActivityLog
 from applications.models.project_spatial import ProjectSpatialJob
 from applications.project_hub._foundation import _json_load, _utc_timestamp
 from applications.project_hub.spatial_state import serialize_project_spatial_state
@@ -10,8 +12,38 @@ from applications.project_hub.spatial_storage import get_storage_root
 from applications.schemas.project import ProjectSummarySchema
 
 
+def _latest_activity_time(project_id):
+    """项目最新活动时间：LIMIT 1 标量查询。此前 project.activities[0] 会先把
+    该项目全部活动行加载进内存再取第一条（问题23 热路径）。"""
+    return (
+        db.session.query(ProjectActivityLog.create_time)
+        .filter(ProjectActivityLog.project_id == project_id)
+        .order_by(
+            ProjectActivityLog.create_time.desc(),
+            ProjectActivityLog.id.desc(),
+        )
+        .limit(1)
+        .scalar()
+    )
+
+
+def _recent_activities(project_id, limit=20):
+    """最近活动：显式 LIMIT 查询。关系集合切片（activities[:20]）同样先全量
+    加载再在 Python 切片，活动表随项目生命周期无界增长（问题23 热路径）。
+    id.desc() 兼作同秒并列的确定性次序。"""
+    return (
+        ProjectActivityLog.query.filter(ProjectActivityLog.project_id == project_id)
+        .order_by(
+            ProjectActivityLog.create_time.desc(),
+            ProjectActivityLog.id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+
 def _serialize_summary(project, feature_count=None, latest_inference=None, include_card_fields=False):
-    latest_activity = project.activities[0].create_time if project.activities else None
+    latest_activity = _latest_activity_time(project.id)
     spatial_state = serialize_project_spatial_state(project)
     payload = {
         "id": project.id,
