@@ -99,21 +99,27 @@
 
 <script setup>
 import axios from 'axios';
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 import { resolveInitialView } from './auth/authGuards.js';
 import { fetchSession, login as loginRequest, logout as logoutRequest } from './auth/sessionClient.js';
 import LoginPage from './components/LoginPage.vue';
 import MapDashboard from './components/MapDashboard.vue';
-import EditingView from './components/EditingView.vue';
-import ImageryView from './components/ImageryView.vue';
-import SearchView from './components/SearchView.vue';
-import SettingsView from './components/SettingsView.vue';
-import SmartInterpretationView from './components/SmartInterpretationView.vue';
-import DataManagerView from './components/DataManagerView.vue';
 import ModulePlaceholder from './components/ModulePlaceholder.vue';
-import ProjectWorkspace from './components/ProjectWorkspace.vue';
 import { NAV_ITEMS, PRIMARY_NAV_ITEMS, TOOL_NAV_ITEMS, VIEW_HASH, buildMapHash, parseProjectIdFromHash, resolveViewFromHash } from './navigation/viewNavigation.js';
+
+// 主视图按需异步加载（2026-11-14 审查问题34）：本应用是 hash 切换型导航、
+// 无路由器，静态 import 会把全部页面打进首屏 chunk。MapDashboard 保持静态：
+// openMapView/handleHashChange 在 nextTick 后立即调用其 ref 方法
+// （focusByFid/openInferenceModal），异步包装在首次进入时 chunk 未就绪
+// 会静默丢调用。LoginPage 是首屏、ModulePlaceholder 是轻量兜底，同样静态。
+const ProjectWorkspace = defineAsyncComponent(() => import('./components/ProjectWorkspace.vue'));
+const EditingView = defineAsyncComponent(() => import('./components/EditingView.vue'));
+const ImageryView = defineAsyncComponent(() => import('./components/ImageryView.vue'));
+const SearchView = defineAsyncComponent(() => import('./components/SearchView.vue'));
+const SmartInterpretationView = defineAsyncComponent(() => import('./components/SmartInterpretationView.vue'));
+const DataManagerView = defineAsyncComponent(() => import('./components/DataManagerView.vue'));
+const SettingsView = defineAsyncComponent(() => import('./components/SettingsView.vue'));
 import { buildGeoViewUrl } from './navigation/geoviewNavigation.js';
 
 // 占位机制备用：M5.4 起七大模块全部转正，此表清空；后续新增模块可复用
