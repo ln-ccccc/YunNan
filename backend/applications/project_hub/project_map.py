@@ -115,12 +115,17 @@ def get_project_geojson(project_id):
 
 def get_project_map_manifest(project_id):
     project = _project(project_id)
-    state = serialize_project_spatial_state(project)
     mines = _active_resource(project_id, "mine_vector")
     basemap = _active_resource(project_id, "basemap")
+    tiles_available = _has_available_basemap_tiles(basemap)
+    # 三键与 tile_url 同判（问题24）：瓦片缺失时 map_ready=False、missing 含
+    # basemap——此前 state 走记录级而 tile_url 走磁盘，出现"地图就绪但打不开"
+    state = serialize_project_spatial_state(
+        project, basemap_tiles_available=tiles_available
+    )
     tile_url = None
     api_tile_url = None
-    if _has_available_basemap_tiles(basemap):
+    if tiles_available:
         tile_url = f"/tiles/projects/{project_id}/{basemap.id}/{{z}}/{{x}}/{{y}}.png"
         api_tile_url = f"/api/projects/{project_id}/map-resources/{basemap.id}/tiles/{{z}}/{{x}}/{{y}}.png"
     return {
