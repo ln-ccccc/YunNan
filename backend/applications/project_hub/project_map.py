@@ -96,6 +96,15 @@ def has_active_basemap_tiles(project_id):
     return _has_available_basemap_tiles(_active_resource(project_id, "basemap"))
 
 
+def active_mine_vector_source(project_id):
+    """激活矿山边界资源的追溯标识（导出 manifest 用）：id+version。
+    与 get_project_geojson 同一请求事务内读取，隔离级别保证两者一致。"""
+    resource = _active_resource(project_id, "mine_vector")
+    if resource is None:
+        return None
+    return {"resource_id": resource.id, "version": resource.version}
+
+
 def get_project_geojson(project_id):
     _project(project_id)
     resource = _active_resource(project_id, "mine_vector")

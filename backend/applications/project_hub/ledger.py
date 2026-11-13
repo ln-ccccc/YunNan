@@ -57,12 +57,19 @@ def _iter_class_counts(feature_collection_json):
         yield properties.get("class_code"), properties.get("class_name")
 
 
-def build_project_ledger_workbook(project):
-    results = (
+def collect_project_results(project):
+    """台账数据快照：工作簿内容与导出 manifest 来源共用同一次查询，
+    避免内容与清单分别读取后口径漂移（2026-11-14 审查问题31）。"""
+    return (
         ClassificationResult.query.filter_by(project_id=project.id)
         .order_by(ClassificationResult.mine_fid.asc(), ClassificationResult.year.asc())
         .all()
     )
+
+
+def build_project_ledger_workbook(project, results=None):
+    if results is None:
+        results = collect_project_results(project)
 
     workbook = Workbook()
     sheet = workbook.active

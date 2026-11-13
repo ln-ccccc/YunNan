@@ -99,10 +99,10 @@ def _validate_incoming_tiff_storage_key(value):
         raise ProjectStorageValidationError("storage_key 指向的文件不存在")
     return source_path.relative_to(storage_root).as_posix(), source_format
 
-def _write_xlsx(path, project, project_id=None, record_id=None):
+def _write_xlsx(path, project, results=None, project_id=None, record_id=None):
     from applications.project_hub.ledger import build_project_ledger_workbook
 
-    path.write_bytes(build_project_ledger_workbook(project).read())
+    path.write_bytes(build_project_ledger_workbook(project, results).read())
 
 def _storage_key(*parts):
     return Path(*parts).as_posix()
