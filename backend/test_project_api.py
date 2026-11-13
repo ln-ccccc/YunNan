@@ -2038,5 +2038,233 @@ class TestProjectAPI(unittest.TestCase):
         self.assertEqual(body["source_width"], 64)
 
 
+class TestClassificationStatsRevisionProtection(TestProjectAPI):
+    """审校统计版本保护与空成果显式空状态（2026-11-14 审查问题7+8）。
+
+    - 统计回写绑定 (result_id, revision_no)：过期修订与历史（同年非有效）成果
+      的回写被拒绝，旧计算不得覆盖新计算；
+    - 空成果保存使该年占比显式归零并失效旧审校矩阵，不保留旧值伪装当前结果；
+    - 连续修订两个年份，前一年审校值不丢失。
+    """
+
+    def _setup_stats_fixture(self, years=(2023, 2024), per_year_fc=None):
+        """按 test_revision_recomputes_revised_stats 的形态搭建：项目 + 矿山绑定 +
+        推理占比文件 + 各年 label.tif + ClassificationResult（v0 基线修订行）。"""
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        project_id = self._create_project("审校统计版本保护项目")
+        db.session.add(ProjectMineBinding(project_id=project_id, mine_fid=713))
+        db.session.commit()
+
+        storage_root = Path(os.environ["PROJECT_STORAGE_ROOT"])
+        fid_dir = storage_root / "projects" / str(project_id) / "outputs" / "inference" / "713"
+        fid_dir.mkdir(parents=True)
+        (fid_dir / "class_ratio_percent.json").write_text(json.dumps({
+            "fid": "713",
+            "class_names": ["grassland", "forest", "building", "road", "bareground", "water"],
+            "years": list(years),
+            "totals": [100] * len(years),
+            "series_percent": {
+                "grassland": [30.0] * len(years), "forest": [20.0] * len(years),
+                "building": [10.0] * len(years), "road": [5.0] * len(years),
+                "bareground": [15.0] * len(years), "water": [20.0] * len(years),
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+        for year in years:
+            data = np.full((10, 10), 255, dtype=np.uint8)
+            data[:, :5] = 1
+            data[:, 5:] = 0
+            with rasterio.open(
+                fid_dir / f"713+{year}_label.tif", "w", driver="GTiff",
+                height=10, width=10, count=1, dtype="uint8",
+                crs="EPSG:4326", transform=from_origin(100.0, 26.0, 0.001, 0.001), nodata=255,
+            ) as dataset:
+                dataset.write(data, 1)
+
+        roi_geometry = {"type": "Polygon", "coordinates": [
+            [[99.9, 25.9], [100.1, 25.9], [100.1, 26.1], [99.9, 26.1], [99.9, 25.9]],
+        ]}
+        results = {}
+        for year in years:
+            fc = (per_year_fc or {}).get(year) or self._stats_fc(0)
+            fc_json = json.dumps(fc, ensure_ascii=False)
+            db.session.add(ClassificationResult(
+                project_id=project_id, mine_fid=713, year=year,
+                inference_job_id=f"job-statsguard-{year}", model_id="cc-ln/CUGRS", mine_resource_id=1,
+                roi_geometry_json=json.dumps(roi_geometry),
+                current_feature_collection_json=fc_json,
+                auto_feature_collection_json=fc_json,
+                current_revision_no=0, feature_count=len(fc["features"]), vector_status="ready",
+            ))
+            db.session.commit()
+            result = ClassificationResult.query.filter_by(project_id=project_id, year=year).first()
+            db.session.add(ClassificationRevision(
+                result_id=result.id, revision_no=0, source="auto", author="system",
+                feature_count=len(fc["features"]),
+                snapshot_path=f"classification-results/{result.id}/auto.geojson",
+                feature_collection_json=fc_json,
+            ))
+            db.session.commit()
+            results[year] = result
+        return project_id, fid_dir, results
+
+    @staticmethod
+    def _stats_fc(first_class, first_feature_id=None):
+        features = [
+            {"type": "Feature", "properties": {"class_code": first_class, "feature_id": first_feature_id or f"auto-1-{first_class}-1"},
+             "geometry": {"type": "Polygon", "coordinates": [[[100.0, 26.0], [100.005, 26.0], [100.005, 25.99], [100.0, 25.99], [100.0, 26.0]]]}},
+            {"type": "Feature", "properties": {"class_code": 4, "feature_id": "auto-1-4-1"},
+             "geometry": {"type": "Polygon", "coordinates": [[[100.005, 26.0], [100.01, 26.0], [100.01, 25.99], [100.005, 25.99], [100.005, 26.0]]]}},
+        ]
+        return {"type": "FeatureCollection", "features": features}
+
+    def _save_revision(self, project_id, result, base_revision_no, fc):
+        return self.client.post(
+            f"/api/projects/{project_id}/classification-results/{result.id}/revisions",
+            json={"base_revision_no": base_revision_no, "feature_collection": fc},
+        )
+
+    def _ratio_payload(self, fid_dir):
+        return json.loads((fid_dir / "class_ratio_percent.json").read_text(encoding="utf-8"))
+
+    def test_statsguard_two_year_revisions_merge(self):
+        self.login_as_admin()
+        project_id, fid_dir, results = self._setup_stats_fixture()
+
+        # 2023 审为建筑、2024 审为林地：两次保存后两个年份的审校值必须同时保留
+        fc_2023 = self._stats_fc(2, first_feature_id="auto-1-0-1")
+        response = self._save_revision(project_id, results[2023], 0, fc_2023)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        fc_2024 = self._stats_fc(1, first_feature_id="auto-1-0-1")
+        response = self._save_revision(project_id, results[2024], 0, fc_2024)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+
+        revised = self._ratio_payload(fid_dir)["revised"]
+        self.assertAlmostEqual(revised["series_percent"]["building"][0], 50.0, places=1)
+        self.assertAlmostEqual(revised["series_percent"]["forest"][1], 50.0, places=1)
+        self.assertEqual(revised["per_year"]["2023"]["revision_no"], 1)
+        self.assertEqual(revised["per_year"]["2024"]["revision_no"], 1)
+
+    def test_statsguard_stale_revision_writeback_skipped(self):
+        # 问题8 竞争接缝：旧修订的统计计算在半途被新保存超越——旧回写必须被
+        # 版本校验拒绝，最终统计只指向新修订
+        import applications.project_hub.classification_stats as stats_module
+        from applications.project_hub.classification_results import save_classification_revision
+
+        self.login_as_admin()
+        project_id, fid_dir, results = self._setup_stats_fixture(years=(2024,))
+        result = results[2024]
+
+        original_compute = stats_module.compute_vector_class_ratio
+        state = {"triggered": False}
+
+        def interleaved_compute(feature_collection):
+            if not state["triggered"]:
+                state["triggered"] = True
+                # 模拟旧版本计算耗时期间发生了新保存（其回写即时完成）
+                newer_fc = self._stats_fc(1, first_feature_id="auto-1-0-1")
+                save_classification_revision(
+                    project_id, result.id,
+                    {"base_revision_no": 1, "feature_collection": newer_fc},
+                    actor="admin",
+                )
+            return original_compute(feature_collection)
+
+        with patch.object(stats_module, "compute_vector_class_ratio", side_effect=interleaved_compute):
+            first_fc = self._stats_fc(2, first_feature_id="auto-1-0-1")
+            response = self._save_revision(project_id, result, 0, first_fc)
+            self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+
+        revised = self._ratio_payload(fid_dir)["revised"]
+        # 最终统计只能指向修订 2（新保存），旧修订 1 的回写被拒绝
+        self.assertEqual(revised["revision_no"], 2)
+        self.assertAlmostEqual(revised["series_percent"]["forest"][0], 50.0, places=1)
+        self.assertEqual(revised["per_year"]["2024"]["revision_no"], 2)
+
+    def test_statsguard_older_sibling_result_cannot_replace_stats(self):
+        # 问题8：同一矿山同一年存在两个成果（不同 inference_job_id）时，编辑
+        # 历史成果（id 更小、非当前有效）不得替换当前有效成果的统计
+        self.login_as_admin()
+        project_id, fid_dir, results = self._setup_stats_fixture(years=(2024,))
+        older = results[2024]
+
+        roi_geometry = json.loads(older.roi_geometry_json)
+        fc_json = json.dumps(self._stats_fc(0), ensure_ascii=False)
+        db.session.add(ClassificationResult(
+            project_id=project_id, mine_fid=713, year=2024,
+            inference_job_id="job-statsguard-effective", model_id="cc-ln/CUGRS", mine_resource_id=1,
+            roi_geometry_json=json.dumps(roi_geometry),
+            current_feature_collection_json=fc_json,
+            auto_feature_collection_json=fc_json,
+            current_revision_no=0, feature_count=2, vector_status="ready",
+        ))
+        db.session.commit()
+        effective_id = ClassificationResult.query.filter_by(
+            project_id=project_id, inference_job_id="job-statsguard-effective"
+        ).first().id
+        db.session.add(ClassificationRevision(
+            result_id=effective_id, revision_no=0, source="auto", author="system",
+            feature_count=2, snapshot_path=f"classification-results/{effective_id}/auto.geojson",
+            feature_collection_json=fc_json,
+        ))
+        db.session.commit()
+        self.assertLess(older.id, effective_id)
+
+        older_fc = self._stats_fc(2, first_feature_id="auto-1-0-1")
+        response = self._save_revision(project_id, older, 0, older_fc)
+        # 历史成果的保存本身允许成功（修订历史），但不得污染共享统计文件
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = self._ratio_payload(fid_dir)
+        self.assertNotIn("revised", payload)
+        # 其修订号确实前进了（编辑被接受，只是统计不回写）
+        db.session.expire_all()
+        self.assertEqual(
+            db.session.query(ClassificationResult.current_revision_no).filter_by(id=older.id).scalar(), 1
+        )
+
+    def test_statsguard_empty_save_invalidates_ratio_and_matrix(self):
+        self.login_as_admin()
+        project_id, fid_dir, results = self._setup_stats_fixture()
+
+        # 先做一次非空修订：审校矩阵建立（basis=revised_vector）
+        fc_2024 = self._stats_fc(2, first_feature_id="auto-1-0-1")
+        response = self._save_revision(project_id, results[2024], 0, fc_2024)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        matrix_path = (
+            Path(os.environ["PROJECT_STORAGE_ROOT"]) / "projects" / str(project_id)
+            / "outputs" / "change_matrix" / "713.json"
+        )
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        self.assertTrue(matrix["has_change_matrix"])
+        self.assertEqual(matrix["basis"], "revised_vector")
+
+        # 删除全部图斑保存为空集合：占比显式归零，旧审校矩阵失效
+        response = self._save_revision(project_id, results[2024], 1, {"type": "FeatureCollection", "features": []})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+
+        revised = self._ratio_payload(fid_dir)["revised"]
+        for name in ("grassland", "forest", "building", "road", "bareground", "water"):
+            self.assertEqual(revised["series_percent"][name][1], 0.0)
+        self.assertTrue(revised["per_year"]["2024"]["empty"])
+
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        self.assertFalse(matrix["has_change_matrix"])
+        self.assertEqual(matrix["basis"], "revised_vector_invalid")
+        self.assertEqual(matrix["matrix"], [])
+
+        # 溯源接口消费的也是显式空状态（2024 全 0），2023 位不受影响
+        response = self.client.get(f"/api/projects/{project_id}/mines/713/traceability")
+        years = self._json(response)["data"]["years"]
+        year_2024 = next(entry for entry in years if entry["year"] == 2024)
+        self.assertEqual(year_2024["class_ratio_percent"]["building"], 0.0)
+
+        # 矩阵接口透传失效态，不再展示旧审校结果
+        response = self.client.get(f"/api/projects/{project_id}/mines/change-matrix?fid=713")
+        matrix_view = self._json(response)["data"]
+        self.assertFalse(matrix_view["has_change_matrix"])
+
+
 if __name__ == "__main__":
     unittest.main()

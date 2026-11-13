@@ -33,6 +33,11 @@ def _already_current(result):
         revised = json.loads(path.read_text(encoding="utf-8")).get("revised") or {}
     except (OSError, ValueError):
         return False
+    per_year = revised.get("per_year")
+    if isinstance(per_year, dict):
+        entry = per_year.get(str(result.year))
+        if entry and entry.get("revision_no") == result.current_revision_no:
+            return True
     return revised.get("revision_no") == result.current_revision_no
 
 
@@ -63,7 +68,7 @@ def main() -> int:
                 continue
             ratio_ok = apply_revised_class_ratio(
                 result.project_id, result.mine_fid, result.year,
-                result.current_revision_no, collection,
+                result.current_revision_no, collection, result_id=result.id,
             )
             matrix_ok = compute_revised_change_matrix(result.project_id, result.mine_fid)
             if ratio_ok or matrix_ok:

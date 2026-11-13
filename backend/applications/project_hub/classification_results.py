@@ -491,10 +491,17 @@ def save_classification_revision(project_id, result_id, payload, *, actor, body_
         db.session.commit()
         # 审校统计回写（2026-10-31 方案 b）：保存成功后按审校矢量重算占比与
         # 变化矩阵，失败仅记日志不回滚——统计产物非关键数据，溯源/趋势有
-        # 推理口径回落（见 classification_stats 模块注释）
+        # 推理口径回落（见 classification_stats 模块注释）。回写绑定
+        # (result_id, revision_no) 并锁项目行：过期修订/历史成果不得覆盖
+        # 共享统计（2026-11-14 审查问题8）
         try:
             apply_revised_class_ratio(
-                result.project_id, result.mine_fid, result.year, revision_no, feature_collection
+                result.project_id,
+                result.mine_fid,
+                result.year,
+                revision_no,
+                feature_collection,
+                result_id=result.id,
             )
             compute_revised_change_matrix(result.project_id, result.mine_fid)
         except Exception:  # noqa: BLE001 - 统计回写绝不影响保存结果
