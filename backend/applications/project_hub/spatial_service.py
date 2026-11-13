@@ -576,9 +576,11 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
 
     前提是瓦片目录与 .active 标记仍在其自身 resource 目录中（激活期只改
     状态与标记，不复制数据——性能计划遗留项的收敛实现）。
+
+    归档项目拒绝（问题18，2026-11-14）：重新激活属于空间资源配置写入口，
+    与 can_configure_spatial 一致，只检查项目存在的旧逻辑绕过了该约束。
     """
-    if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
-        raise ValueError(f"项目不存在: {project_id}")
+    _editable_project(project_id)
     target = ProjectSpatialResource.query.filter_by(
         id=resource_id,
         project_id=project_id,
@@ -820,7 +822,11 @@ def retry_spatial_job(project_id, job_id, actor="system"):
 
 
 def cancel_spatial_job(project_id, job_id, actor="system"):
-    _editable_project(project_id)
+    # 归档项目仍允许取消任务（问题18 例外，2026-11-14）：取消是运维安全
+    # 动作而非空间资源"配置"，用 _editable_project 会把归档后仍在运行的
+    # 任务锁死到无法停止；仅拒绝已删除项目
+    if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
+        raise ValueError(f"项目不存在: {project_id}")
     job = ProjectSpatialJob.query.filter_by(id=job_id, project_id=project_id).first()
     if job is None:
         raise ValueError("空间处理任务不存在")
@@ -876,11 +882,10 @@ def receive_basemap_upload(project_id, filename, stream):
     受控存储接口归后端（AGENTS §3）：BFF 只做鉴权与流式转发，本函数是校验与
     落盘的唯一权威——扩展名白名单复用 ALLOWED_BASEMAP_EXTENSIONS、staging 命名
     复用 _is_incomplete_copy_name 契约、重名 409、15GB 业务上限（超限 413，2026-10-31 用户确认放宽：整省底图/大图集经网页上传的场景）。
-    落盘完成即成为空间资源面板的底图候选。
+    落盘完成即成为空间资源面板的底图候选。归档项目拒绝（问题18）：为归档项目
+    上传底图候选属于空间资源配置写入口，与 can_configure_spatial 一致。
     """
-    project = Project.query.filter_by(id=project_id, deleted_at=None).first()
-    if project is None:
-        raise ValueError(f"项目不存在: {project_id}")
+    _editable_project(project_id)
     safe_name = validate_basemap_filename(filename)
     incoming_root = _incoming_root()
     final_path = incoming_root / safe_name
@@ -916,10 +921,9 @@ def init_basemap_chunked_upload(project_id, payload, owner):
 
     会话暂存 static/upload/.chunks（与目标卷无关，7 天 sweep 清扫）；
     complete 阶段合并落盘 incoming/（见 complete_basemap_chunked_upload）。
+    归档项目拒绝（问题18）：init/complete 与单发上传同为空间资源配置入口。
     """
-    project = Project.query.filter_by(id=project_id, deleted_at=None).first()
-    if project is None:
-        raise ValueError(f"项目不存在: {project_id}")
+    _editable_project(project_id)
     safe_name = validate_basemap_filename(payload.get("filename"))
     if (_incoming_root() / safe_name).exists():
         raise Conflict("incoming/ 已存在同名底图，请重命名后重试")
@@ -949,10 +953,9 @@ def complete_basemap_chunked_upload(project_id, session_id, filename, owner):
     不走 upload_one_from_path（跳过 Photo 注册与 tiff 预处理）——落盘即成底图
     候选。done 幂等：complete 成功过（响应丢失/重试）直接返回上次落盘结果；
     属主校验在幂等分支之前——他人不得重放别人的完成结果（2026-11-01 审查 P1）。
+    归档项目拒绝（问题18）：complete 会向 incoming/ 落盘新候选。
     """
-    project = Project.query.filter_by(id=project_id, deleted_at=None).first()
-    if project is None:
-        raise ValueError(f"项目不存在: {project_id}")
+    _editable_project(project_id)
     safe_name = validate_basemap_filename(filename)
     from applications.common.utils import upload_sessions
 
