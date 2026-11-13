@@ -445,6 +445,106 @@ def delete_project(project_id, actor="system"):
     }
 
 
+class ProjectUndeleteNotAllowed(ValueError):
+    """已删项目不可恢复（未删除/目录冲突/回收站缺目录）——携带 409 语义。"""
+
+
+def _persisted_trash_target(project_id):
+    """从最近一条 project_deleted 审计事件读取持久化的回收位置
+    （delete_project 删除时写入 payload.trash_target）。返回 (位置名|None, 有事件|bool)。"""
+    from applications.models.project import ProjectActivityLog
+
+    row = (
+        ProjectActivityLog.query.filter_by(
+            project_id=project_id, event_type="project_deleted"
+        )
+        .order_by(ProjectActivityLog.create_time.desc(), ProjectActivityLog.id.desc())
+        .first()
+    )
+    if row is None:
+        return None, False
+    payload = _json_load(row.payload_json, {})
+    return payload.get("trash_target"), True
+
+
+def undelete_project(project_id, actor="system"):
+    """从回收站恢复已删除项目（问题14 第一阶段：运维恢复接口）。
+
+    - 仅软删（deleted_at 置位）项目可恢复；恢复后状态仍为 archived，
+      激活走 POST /restore（归档→active 通道）；
+    - 回收位置以 project_deleted 事件持久化的 trash_target 为准（不按
+      trash/{id}_* glob 猜测——同前缀残留/多次删除会拿错目录）；
+      删除时无目录（纯元数据项目）直接清软删位；存量已删项目缺事件时
+      回退 glob 取最新兼容；
+    - 持久化位置目录缺失、projects/<id>/ 已有目录：409 明确报错；
+    - 先移目录再提交 DB；提交失败把目录移回 trash 原位（与 delete 的
+      回滚方向对称）。
+    """
+    project = (
+        db.session.query(Project.id, Project.deleted_at)
+        .filter_by(id=project_id)
+        .with_for_update()
+        .first()
+    )
+    if project is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    project = Project.query.filter_by(id=project_id).first()
+    if project.deleted_at is None:
+        raise ProjectUndeleteNotAllowed("项目未处于删除状态，无需恢复")
+
+    from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+
+    storage_root = get_storage_root()
+    trash_name, has_delete_event = _persisted_trash_target(project.id)
+
+    if not has_delete_event:
+        # 存量已删项目（历史删除无审计事件）：回退 glob 取最新
+        trash_root = resolve_storage_path(storage_root, Path("trash"))
+        candidates = (
+            sorted(p for p in trash_root.glob(f"{project.id}_*") if p.is_dir())
+            if trash_root.exists()
+            else []
+        )
+        trash_name = candidates[-1].name if candidates else None
+
+    project_root = resolve_storage_path(storage_root, Path("projects") / str(project.id))
+    if project_root.exists():
+        raise ProjectUndeleteNotAllowed(
+            "项目目录已存在，请先排查同名残留目录后再恢复"
+        )
+
+    trash_target = None
+    if trash_name is not None:
+        trash_target = resolve_storage_path(storage_root, Path("trash") / str(trash_name))
+        if not trash_target.is_dir():
+            raise ProjectUndeleteNotAllowed(
+                f"回收站中未找到删除事件记录的目录（{trash_name}），"
+                "请人工核对 trash 后重试"
+            )
+        projects_root = resolve_storage_path(storage_root, Path("projects"))
+        projects_root.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(trash_target), str(project_root))
+
+    project.deleted_at = None
+    _append_activity(
+        project.id,
+        "project_undeleted",
+        {"trash_source": trash_name},
+        actor=actor,
+        target={"type": "project", "id": str(project.id)},
+    )
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        if trash_target is not None:
+            trash_root = resolve_storage_path(storage_root, Path("trash"))
+            trash_root.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(project_root), str(trash_target))
+        raise
+    return {"id": project.id, "name": project.name, "restored": True}
+
+
 def batch_archive_projects(project_ids, actor="system"):
     """批量归档：逐项复用单项目服务，部分失败不影响其余项（逐项报告结果）。"""
     results = []

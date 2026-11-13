@@ -162,6 +162,16 @@ Response 至少包含：
 - 旧 `GET /api/projects/{project_id}` 仅用于兼容历史客户端；新 Miner 工作台不得调用或转发其详情响应，BFF 也不得为导出读取该旧详情。
 - 矿山矢量预览和 `GET /api/projects/{project_id}/geojson` 会保留普通业务属性，但会递归过滤属性名为 `file_path`、`source_path`、`normalized_path`、`tile_path`、`manifest_path`、`output_dir` 的字段（大小写不敏感）；禁止把这些保留名当作矿山字段映射。导入时会把用户选定的 FID 映射规范为公开 `FID_1`，供地图、资产和自动导出使用。
 
+### 回收站运维恢复接口（问题14 第一阶段）
+
+`POST /api/projects/{project_id}/undelete`：从回收站恢复已删除项目（运维操作，需登录）。
+
+- **入口**：管理员/运维经 HTTP 直调（暂无 Miner UI/BFF 接入，属第一阶段范围外）。
+- **行为**：按最近一条 `project_deleted` 审计事件持久化的 `trash_target` 精确定位回收目录并移回 `projects/{id}/`，清除软删位，追加 `project_undeleted` 事件；删除时无目录的纯元数据项目直接清软删位；存量已删项目缺删除事件时回退 `trash/{id}_*` 字典序最新兼容。
+- **限制**：仅软删项目可恢复（未删除 `409`、不存在 `404`）；`projects/{id}/` 已有目录 `409`（先人工排查残留）；持久化位置目录缺失 `409`（不猜测恢复）；恢复后状态为 `archived`，激活走 `POST /restore`。
+- **失败回滚**：DB 提交失败时目录自动移回 trash 原位，项目保持删除态。
+- **运维步骤**：删除可在列表确认项目消失后执行；恢复后先核对 `GET /overview` 数据完整，再决定是否 `POST /restore` 激活。
+
 ### 项目工作台验证
 
 Project Hub 改动需要同时验证 BFF、浏览器侧数据装配和后端 Read Model。Miner 侧执行：
