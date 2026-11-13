@@ -459,18 +459,48 @@ def _copy_valid_mask(dst, masks):
 
 
 def _pixel_area_m2(src):
-    # 按 CRS 换算（2026-10-31 数值审查）：地理坐标系用度公式；Web Mercator
-    # 每轴失真 1/cos(lat) 需乘 cos² 修正；其他投影（米制）直接为 m²。
-    # 原公式恒按度换算，对 EPSG:3857 源影像会得出天文数字。
-    pixel_area = abs(src.transform.a) * abs(src.transform.e)
-    center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
+    """像元真实地表面积（m²）；无法安全确定时返回 None（调用方拒绝按面积切片）。
+
+    - 无 CRS：返回 None——不猜测面积（2026-11-14 审查问题9：与调用方
+      "缺少有效地理参考应拒绝"的预期对齐）。
+    - 地理坐标系：度 → 米用中心纬度余弦修正（球面近似，与裁剪/预览同口径）。
+    - EPSG:3857：bounds 纵坐标是米不能当纬度用——先把影像中心反算到
+      EPSG:4326 求真实纬度，再按 cos² 修正（Web Mercator 每轴失真 1/cos）。
+      旧实现直接 radians(米数) 参与余弦，北纬 25° 的 10m 像元算出 ~18 m²
+      （真实 ≈82.14 m²）。
+    - 其他投影：显式识别线性单位，仅接受米制（factor==1）；非米制抛错，
+      不把英尺等数值静默当米。
+    - 像元面积取仿射行列式 |a·e − b·d|：轴对齐时等于 |a·e|，旋转/剪切
+      影像也能得到正确像元面积。
+    """
     crs = src.crs
     if crs is None:
-        return pixel_area * (_METERS_PER_DEG_LAT ** 2) * math.cos(math.radians(center_lat))
+        return None
+    pixel_area = abs(src.transform.determinant)
+    if pixel_area <= 0:
+        return None
     if crs.is_geographic:
+        center_lat = (src.bounds.top + src.bounds.bottom) / 2.0
         return pixel_area * (_METERS_PER_DEG_LAT ** 2) * math.cos(math.radians(center_lat))
     if crs.to_epsg() == 3857:
-        return pixel_area * (math.cos(math.radians(center_lat)) ** 2)
+        from rasterio.warp import transform as _warp_transform
+
+        center_x = (src.bounds.left + src.bounds.right) / 2.0
+        center_y = (src.bounds.top + src.bounds.bottom) / 2.0
+        _lon, lat = _warp_transform(crs, "EPSG:4326", [center_x], [center_y])
+        if not lat or not math.isfinite(lat[0]):
+            raise ImageryProcessingError("无法确定影像中心纬度，无法按面积切片")
+        return pixel_area * (math.cos(math.radians(lat[0])) ** 2)
+    try:
+        unit_name, unit_factor = crs.linear_units_factor
+    except Exception:  # noqa: BLE001 - 非标准投影单位定义读不出时拒绝猜测
+        raise ImageryProcessingError(
+            f"无法识别影像投影线性单位（{crs.to_string()}），无法按面积切片"
+        ) from None
+    if abs(float(unit_factor) - 1.0) > 1e-9:
+        raise ImageryProcessingError(
+            f"影像投影线性单位非米制（{unit_name}），无法按面积切片"
+        )
     return pixel_area
 
 
