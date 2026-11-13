@@ -4,6 +4,7 @@
 import base64
 import io
 import json
+import math
 import os
 import sys
 import tempfile
@@ -20,6 +21,10 @@ from applications import create_app
 from applications.extensions import db
 from applications.models.project import Project, ProjectDataset
 from applications.models.project_spatial import ProjectSpatialResource
+from applications.project_hub.imagery_processing import (
+    ImageryProcessingError,
+    _pixel_area_m2,
+)
 from applications.project_hub.inference_inputs import (
     ProjectInferenceInputError,
     _resolve_registered_tif,
@@ -38,6 +43,27 @@ def _make_raster(path: Path, width=960, height=640, pixel_deg=0.0005, origin=(10
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(rng.integers(20, 235, size=(3, height, width), dtype=np.uint8))
     return path
+
+
+def _make_crs_raster(path: Path, width, height, transform, crs):
+    """按给定仿射与 CRS 构造小栅格（问题9 像元面积测试用）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(7)
+    profile = {
+        "driver": "GTiff", "height": height, "width": width, "count": 3, "dtype": "uint8",
+        "crs": crs, "transform": transform,
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(rng.integers(20, 235, size=(3, height, width), dtype=np.uint8))
+    return path
+
+
+def _web_mercator_origin(width, height, pixel_m, center_lon, center_lat):
+    """中心点落在 (center_lon, center_lat) 的 3857 仿射 origin（左上角）。"""
+    from rasterio.warp import transform as warp_transform
+
+    mx, my = warp_transform("EPSG:4326", "EPSG:3857", [center_lon], [center_lat])
+    return mx[0] - width * pixel_m / 2.0, my[0] + height * pixel_m / 2.0
 
 
 class ImageryProcessingBase(TestProjectAPI):
@@ -439,6 +465,132 @@ class TestImageryPreview(ImageryProcessingBase):
         alpha = np.array(image.split()[-1])
         self.assertTrue((alpha[:, :100] == 255).all(), "有效区不透明")
         self.assertTrue((alpha[:, 100:] == 0).all(), "nodata 区必须透明")
+
+
+class TestPixelAreaM2(unittest.TestCase):
+    """像元真实面积换算（2026-11-14 审查问题9）。
+
+    旧实现把 EPSG:3857 以米计的 bounds 纵坐标直接当纬度参与余弦计算——
+    北纬 25°、10m 像元算出 ~18 m²（真实应为 100·cos²(25°)≈82.14 m²）；
+    无 CRS 时仍猜测面积，与调用方"缺少有效地理参考应拒绝"的预期冲突。
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def _area(self, name, transform, crs):
+        path = _make_crs_raster(self.dir / name, 4, 4, transform, crs)
+        with rasterio.open(path) as src:
+            return _pixel_area_m2(src)
+
+    def test_web_mercator_uses_true_latitude(self):
+        # 中心 (100°E, 25°N)，10m 像元：真实面积 = 100·cos²(25°) ≈ 82.14 m²
+        x0, y1 = _web_mercator_origin(4, 4, 10.0, 100.0, 25.0)
+        area = self._area(
+            "mercator.tif",
+            rasterio.transform.from_origin(x0, y1, 10.0, 10.0),
+            "EPSG:3857",
+        )
+        expected = 100.0 * math.cos(math.radians(25.0)) ** 2
+        self.assertAlmostEqual(area, expected, places=2, msg=f"area={area} expected≈{expected}")
+
+    def test_geographic_degrees_formula_unchanged(self):
+        # 4326 中心 25°N、0.001° 像元：(0.001·111320)²·cos(25°)
+        area = self._area(
+            "geo.tif",
+            rasterio.transform.from_origin(100.0, 25.002, 0.001, 0.001),
+            "EPSG:4326",
+        )
+        expected = (0.001 * 111320.0) ** 2 * math.cos(math.radians(25.0))
+        self.assertAlmostEqual(area, expected, places=2)
+
+    def test_metric_projection_is_direct(self):
+        # UTM 47N 10m 像元：投影米制单位直接 100 m²
+        area = self._area(
+            "utm.tif",
+            rasterio.transform.from_origin(500000.0, 2760000.0, 10.0, 10.0),
+            "EPSG:32647",
+        )
+        self.assertAlmostEqual(area, 100.0, places=6)
+
+    def test_missing_crs_returns_none(self):
+        area = self._area(
+            "nocrs.tif",
+            rasterio.transform.from_origin(100.0, 26.0, 0.001, 0.001),
+            None,
+        )
+        self.assertIsNone(area)
+
+    def test_rotated_affine_uses_determinant(self):
+        # 旋转/剪切像元面积 = |a·e − b·d|：10/-10 主轴 + 3/3 剪切 → 109 m²（CRS 单位）
+        from affine import Affine
+        from rasterio.warp import transform as warp_transform
+
+        mx, my = warp_transform("EPSG:4326", "EPSG:3857", [100.0], [25.0])
+        transform = Affine(10.0, 3.0, mx[0] - 26.0, 3.0, -10.0, my[0] + 14.0)
+        area = self._area("rotated.tif", transform, "EPSG:3857")
+        expected = 109.0 * math.cos(math.radians(25.0)) ** 2
+        self.assertAlmostEqual(area, expected, places=2)
+
+    def test_non_metre_projection_rejected(self):
+        # 非米制投影（NAD83 / North Carolina ftUS）不得静默按数值当米
+        with self.assertRaises(ImageryProcessingError) as ctx:
+            self._area(
+                "foot.tif",
+                rasterio.transform.from_origin(2000000.0, 500000.0, 10.0, 10.0),
+                "EPSG:2264",
+            )
+        self.assertIn("非米制", str(ctx.exception))
+
+
+class TestGridAreaCRSHandling(ImageryProcessingBase):
+    # 屏蔽继承的父类用例（fixture 已改写，只跑本类用例）
+    def test_timeline_normalizes_project_data_export_and_snapshot_activities(self):
+        self.skipTest("parent-case not applicable")
+
+    def test_xlsx_export_builds_project_ledger_workbook(self):
+        self.skipTest("parent-case not applicable")
+
+    def test_xlsx_export_tolerates_vector_failed_result_with_null_collection(self):
+        self.skipTest("parent-case not applicable")
+
+    def test_project_workflow_crud_binding_dataset_timeline_and_status(self):
+        self.skipTest("parent-case not applicable")
+
+    def test_grid_area_on_web_mercator_uses_true_pixel_area(self):
+        # 3857 10m 像元 @25°N 真实 ≈82.14 m²/px；面积目标 = 像元面积×400
+        # → side = 20px。旧实现把米当纬度算出 ~18 m²/px → side≈46px（错误）
+        x0, y1 = _web_mercator_origin(200, 200, 10.0, 100.0, 25.0)
+        source = _make_crs_raster(
+            self.inputs_dir / "source_3857.tif",
+            200, 200,
+            rasterio.transform.from_origin(x0, y1, 10.0, 10.0),
+            "EPSG:3857",
+        )
+        key = f"projects/{self.project_id}/inputs/imagery/{source.name}"
+        pixel_area = 100.0 * math.cos(math.radians(25.0)) ** 2
+        response = self._slice({
+            "source": key, "mode": "grid_area",
+            "tile_area_m2": pixel_area * 400, "limit": 128,
+        })
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        grid = response.get_json()["data"]["grid"]
+        self.assertEqual(grid["tile_w"], 20)
+        self.assertEqual(grid["tile_h"], 20)
+
+    def test_grid_area_without_crs_rejected(self):
+        _make_crs_raster(
+            self.inputs_dir / "source_nocrs.tif",
+            200, 200,
+            rasterio.transform.from_origin(100.0, 26.0, 0.001, 0.001),
+            None,
+        )
+        key = f"projects/{self.project_id}/inputs/imagery/source_nocrs.tif"
+        response = self._slice({"source": key, "mode": "grid_area", "tile_area_m2": 40_000})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("缺少有效地理参考", response.get_json()["msg"])
 
 
 if __name__ == "__main__":
