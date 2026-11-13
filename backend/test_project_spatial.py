@@ -321,6 +321,125 @@ class TestProjectSpatialState(unittest.TestCase):
             self.assertEqual(project.mines[0].mine_name_snapshot, "Mine A")
             self.assertTrue(os.path.isfile(os.path.join(temp_dir, resource.normalized_path)))
 
+    def _import_boundary(self, project_id, version, temp_dir):
+        from applications.project_hub.spatial_service import import_mine_vector
+
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "OBJECTID": 100 + version,
+                        "name": f"Mine V{version}",
+                        "city": "Dali",
+                        "area": 1.0,
+                    },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[102.0, 25.0], [102.1, 25.0], [102.1, 25.1], [102.0, 25.0]]],
+                    },
+                }
+            ],
+        }
+        return import_mine_vector(
+            project_id,
+            f"mines_v{version}.geojson",
+            json.dumps(payload),
+            {"fid": "OBJECTID", "name": "name", "region": "city", "area": "area"},
+        )
+
+    def test_import_mines_keeps_two_most_recent_retained_boundaries(self):
+        created = create_project({"name": "边界历史保留", "region": "洱源"})
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            try:
+                resource_ids = [
+                    self._import_boundary(created["id"], version, temp_dir)["resource"]["id"]
+                    for version in (1, 2, 3, 4)
+                ]
+            finally:
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
+            retained = ProjectSpatialResource.query.filter_by(
+                project_id=created["id"], resource_type="mine_vector", status="retained"
+            ).all()
+            # 对齐底图保留策略：保留最近 2 个历史边界，最旧的 V1 被清理
+            self.assertEqual(sorted(r.version for r in retained), [2, 3])
+            self.assertIsNone(ProjectSpatialResource.query.get(resource_ids[0]))
+            active = ProjectSpatialResource.query.filter_by(
+                project_id=created["id"], resource_type="mine_vector", status="active"
+            ).one()
+            self.assertEqual(active.version, 4)
+            self.assertFalse(
+                (Path(temp_dir) / "projects" / str(created["id"]) / "mines" / str(resource_ids[0])).exists()
+            )
+
+    def test_import_mines_preserves_version_referenced_by_active_inference_job(self):
+        from applications.models.inference_job import InferenceJob
+        from applications.models.project import ProjectActivityLog
+
+        created = create_project({"name": "边界引用保护", "region": "洱源"})
+        previous_root = os.environ.get("PROJECT_STORAGE_ROOT")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["PROJECT_STORAGE_ROOT"] = temp_dir
+            try:
+                first = self._import_boundary(created["id"], 1, temp_dir)
+                v1_id = first["resource"]["id"]
+                db.session.add(
+                    InferenceJob(
+                        id="job-boundary-ref",
+                        project_id=created["id"],
+                        status="queued",
+                        request_payload_json=json.dumps(
+                            {
+                                "mine_resource_id": v1_id,
+                                "kml_path": os.path.join(
+                                    temp_dir,
+                                    "projects",
+                                    str(created["id"]),
+                                    "mines",
+                                    str(v1_id),
+                                    "mines.geojson",
+                                ),
+                            }
+                        ),
+                    )
+                )
+                db.session.commit()
+                for version in (2, 3, 4):
+                    self._import_boundary(created["id"], version, temp_dir)
+            finally:
+                if previous_root is None:
+                    os.environ.pop("PROJECT_STORAGE_ROOT", None)
+                else:
+                    os.environ["PROJECT_STORAGE_ROOT"] = previous_root
+
+            # V1 被 queued 任务引用：即使超出保留窗口也不得删除（问题6）
+            kept = ProjectSpatialResource.query.get(v1_id)
+            self.assertIsNotNone(kept)
+            self.assertEqual(kept.status, "retained")
+            self.assertTrue(
+                (Path(temp_dir) / "projects" / str(created["id"]) / "mines" / str(v1_id) / "mines.geojson").is_file()
+            )
+            retained = ProjectSpatialResource.query.filter_by(
+                project_id=created["id"], resource_type="mine_vector", status="retained"
+            ).all()
+            self.assertEqual(sorted(r.version for r in retained), [1, 2, 3])
+            activity = (
+                ProjectActivityLog.query.filter_by(
+                    project_id=created["id"], event_type="spatial_resource_retained_active_job"
+                )
+                .order_by(ProjectActivityLog.id.desc())
+                .first()
+            )
+            self.assertIsNotNone(activity)
+            self.assertIn(str(v1_id), activity.payload_json)
+
     def test_custom_mine_fid_mapping_is_available_to_automatic_export(self):
         from applications.project_hub.service import create_export
         from applications.project_hub.spatial_service import import_mine_vector
