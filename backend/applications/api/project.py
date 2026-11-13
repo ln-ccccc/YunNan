@@ -24,6 +24,7 @@ from applications.project_hub.classification_results import (
 from applications.project_hub.assets import ProjectAssetFilterError
 from applications.project_hub.project_storage import ProjectStorageValidationError
 from applications.project_hub.service import (
+    DatasetDeleteNotAllowed,
     ProjectDeleteNotAllowed,
     archive_project,
     batch_archive_projects,
@@ -34,6 +35,7 @@ from applications.project_hub.service import (
     resolve_project_export_artifact,
     create_export,
     create_project,
+    delete_dataset,
     delete_project,
     get_project_assets,
     get_project_detail,
@@ -833,6 +835,22 @@ def project_dataset_create_api(project_id):
         return fail_api(str(exc))
     except Exception as exc:
         return _project_hub_failure_response(exc, "影像登记失败", project_id)
+
+
+@project_api.delete("/<int:project_id>/datasets/<int:dataset_id>")
+@login_required
+def project_dataset_delete_api(project_id, dataset_id):
+    """删除影像登记（2026-11 验收遗留项）：被推理任务引用或成果目录 409。"""
+    try:
+        return success_api(
+            data=delete_dataset(project_id, dataset_id, actor=_request_actor())
+        )
+    except DatasetDeleteNotAllowed as exc:
+        return fail_api(str(exc), status=409)
+    except ValueError as exc:
+        return fail_api(str(exc), status=404)
+    except Exception as exc:
+        return business_or_server_failure(exc, "数据集删除失败", logger=LOGGER)
 
 
 @project_api.get("/<int:project_id>/timeline")

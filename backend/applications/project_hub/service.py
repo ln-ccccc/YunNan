@@ -1,3 +1,4 @@
+import json
 import logging
 import shutil
 import uuid
@@ -275,6 +276,57 @@ def create_dataset(project_id, payload, actor="system"):
         "asset_id": f"imagery:{dataset.id}",
         "status": "registered",
     }
+
+
+class DatasetDeleteNotAllowed(ValueError):
+    """数据集被引用或非影像登记，不可经此接口删除——携带 409 语义。"""
+
+
+def delete_dataset(project_id, dataset_id, actor="system"):
+    """删除影像登记（2026-11 验收遗留：重复/误登记此前无删除通道）。
+
+    - 仅 imagery 登记可删：classification_dir 行是推理成果的注册形态，
+      生命周期归成果/版本模块管，不经数据集通道删；
+    - 被 InferenceJob 引用（任意状态）的影像拒绝删除——任务复现与重试
+      依赖原始输入；
+    - 只删登记，不动物理文件：incoming 原始影像可能被多条登记（不同
+      年份/矿山维度）共享，登记行不拥有文件所有权，文件清理归存储
+      生命周期统一处理。
+    """
+    project = _get_project_or_404(project_id)
+    dataset = ProjectDataset.query.filter_by(
+        id=dataset_id, project_id=project.id
+    ).first()
+    if dataset is None:
+        raise ValueError("数据集不存在或不属于该项目")
+    if dataset.dataset_kind != "imagery":
+        raise DatasetDeleteNotAllowed(
+            "仅支持删除影像登记记录；分类成果目录请在成果模块中处理"
+        )
+    referenced_jobs = InferenceJob.query.filter(
+        InferenceJob.request_payload_json.like('%"dataset_id"%')
+    ).all()
+    if any(
+        (json.loads(job.request_payload_json or "{}") or {}).get("dataset_id")
+        == dataset.id
+        for job in referenced_jobs
+    ):
+        raise DatasetDeleteNotAllowed(
+            "该影像已被推理任务引用，不能删除（任务复现与重试依赖原始输入）"
+        )
+    db.session.delete(dataset)
+    _append_activity(
+        project.id,
+        "dataset_deleted",
+        {
+            "dataset_id": dataset.id,
+            "display_name": dataset.display_name,
+        },
+        actor=actor,
+        target={"type": "dataset", "id": str(dataset.id)},
+    )
+    db.session.commit()
+    return {"id": dataset.id, "deleted": True}
 
 
 def get_project_detail(project_id):
