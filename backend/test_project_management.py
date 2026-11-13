@@ -212,6 +212,79 @@ class TestBackupImport(ProjectManageBase):
             f"projects/{target}/inputs/imagery/upload.tif",
         ])
 
+    def test_import_same_name_datasets_in_different_dirs_map_to_distinct_keys(self):
+        """2026-11-14 审查问题32：incoming/a/image.tif 与 incoming/b/image.tif
+        曾都按文件名重定位为同一目标键，后续搬运文件无法保持两个独立输入。
+        修复：保留 incoming/ 下安全相对子目录，目标键不同且可独立解析。"""
+        self.login_as_admin()
+        target = self._create_project("同名分流目标")
+        manifest = self._build_manifest(999)
+        manifest["datasets"] = [
+            {"dataset_kind": "imagery", "display_name": "子目录a", "file_path": "incoming/a/image.tif"},
+            {"dataset_kind": "imagery", "display_name": "子目录b", "file_path": "incoming/b/image.tif"},
+            {"dataset_kind": "imagery", "display_name": "平铺", "file_path": "incoming/flat.tif"},
+        ]
+        response = self.client.post(
+            f"/api/projects/{target}/backups/import",
+            json={"manifest": manifest},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        paths = sorted(d.file_path for d in db.session.get(Project, target).datasets)
+        self.assertEqual(paths, [
+            f"projects/{target}/inputs/imagery/a/image.tif",
+            f"projects/{target}/inputs/imagery/b/image.tif",
+            f"projects/{target}/inputs/imagery/flat.tif",
+        ])
+
+    def test_import_rejects_dataset_target_key_collision(self):
+        """重定位后目标键碰撞（源路径不同但收敛到同键）整批拒绝，
+        不静默落两条指向同一物理文件的记录。"""
+        self.login_as_admin()
+        target = self._create_project("碰撞目标")
+        manifest = self._build_manifest(999)
+        manifest["datasets"] = [
+            {"dataset_kind": "imagery", "display_name": "平铺件", "file_path": "incoming/image.tif"},
+            {"dataset_kind": "imagery", "display_name": "他项目件", "file_path": "projects/888/inputs/imagery/image.tif"},
+        ]
+        response = self.client.post(
+            f"/api/projects/{target}/backups/import",
+            json={"manifest": manifest},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("重定位后目标路径冲突", response.get_json()["msg"])
+        self.assertEqual(db.session.get(Project, target).datasets, [])
+
+    def test_import_archives_dataset_file_mapping(self):
+        """导入存档目录输出明确的文件搬运映射表（运维搬运依据）。"""
+        self.login_as_admin()
+        target = self._create_project("映射表目标")
+        manifest = self._build_manifest(999)
+        manifest["datasets"] = [
+            {"dataset_kind": "imagery", "display_name": "上传件", "file_path": "incoming/a/image.tif"},
+            {"dataset_kind": "imagery", "display_name": "他项目件", "file_path": "projects/888/inputs/imagery/clip.tif"},
+        ]
+        response = self.client.post(
+            f"/api/projects/{target}/backups/import",
+            json={"manifest": manifest},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        imports_dir = self.storage_root / "projects" / str(target) / "imports"
+        mapping_files = list(imports_dir.glob("dataset_paths_*.json"))
+        self.assertEqual(len(mapping_files), 1)
+        with mapping_files[0].open("r", encoding="utf-8") as handle:
+            mapping = json.load(handle)
+        self.assertEqual(
+            sorted(item["source"] for item in mapping),
+            ["incoming/a/image.tif", "projects/888/inputs/imagery/clip.tif"],
+        )
+        self.assertEqual(
+            sorted(item["target"] for item in mapping),
+            [
+                f"projects/{target}/inputs/imagery/a/image.tif",
+                f"projects/{target}/inputs/imagery/clip.tif",
+            ],
+        )
+
     def test_import_rejects_malformed_manifest(self):
         self.login_as_admin()
         target = self._create_project("坏清单目标")

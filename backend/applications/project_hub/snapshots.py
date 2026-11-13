@@ -315,6 +315,9 @@ def import_backup_manifest(project_id, manifest, actor="system"):
         # 跨环境导入时 incoming/ 是源环境全局暂存区、projects/<他项目id>/ 是源项目
         # 沙箱，都不可原样落地——一律重定位到本项目 inputs/imagery/，物理文件由
         # 运维另行搬运；绝对/穿越路径仍然拒绝（2026-09-22 收官审查 S1 的防线保留）
+        # incoming/ 保留相对子目录（2026-11-14 审查问题32）：只取文件名会把
+        # incoming/a/image.tif 与 incoming/b/image.tif 收敛到同一目标键；重定位后
+        # 目标键碰撞整批拒绝，且存档目录输出源→目标搬运映射表。
 
         def _safe_dataset_path(raw):
             text = str(raw or "").strip()
@@ -333,7 +336,15 @@ def import_backup_manifest(project_id, manifest, actor="system"):
                 raise ProjectStorageValidationError("导入的数据集路径不合法")
             parts = candidate.parts
             if parts[:1] == ("incoming",):
-                rebased = Path("projects") / str(project.id) / "inputs" / "imagery" / candidate.name
+                if len(parts) < 2:
+                    raise ProjectStorageValidationError("导入的数据集路径不合法")
+                rebased = (
+                    Path("projects")
+                    / str(project.id)
+                    / "inputs"
+                    / "imagery"
+                    / Path(*parts[1:])
+                )
             elif parts[:1] == ("projects",) and len(parts) >= 2:
                 # 他项目或本项目旧键：剥掉源项目 id 段，落回目标项目根下
                 rebased = Path("projects") / str(project.id) / Path(*parts[2:])
@@ -347,13 +358,25 @@ def import_backup_manifest(project_id, manifest, actor="system"):
                 raise ProjectStorageValidationError("导入的数据集路径不合法") from None
             return rebased.as_posix()
 
+        dataset_file_mapping = []
+        rebased_keys = {}
         for item in manifest["datasets"]:
+            rebased = _safe_dataset_path(item["file_path"])
+            if rebased in rebased_keys:
+                raise ProjectStorageValidationError(
+                    f"导入的数据集重定位后目标路径冲突: {rebased}"
+                    f"（{rebased_keys[rebased]} 与 {item['file_path']}）"
+                )
+            rebased_keys[rebased] = item["file_path"]
+            dataset_file_mapping.append(
+                {"source": item["file_path"], "target": rebased}
+            )
             db.session.add(
                 ProjectDataset(
                     project_id=project.id,
                     dataset_kind=item["dataset_kind"],
                     display_name=item["display_name"],
-                    file_path=_safe_dataset_path(item["file_path"]),
+                    file_path=rebased,
                     source_format=item.get("source_format"),
                     mine_fid=item.get("mine_fid"),
                     year_start=item.get("year_start"),
@@ -370,6 +393,10 @@ def import_backup_manifest(project_id, manifest, actor="system"):
         import_dir.mkdir(parents=True, exist_ok=True)
         import_path = import_dir / f"manifest_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.json"
         write_json_atomic(import_path, manifest)
+        # 文件搬运映射表（审查问题32）：manifest 里的源路径 → 目标项目相对键，
+        # 运维按表把物理文件搬到目标键即完成数据侧导入
+        mapping_path = import_dir / f"dataset_paths_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.json"
+        write_json_atomic(mapping_path, dataset_file_mapping)
 
         _append_activity(
             project.id,
