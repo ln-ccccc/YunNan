@@ -20,6 +20,7 @@ from applications.models.classification_result import (
 )
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
+from applications.project_hub._foundation import _lock_project_row
 from applications.project_hub.classification_stats import (
     apply_revised_class_ratio,
     compute_revised_change_matrix,
@@ -551,6 +552,8 @@ def publish_classification_result(
     label_path,
 ):
     """Persist one immutable auto-vector snapshot without changing PNG inference success."""
+    # 正式成果发布与项目删除共享行锁（2026-11 问题5）：成果写入期间项目不可被删
+    _lock_project_row(int(project_id))
     project_id = int(project_id)
     fid = int(fid)
     year = int(year)

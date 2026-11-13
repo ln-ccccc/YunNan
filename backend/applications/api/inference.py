@@ -19,6 +19,7 @@ from applications.project_hub.inference_inputs import (
     ProjectInferenceInputError,
     resolve_project_inference_inputs,
 )
+from applications.project_hub._foundation import _lock_project_row
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 
@@ -95,6 +96,9 @@ def _safe_create_error_message(error):
 def create_inference_job_api():
     try:
         payload = _parse_create_job_payload()
+        # 与 delete_project 共享 Project 行锁（2026-11 问题5）：创建任务与
+        # 项目删除在同一行上串行化，消除"检查后删除、任务落库到已移走目录"窗口
+        _lock_project_row(payload["project_id"])
         private_inputs = resolve_project_inference_inputs(
             **payload,
             scope_resolver=resolve_interpretation_scope,

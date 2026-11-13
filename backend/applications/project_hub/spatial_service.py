@@ -13,6 +13,7 @@ from sqlalchemy import func
 from applications.extensions import db
 from applications.models.project import Project, ProjectActivityLog, ProjectMineBinding
 from applications.models.project_spatial import ProjectSpatialJob, ProjectSpatialResource
+from applications.project_hub._foundation import _lock_project_row
 from applications.project_hub.spatial_storage import ensure_storage_layout, resolve_storage_path
 
 
@@ -700,6 +701,7 @@ def list_basemap_candidates(project_id):
 
 def register_basemap(project_id, candidate, min_zoom=8, max_zoom=15, actor="system"):
     project = _editable_project(project_id)
+    _lock_project_row(project_id)
     candidate_relative = _candidate_relative_path(candidate)
     storage_root = ensure_storage_layout()
     source = resolve_storage_path(storage_root, candidate_relative)
@@ -791,6 +793,7 @@ def get_spatial_job(project_id, job_id):
 
 def retry_spatial_job(project_id, job_id, actor="system"):
     _editable_project(project_id)
+    _lock_project_row(project_id)
     job = ProjectSpatialJob.query.filter_by(id=job_id, project_id=project_id).first()
     if job is None:
         raise ValueError("空间处理任务不存在")
@@ -820,7 +823,11 @@ def retry_spatial_job(project_id, job_id, actor="system"):
 
 
 def cancel_spatial_job(project_id, job_id, actor="system"):
-    _editable_project(project_id)
+    # 归档项目允许取消（清理任务后才能删项目，2026-11 问题5）；
+    # 已删除项目仍拒绝——目录已在 trash，取消无意义。
+    project = Project.query.filter_by(id=project_id, deleted_at=None).first()
+    if project is None:
+        raise ValueError(f"项目不存在: {project_id}")
     job = ProjectSpatialJob.query.filter_by(id=job_id, project_id=project_id).first()
     if job is None:
         raise ValueError("空间处理任务不存在")
@@ -1079,6 +1086,7 @@ def register_basemap_tileset(project_id, candidate, actor="system"):
     from applications.project_hub.spatial_worker import _activate_basemap
 
     project = _editable_project(project_id)
+    _lock_project_row(project_id)
     candidate_relative = str(candidate or "").strip()
     candidate_path = resolve_storage_path(ensure_storage_layout(), candidate_relative)
     try:
