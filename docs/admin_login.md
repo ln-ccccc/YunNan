@@ -8,8 +8,8 @@ ADMIN_PASSWORD=必须显式设置强密码
 ```
 
 - 管理员用户名固定为 `admin`。
-- 登录密码只从服务端环境变量 `ADMIN_PASSWORD` 读取。
-- 忘记密码时，更新 `ADMIN_PASSWORD` 后重建 `backend`、`miner-api`、`miner-web` 容器即可重置。
+- 环境变量 `ADMIN_PASSWORD` 只用于**首次建号**：空库启动时按它创建初始密码。账号一旦存在，密码权威在数据库——页面改密后重启不会被环境变量回退（2026-11-14 修复）。
+- 忘记密码时不能只改 `ADMIN_PASSWORD` 重启（不会覆盖已有账号）。重置步骤：进 `yunnan-mysql` 容器执行 `DELETE FROM admin_user WHERE username='admin';`，再按上方变量重建 `backend`、`miner-api`、`miner-web` 容器，即按 `ADMIN_PASSWORD` 重新建号。
 - `docker compose` 未提供 `ADMIN_PASSWORD` 时，服务不会启动。
 
 ## 认证边界

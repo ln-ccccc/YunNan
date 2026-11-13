@@ -18,6 +18,7 @@ LONG_JSON_COLUMNS = (
 
 def ensure_runtime_schema():
     inspector = inspect(db.engine)
+    _ensure_admin_session_version(inspector)
     if "inference_jobs" not in inspector.get_table_names():
         return
     columns = {item["name"] for item in inspector.get_columns("inference_jobs")}
@@ -32,6 +33,19 @@ def ensure_runtime_schema():
     if db.engine.dialect.name == "mysql":
         _upgrade_long_json_columns(inspector)
     _ensure_classification_feature_count(inspector)
+
+
+def _ensure_admin_session_version(inspector):
+    """admin_user.session_version（2026-11-14 审查问题20）：存量库补列；
+    新库由模型直接建对。放在 inference_jobs 早退之前——认证先于业务表。"""
+    if "admin_user" not in inspector.get_table_names():
+        return
+    columns = {item["name"] for item in inspector.get_columns("admin_user")}
+    if "session_version" not in columns:
+        db.session.execute(
+            text("ALTER TABLE admin_user ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
+        )
+        db.session.commit()
 
 
 def _ensure_classification_feature_count(inspector):

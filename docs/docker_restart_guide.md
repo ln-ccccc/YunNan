@@ -60,7 +60,7 @@ foreach ($key in @('MYSQL_PASSWORD', 'MYSQL_ROOT_PASSWORD')) {
 }
 ```
 
-`ADMIN_PASSWORD` 和 `SECRET_KEY` 仍由 Compose 从现有 `.env` 读取。重建前应确认 `.env` 已由安全来源配置且两项均非空，但不要打印其内容。
+`ADMIN_PASSWORD` 和 `SECRET_KEY` 仍由 Compose 从现有 `.env` 读取。重建前应确认 `.env` 已由安全来源配置且两项均非空，但不要打印其内容。`ADMIN_PASSWORD` 只在空库首次建号时生效；已有账号的密码不会被重启覆盖（重置方式见 docs/admin_login.md）。
 
 如果 `yunnan-mysql` 不存在，不得从历史日志恢复或猜测密码。必须由运维通过凭据管理器等安全来源把 `MYSQL_PASSWORD` 和 `MYSQL_ROOT_PASSWORD` 设置到当前进程，再继续重建。
 
