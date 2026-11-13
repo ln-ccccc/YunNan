@@ -187,7 +187,7 @@ import ProjectSelector from './projectWorkspace/ProjectSelector.vue';
 import ProjectSpatialResources from './projectWorkspace/ProjectSpatialResources.vue';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
 import { shouldUseChunkedUpload } from '../utils/basemapChunking.js';
-import { actionTarget, createSelectionGate, createSlice, INVALIDATION } from '../projectWorkspace/projectWorkspaceViewModel.js';
+import { actionTarget, createSelectionGate, createSlice, INVALIDATION, resolveProjectSelection } from '../projectWorkspace/projectWorkspaceViewModel.js';
 import { setSelectedProjectId } from '../services/projectSelectionStore.js';
 
 defineProps({ username: { type: String, default: '' } });
@@ -394,10 +394,17 @@ async function loadProjects(preferredProjectId = null) {
   statsPanelRef.value?.fetchOverview?.();
   if (!await loadProjectList(revision) || listSlice.error) return;
   const items = listSlice.data?.items || [];
-  const preferred = preferredProjectId || currentProjectId.value || items[0]?.id;
+  // 选择候选必须经新列表成员校验（问题17）：批量删除后旧 currentProjectId
+  // 可能已不存在，不得继续选中幽灵项目；无剩余项目时清空当前上下文与共享选择
+  const preferred = resolveProjectSelection({
+    preferred: preferredProjectId,
+    current: currentProjectId.value,
+    items,
+  });
   if (preferred) await selectProject(preferred);
   else {
     currentProjectId.value = null;
+    setSelectedProjectId(null);
     beginProjectRequest({ reset: true });
     resetSpatialUiForProjectChange();
     resetDatasetUiForProjectChange();

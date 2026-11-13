@@ -43,6 +43,21 @@ export function createSelectionGate() {
 }
 
 
+// 项目选择候选解析（问题17，2026-11-14）：批量删除后旧的 currentProjectId
+// 可能已不在新列表——候选必须经成员校验，不存在时选第一个剩余项目；
+// 无剩余项目返回 null，调用方清空当前上下文与共享选择状态。
+export function resolveProjectSelection({ preferred = null, current = null, items = [] }) {
+  const ids = items
+    .map((item) => Number(item?.id))
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+  for (const candidate of [preferred, current]) {
+    const normalized = Number(candidate);
+    if (normalized && ids.includes(normalized)) return normalized;
+  }
+  return ids.length ? ids[0] : null;
+}
+
+
 export const INVALIDATION = {
   project: ['list', 'overview', 'activity'],
   spatial: ['overview', 'assets', 'activity', 'mineOptions', 'spatial'],
