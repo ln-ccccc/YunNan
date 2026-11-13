@@ -209,6 +209,99 @@ class TestProjectAPI(unittest.TestCase):
         self.assertIn(item["lifecycle_status"], ("draft", "active", "completed", "archived"))
         self.assertEqual(item["lifecycle_status"], item["status"])
 
+    def test_dataset_delete_contract(self):
+        """数据集删除契约四态（2026-11 验收遗留项）：
+        成功（登记清除+物理文件保留+活动留痕）/ 无数据（404）/
+        参数边界（成果目录 409、被推理任务引用 409、跨项目 404）。"""
+        self.login_as_admin()
+        project_id = self._create_project("数据集删除项目")
+        storage_key = self._create_incoming_tif("deletable.tif")
+        dataset_id = self._json(
+            self.client.post(
+                f"/api/projects/{project_id}/datasets",
+                json={"dataset_kind": "imagery", "display_name": "待删影像", "storage_key": storage_key},
+            )
+        )["data"]["id"]
+        # 同一物理文件的第二条登记（不同年份维度）：登记行不拥有文件，
+        # 删除任意一条都不得影响另一条与物理文件本身
+        shared_id = self._json(
+            self.client.post(
+                f"/api/projects/{project_id}/datasets",
+                json={
+                    "dataset_kind": "imagery",
+                    "display_name": "共享同一物理文件",
+                    "storage_key": storage_key,
+                    "year_start": 2023,
+                    "year_end": 2023,
+                },
+            )
+        )["data"]["id"]
+
+        # 成功：登记清除、物理文件保留、共享登记不受影响、活动可审计
+        response = self.client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        body = self._json(response)["data"]
+        self.assertTrue(body["deleted"])
+        self.assertNotIn("file_removed", body)
+        self.assertTrue((self.storage_root / storage_key).exists())
+        detail = self._json(self.client.get(f"/api/projects/{project_id}"))["data"]
+        dataset_ids = [item["id"] for item in detail["datasets"]]
+        self.assertNotIn(dataset_id, dataset_ids)
+        self.assertIn(shared_id, dataset_ids)
+        item = self._timeline_item(project_id, "dataset_deleted")
+        self.assertEqual(item["target"]["type"], "dataset")
+
+        # 最后一条登记删除后文件仍保留：登记不等于文件所有权
+        response = self.client.delete(f"/api/projects/{project_id}/datasets/{shared_id}")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertTrue((self.storage_root / storage_key).exists())
+
+        # 无数据：重复删除 404
+        response = self.client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
+        self.assertEqual(response.status_code, 404)
+
+        # 参数边界：classification_dir 是推理成果注册形态，409 拒绝
+        result_dataset = ProjectDataset(
+            project_id=project_id,
+            dataset_kind="classification_dir",
+            display_name="成果目录",
+            file_path="projects/1/outputs/demo",
+            source_format="classification_dir",
+            slice_config_json="{}",
+        )
+        db.session.add(result_dataset)
+        db.session.commit()
+        response = self.client.delete(
+            f"/api/projects/{project_id}/datasets/{result_dataset.id}"
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("成果", self._json(response)["msg"])
+
+        # 参数边界：被推理任务引用的影像 409（保留复现与重试输入）
+        storage_key2 = self._create_incoming_tif("referenced.tif")
+        referenced_id = self._json(
+            self.client.post(
+                f"/api/projects/{project_id}/datasets",
+                json={"dataset_kind": "imagery", "display_name": "被引用影像", "storage_key": storage_key2},
+            )
+        )["data"]["id"]
+        db.session.add(
+            InferenceJob(
+                id="job-ref-1",
+                project_id=project_id,
+                request_payload_json=json.dumps({"project_id": project_id, "dataset_id": referenced_id}),
+            )
+        )
+        db.session.commit()
+        response = self.client.delete(f"/api/projects/{project_id}/datasets/{referenced_id}")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("推理任务", self._json(response)["msg"])
+
+        # 参数边界：不属于该项目的数据集 404
+        other_project_id = self._create_project("另一个项目")
+        response = self.client.delete(f"/api/projects/{other_project_id}/datasets/{referenced_id}")
+        self.assertEqual(response.status_code, 404)
+
     def test_dataset_registration_requires_safe_incoming_tiff_storage_key(self):
         self.login_as_admin()
         response = self.client.post(
