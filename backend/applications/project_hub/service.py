@@ -233,7 +233,6 @@ def replace_project_mines(project_id, mines, actor="system"):
 
 
 def create_dataset(project_id, payload, actor="system"):
-    project = _get_project_or_404(project_id)
     if "file_path" in payload:
         raise ProjectStorageValidationError("请使用 storage_key 登记数据文件")
     dataset_kind = str(payload.get("dataset_kind") or "").strip()
@@ -243,6 +242,40 @@ def create_dataset(project_id, payload, actor="system"):
     if not display_name:
         raise ValueError("数据集名称不能为空")
     storage_key, source_format = _validate_incoming_tiff_storage_key(payload.get("storage_key"))
+
+    # 登记去重（问题19，2026-11-14）：身份 = (项目, dataset_kind, 规范化
+    # storage_key)。双击/双标签页/断线重试会并发通过"先查后插"造成重复
+    # 登记。两级锁缺一不可：
+    # 1) 项目行 SELECT..FOR UPDATE 把同项目登记串行化——并发事务在持锁
+    #    方插入提交前拿不到锁，check-then-insert 窗口闭合；
+    # 2) 去重查询自身也必须是锁定读——MySQL REPEATABLE READ 的一致性
+    #    读视图在事务第一条普通 SELECT 时建立（真实请求里鉴权读更早），
+    #    锁释放后的普通 SELECT 仍读旧快照、看不到并发方刚提交的行；
+    #    锁定读始终读最新已提交版本，锁内去重必然看到并发结果。
+    # 不加唯一索引：file_path VARCHAR(1024) 在 utf8mb4 下超 InnoDB 3072
+    # 字节索引键上限；身份三列均 NOT NULL，无组合唯一键 NULL 语义问题。
+    project = (
+        Project.query.filter_by(id=project_id, deleted_at=None)
+        .with_for_update()
+        .first()
+    )
+    if project is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    existing = (
+        ProjectDataset.query.filter_by(
+            project_id=project.id,
+            dataset_kind=dataset_kind,
+            file_path=storage_key,
+        )
+        .with_for_update()
+        .first()
+    )
+    if existing is not None:
+        return {
+            "id": existing.id,
+            "asset_id": f"imagery:{existing.id}",
+            "status": "registered",
+        }
     dataset = ProjectDataset(
         project_id=project.id,
         dataset_kind=dataset_kind,
