@@ -116,7 +116,14 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./docker:/app/docker:ro
+      # 构建输入全部与主树同源（2026-11-14 审查问题30）：此前只挂 src/package.json/
+      # node_modules，public/ 与 vue/babel 构建配置仍来自镜像基座（停留在镜像构建
+      # 时点），宿主与镜像两份快照混用，迁移后构建产物可能与本地代码不一致
       - ./frontend/src:/app/frontend/src:ro
+      - ./frontend/public:/app/frontend/public:ro
+      - ./frontend/vue.config.js:/app/frontend/vue.config.js:ro
+      - ./frontend/babel.config.js:/app/frontend/babel.config.js:ro
+      - ./frontend/package-lock.json:/app/frontend/package-lock.json:ro
       # 依赖与源码同源（2026-11-05 迁移审查 P1-5 真身）：镜像基座的 package.json/
       # node_modules 停留在构建时点，src 引用新包时启动构建必炸 MODULE_NOT_FOUND
       # （此前靠 compose 之外的手工整目录挂载漂移掩盖，recreate 后即显形）。
@@ -246,8 +253,15 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./docker:/app/docker:ro
+      # 构建输入全部与主树同源（2026-11-14 审查问题30）：此前只挂 src/vite.config.js，
+      # index.html 入口、public/、package.json 与锁文件仍来自镜像基座（停留在镜像
+      # 构建时点），两份快照混用；package.json 同源后依赖预检才校验的是主树声明
       - ./miner/src:/app/miner/src:ro
+      - ./miner/index.html:/app/miner/index.html:ro
+      - ./miner/public:/app/miner/public:ro
       - ./miner/vite.config.js:/app/miner/vite.config.js:ro
+      - ./miner/package.json:/app/miner/package.json:ro
+      - ./miner/package-lock.json:/app/miner/package-lock.json:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4000/ >/dev/null || exit 1"]
       interval: 30s
