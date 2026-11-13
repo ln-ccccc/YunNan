@@ -768,10 +768,15 @@ def get_project_spatial(project_id):
     project = Project.query.filter_by(id=project_id, deleted_at=None).first()
     if project is None:
         raise ValueError(f"项目不存在: {project_id}")
+    from applications.project_hub.project_map import has_active_basemap_tiles
     from applications.project_hub.spatial_state import serialize_project_spatial_state
 
     return {
-        **serialize_project_spatial_state(project),
+        # 空间面板是单项目操作入口，三键挂磁盘瓦片探针与 manifest/overview
+        # 同判（问题24）；延迟导入避免 spatial_service↔project_map 顶层环
+        **serialize_project_spatial_state(
+            project, basemap_tiles_available=has_active_basemap_tiles(project_id)
+        ),
         "resources": [_serialize_resource(item) for item in project.spatial_resources],
         "jobs": [
             _serialize_job(item)

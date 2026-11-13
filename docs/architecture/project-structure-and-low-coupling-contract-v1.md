@@ -166,6 +166,8 @@ HTTP 响应沿用标准 envelope：`{success, code, data}`。`data` 是完整的
 
 `summary` 复用现有 `ProjectSummary`，完整字段固定为 `id`、`name`、`region`、`manager`、`remark`、`status`、`lifecycle_status`（与 `status` 同值的语义化别名，AGENTS §4）、`monitor_start_year`、`monitor_end_year`、`mine_count`、`dataset_count`、`spatial_status`、`map_ready`、`missing_resources`、`latest_activity_at`、`create_time`、`update_time`。
 
+**地图就绪判据分层（2026-11-14 审查问题24 统一）**：权威可操作性判定是 `readiness`/`capabilities`（`ACTIVE_BASEMAP` 检查含磁盘瓦片巡检，瓦片缺失给出专属 `ACTIVE_BASEMAP_TILES_MISSING`）；单项目操作入口（`GET /map/manifest`、`GET /spatial`）的 `map_ready`/`missing_resources` 与权威判定同判——激活底图记录存在但瓦片缺失时一律 `map_ready=false` 且 `missing_resources` 含 `basemap`，地图打开、空间面板、概览三入口结论一致。项目列表（`GET /api/projects`）的三键是**记录级兼容快照**（不扫磁盘，N 项目×磁盘探针违反性能底线），不表达可操作性；消费方做可操作决策一律读 readiness/capabilities 或单项目入口，不得自建第三套判断。词汇映射在序列化层显式维护（`spatial_state.RESOURCE_TYPE_BY_CHECK_CODE`）：`mine_vector`↔`MINE_BOUNDARY`、`basemap`↔`ACTIVE_BASEMAP`；overview `summary.missing_resources` 使用 readiness 词汇（`mine_boundary`/`active_basemap`/`inference_input`/`reviewable_result`），列表与单项目兼容 DTO 使用 `mine_vector`/`basemap`，两套词汇的对应关系以此节为准。
+
 `readiness` 固定为 `{status, passed, total, checks}`，其 `checks` 的顺序、代码和字段由第 4.2 节定义。`lifecycle_status` 与 `readiness` 是分离状态；归档项目仍照常计算 readiness。
 
 `capabilities` 只能包含下列五项，全部由后端计算：
