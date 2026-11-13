@@ -160,7 +160,8 @@
           @click="$emit('load-retained-basemaps')"
         >{{ retainedLoading ? '加载中…' : '刷新历史底图' }}</button>
       </div>
-      <p v-if="!retainedBasemaps.length" class="muted-text">无 retained 历史底图（切换底图时自动保留最近 2 个）</p>
+      <p v-if="retainedError" class="error-text">{{ retainedError }}</p>
+      <p v-else-if="!retainedBasemaps.length" class="muted-text">无 retained 历史底图（切换底图时自动保留最近 2 个）</p>
       <div v-else class="mine-list">
         <article v-for="item in retainedBasemaps" :key="item.id" class="mine-item">
           <div>
@@ -247,6 +248,10 @@ const props = defineProps({
   retainedLoading: {
     type: Boolean,
     default: false,
+  },
+  retainedError: {
+    type: String,
+    default: '',
   },
   basemapCandidates: {
     type: Array,
