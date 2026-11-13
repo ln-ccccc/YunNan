@@ -147,7 +147,8 @@
             :activities="activityItems"
             :loading="slices.assets.loading || slices.snapshots.loading || slices.activity.loading"
             :error="slices.assets.error || slices.snapshots.error || slices.activity.error"
-            @imported="refreshCurrent(INVALIDATION.restoreSnapshot)"
+            :busy="projectOperationBusy"
+            @import-snapshot="importSnapshot"
           />
 
           <ParcelPanel
@@ -798,6 +799,28 @@ async function restoreSnapshot(snapshotId) {
   } catch (error) {
     if (isCurrentProjectOperation(operation)) {
       slices.snapshots.error = messageFrom(error, '项目配置快照恢复失败');
+    }
+  } finally {
+    if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
+  }
+}
+
+async function importSnapshot({ projectId, manifest } = {}) {
+  // 载荷携带子组件操作开始时锁定的项目 ID；与当前项目不一致说明期间已切换，必须丢弃
+  if (!projectId || !manifest || projectId !== currentProjectId.value) return;
+  const operation = startProjectOperation();
+  if (!operation) {
+    slices.snapshots.error = '有其他项目操作进行中，快照导入未执行，请稍后重试';
+    return;
+  }
+  try {
+    await api.importBackupManifest(operation.projectId, manifest);
+    if (!isCurrentProjectOperation(operation)) return;
+    window.alert('快照导入成功：项目基础信息与矿山/数据集清单已应用');
+    await refreshCurrent(INVALIDATION.restoreSnapshot);
+  } catch (error) {
+    if (isCurrentProjectOperation(operation)) {
+      slices.snapshots.error = messageFrom(error, '快照导入失败，请检查文件格式');
     }
   } finally {
     if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;

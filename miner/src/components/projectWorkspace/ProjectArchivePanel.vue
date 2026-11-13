@@ -28,8 +28,8 @@
               style="display: none;"
               @change="handleImportFile"
             >
-            <button class="secondary-btn" type="button" :disabled="importing" @click="importInputRef?.click()">
-              {{ importing ? '导入中…' : '导入快照（manifest.json）' }}
+            <button class="secondary-btn" type="button" :disabled="importing || busy" @click="importInputRef?.click()">
+              {{ importing || busy ? '导入中…' : '导入快照（manifest.json）' }}
             </button>
           </div>
           <ul class="backup-list">
@@ -56,7 +56,6 @@
 </template>
 
 <script setup>
-import axios from 'axios';
 import { computed, ref } from 'vue';
 import { formatDateTime } from '../../utils/formatDate.js';
 import { formatActivityAction } from '../../projectWorkspace/projectWorkspaceViewModel.js';
@@ -70,10 +69,9 @@ const props = defineProps({
   activities: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
+  busy: { type: Boolean, default: false },
 });
-const emit = defineEmits(['imported']);
-
-const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
+const emit = defineEmits(['import-snapshot']);
 
 const importing = ref(false);
 const importInputRef = ref(null);
@@ -110,9 +108,15 @@ const formatTime = (value) => {
 const handleImportFile = async (event) => {
   const file = event?.target?.files?.[0];
   if (!file) return;
+  // 覆盖性操作必须在开始时锁定目标项目；读取期间切换项目后继续提交会写错对象
+  const targetProjectId = props.projectId;
   importing.value = true;
   try {
     const text = await file.text();
+    if (props.projectId !== targetProjectId) {
+      window.alert('项目已切换，本次快照导入已取消');
+      return;
+    }
     let manifest;
     try {
       manifest = JSON.parse(text);
@@ -120,15 +124,7 @@ const handleImportFile = async (event) => {
       window.alert('文件不是合法的 JSON（应为导出的 manifest.json）');
       return;
     }
-    await axios.post(
-      `${MINER_API_BASE_URL}/api/projects/${props.projectId}/backups/import`,
-      { manifest },
-    );
-    window.alert('快照导入成功：项目基础信息与矿山/数据集清单已应用');
-    emit('imported');
-  } catch (e) {
-    const msg = e?.response?.data?.msg || '快照导入失败，请检查文件格式';
-    window.alert(msg);
+    emit('import-snapshot', { projectId: targetProjectId, manifest });
   } finally {
     importing.value = false;
     if (event?.target) event.target.value = '';
