@@ -241,17 +241,23 @@ def _write_shp_zip(path_obj, geojson_payload, stable_stem=None, project_id=None,
                 cleanup_exc,
             )
 
-def _export_source_assets(project, export_format, features):
-    imagery_by_id = {
-        dataset.id: dataset
-        for dataset in project.datasets
-        if dataset.id is not None and dataset.dataset_kind == "imagery"
-    }
+def _export_source_assets(project, export_format, export_features):
+    """数据集来源标识（2026-11-14 审查问题31 修正）：
+    - csv 写出全部数据集行 → 覆盖 project.datasets 全集（此前只识别 imagery）；
+    - geojson/shp/dxf 从归一后的导出要素取 dataset_id，凡本项目数据集
+      （任意 kind，含推理成果数据集）均入清单——标识格式 <kind>:<id>。
+    数据集表无版本列，source_versions 维持 1（记录 id 即内容身份）；
+    边界资源版本与成果修订由 mine_vector/classification_results 键承载。"""
     if export_format == "csv":
-        dataset_ids = sorted(imagery_by_id)
+        datasets = sorted(
+            (d for d in project.datasets if d.id is not None), key=lambda d: d.id
+        )
     else:
-        dataset_ids = set()
-        for feature in features or []:
+        datasets_by_id = {
+            dataset.id: dataset for dataset in project.datasets if dataset.id is not None
+        }
+        referenced = set()
+        for feature in export_features or []:
             properties = (feature or {}).get("properties") or {}
             dataset_id = properties.get("dataset_id")
             if isinstance(dataset_id, bool):
@@ -260,19 +266,42 @@ def _export_source_assets(project, export_format, features):
                 dataset_id = int(dataset_id)
             except (TypeError, ValueError):
                 continue
-            if dataset_id in imagery_by_id:
-                dataset_ids.add(dataset_id)
-        dataset_ids = sorted(dataset_ids)
-    source_asset_ids = [f"imagery:{dataset_id}" for dataset_id in dataset_ids]
+            if dataset_id in datasets_by_id:
+                referenced.add(datasets_by_id[dataset_id])
+        datasets = sorted(referenced, key=lambda d: d.id)
+    source_asset_ids = [f"{dataset.dataset_kind}:{dataset.id}" for dataset in datasets]
     return source_asset_ids, {asset_id: 1 for asset_id in source_asset_ids}
 
-def _export_manifest(project, record, artifact_name, artifact_path, features):
+
+def _ledger_result_sources(results):
+    """台账来源明细：成果 ID、修订号与推理时所用边界版本（manifest 追溯）。"""
+    return [
+        {
+            "result_id": result.id,
+            "mine_fid": result.mine_fid,
+            "year": result.year,
+            "vector_status": result.vector_status,
+            "revision_no": result.current_revision_no,
+            "mine_resource_version": result.mine_resource_version,
+        }
+        for result in results
+    ]
+
+def _export_manifest(
+    project,
+    record,
+    artifact_name,
+    artifact_path,
+    export_features,
+    mine_vector_source=None,
+    ledger_results=None,
+):
     source_asset_ids, source_versions = _export_source_assets(
         project,
         record.format,
-        features,
+        export_features,
     )
-    return {
+    manifest = {
         "project_id": project.id,
         "export_id": record.id,
         "format": record.format,
@@ -280,8 +309,12 @@ def _export_manifest(project, record, artifact_name, artifact_path, features):
         "created_at": _utc_timestamp(record.create_time),
         "source_asset_ids": source_asset_ids,
         "source_versions": source_versions,
+        "mine_vector": mine_vector_source,
         "sha256": _file_checksum(artifact_path),
     }
+    if record.format == "xlsx":
+        manifest["classification_results"] = _ledger_result_sources(ledger_results or [])
+    return manifest
 
 def create_export(project_id, payload, actor="system"):
     if not isinstance(payload, dict):
@@ -297,8 +330,10 @@ def create_export(project_id, payload, actor="system"):
     if export_format not in ALLOWED_EXPORT_FORMATS:
         raise ValueError("导出格式不合法")
     features = payload.get("features")
+    mine_vector_used = False
     if features is None and export_format in {"geojson", "shp", "dxf"}:
         features = _build_project_export_features(project)
+        mine_vector_used = True
     record = ProjectExportRecord(
         project_id=project.id,
         format=export_format,
@@ -325,6 +360,7 @@ def create_export(project_id, payload, actor="system"):
     artifact_name = f"artifact{suffix}"
     artifact_key = _storage_key("projects", str(project_identifier), "exports", str(record_id), artifact_name)
     export_features = []
+    ledger_results = None
 
     try:
         export_root(project_identifier, record_id)
@@ -353,10 +389,15 @@ def create_export(project_id, payload, actor="system"):
                 record_id=record_id,
             )
         elif export_format == "xlsx":
+            from applications.project_hub.ledger import collect_project_results
+
+            # 台账内容与 manifest 来源共用同一次成果查询（一致快照）
+            ledger_results = collect_project_results(project)
             _write_artifact_atomic(
                 target_path,
                 _write_xlsx,
                 project,
+                ledger_results,
                 project_id=project_identifier,
                 record_id=record_id,
             )
@@ -391,9 +432,22 @@ def create_export(project_id, payload, actor="system"):
             record_id,
             "manifest.json",
         )
+        mine_vector_source = None
+        if mine_vector_used:
+            from applications.project_hub.project_map import active_mine_vector_source
+
+            mine_vector_source = active_mine_vector_source(project_identifier)
         write_json_atomic(
             manifest_path,
-            _export_manifest(project, record, artifact_name, target_path, export_features),
+            _export_manifest(
+                project,
+                record,
+                artifact_name,
+                target_path,
+                export_features,
+                mine_vector_source=mine_vector_source,
+                ledger_results=ledger_results,
+            ),
             area="exports",
             project_id=project_identifier,
             record_id=record_id,
