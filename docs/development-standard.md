@@ -70,7 +70,7 @@ Miner 经 BFF 访问 Flask；GeoView 沿用自己的 API client 访问 Flask。�
 - 推理完成时间与数据大小、像素数、ROI、波段、模型、设备有关；文件格式扩展和数据预处理变化必须单独评估输入一致性，不因“读取成功”就承诺分类精度。
 - 原始影像、自动分类成果与人工修订分别保存。人工编辑形成新版本，不能悄悄回写原始标签或把历史统计冒充已按新矢量重新计算。
 
-当前继续沿用 Vue；在线训练、模型重训、React 重写、浏览器 GB 级上传/切片和多人实时编辑不属于本期范围。
+当前继续沿用 Vue；在线训练、模型重训、React 重写和多人实时编辑不属于本期范围。浏览器 GB 级上传/切片已于 2026-09-22 落地分片续传，见 [分片续传方案](refactor/2026-09-22-chunked-upload-plan.md)。
 
 ## 5. “中等速度”的可测定义
 
@@ -247,8 +247,10 @@ try {
 
 ```powershell
 $backendSource = (Resolve-Path backend).Path
-docker run --rm --entrypoint python -v "${backendSource}:/app/backend:ro" -w /app/backend yunnan-runtime:current -B -m unittest test_inference_jobs test_inference_routing test_interpretation_api test_project_inference_results -v
+docker run --rm --entrypoint bash -v "${backendSource}:/app/backend:ro" -w /app/backend yunnan-runtime:current -c "source /opt/conda/etc/profile.d/conda.sh && conda activate MMSeg310 && python -B -m unittest test_inference_jobs test_inference_routing test_interpretation_api test_project_inference_results -v"
 ```
+
+此命令与第 7 节开头的 conda 激活要求一致（直接 `--entrypoint python` 会缺少 PROJ/GDAL 资源路径，CRS 相关用例会误报失败）。
 
 `yunnan-runtime:current` 是 `image_bundle.env` 中的现有标签；报告要记录实际镜像 ID/digest。离线机器缺镜像时按 [离线部署说明](offline_deployment_guide.md) 准备；不要临时升级整套 GIS 依赖。运行每条命令都核对退出码，PowerShell 的 `try/finally` 仅恢复目录，不会自动把所有非零进程退出码变成异常。
 

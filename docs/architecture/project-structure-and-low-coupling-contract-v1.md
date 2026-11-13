@@ -340,5 +340,5 @@ PROJECT_STORAGE_ROOT/projects/{project_id}/
 ## 11. 非目标
 
 - 不引入 OpenProject、Plane、GeoNode 或 MapStore 的整套平台；仅借鉴其状态、资源与工作台设计思想。
-- 不做在线训练、模型权重上传、React 重写、浏览器大影像上传/切片。
+- 不做在线训练、模型权重上传、React 重写。浏览器大影像上传/切片已于 2026-09-22 落地分片续传，见 [分片续传方案](../refactor/2026-09-22-chunked-upload-plan.md)。
 - 不做完整 RBAC、审批流、实时多人 GIS 编辑、工时或通用任务看板。
