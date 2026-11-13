@@ -574,8 +574,10 @@ def list_retained_basemaps(project_id):
 def reactivate_basemap(project_id, resource_id, actor="system"):
     """重新激活 retained 历史底图：互斥激活（旧 active 置 retained）。
 
-    前提是瓦片目录与 .active 标记仍在其自身 resource 目录中（激活期只改
-    状态与标记，不复制数据——性能计划遗留项的收敛实现）。
+    瓦片完整可用与当前激活是两个事实（问题11）：激活新底图会删除旧底图的
+    .active 标记，因此可用性按瓦片目录是否仍有 PNG 瓦片判定，激活时再重建
+    标记。互斥与回滚顺序与 worker `_activate_basemap` 一致：commit 失败时
+    回滚新标记，旧标记 commit 成功后才删除。
     """
     if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
         raise ValueError(f"项目不存在: {project_id}")
@@ -594,7 +596,7 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         storage_root,
         Path("projects") / str(project_id) / "tiles" / str(target.id),
     )
-    if not (target_tile_dir / ".active").is_file():
+    if not any(target_tile_dir.rglob("*.png")):
         raise ValueError("该底图的瓦片数据已被清理，无法重新激活")
 
     current_active = (
@@ -607,16 +609,7 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         .first()
     )
     if current_active is not None:
-        current_tile_dir = resolve_storage_path(
-            storage_root,
-            Path("projects") / str(project_id) / "tiles" / str(current_active.id),
-        )
-        active_marker = current_tile_dir / ".active"
-        if active_marker.exists():
-            active_marker.unlink()
         current_active.status = "retained"
-
-    (target_tile_dir / ".active").write_text("1", encoding="utf-8")
     target.status = "active"
     _activity(
         project_id,
@@ -626,7 +619,21 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         actor=actor,
         target={"type": "spatial_resource", "id": str(target.id)},
     )
-    db.session.commit()
+    active_marker = target_tile_dir / ".active"
+    active_marker.write_text(str(target.id), encoding="utf-8")
+    try:
+        db.session.commit()
+    except Exception:
+        active_marker.unlink(missing_ok=True)
+        raise
+    # commit 成功后才删除旧底图标记：DB 失败路径上新标记已回滚、旧标记未动，
+    # 文件状态与回滚后的库状态保持一致
+    if current_active is not None:
+        current_tile_dir = resolve_storage_path(
+            storage_root,
+            Path("projects") / str(project_id) / "tiles" / str(current_active.id),
+        )
+        (current_tile_dir / ".active").unlink(missing_ok=True)
     return _serialize_resource(target)
 
 
