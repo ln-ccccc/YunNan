@@ -12,6 +12,7 @@ import base64
 import io
 import logging
 import math
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -258,7 +259,7 @@ def clip_imagery(project_id, payload):
     if buffer_meters < 0 or buffer_meters > 5000:
         raise ImageryProcessingError("外扩距离须在 0~5000 米之间")
 
-    with rasterio.open(source_path) as src:
+    with _recompute_semaphore, rasterio.open(source_path) as src:
         if src.crs is None:
             raise ImageryProcessingError("影像缺少坐标系，无法按地理范围裁剪")
         if geometry is None and mine_fid is not None:
@@ -319,7 +320,13 @@ def clip_imagery(project_id, payload):
         slice_config_json='{"origin":"clip"}',
     )
     db.session.add(dataset)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        # 登记失败不留孤儿产物（2026-11-14 审查问题25）
+        db.session.rollback()
+        out_path.unlink(missing_ok=True)
+        raise
     return {
         "dataset_id": dataset.id,
         "display_name": dataset.display_name,
@@ -339,7 +346,7 @@ def slice_imagery(project_id, payload):
     tile_area_m2 = payload.get("tile_area_m2")
     limit = max(1, min(int(payload.get("limit") or DEFAULT_SLICE_LIMIT), MAX_SLICE_LIMIT))
 
-    with rasterio.open(source_path) as src:
+    with _recompute_semaphore, rasterio.open(source_path) as src:
         if mode == "grid_pixels":
             tile_w = int(tile_pixels or 0)
             tile_h = tile_w
@@ -372,6 +379,7 @@ def slice_imagery(project_id, payload):
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         items = []
         skipped = []
+        written = []
         for row in range(rows):
             for col in range(cols):
                 window = Window(col * tile_w, row * tile_h, tile_w, tile_h)
@@ -389,6 +397,7 @@ def slice_imagery(project_id, payload):
                 with rasterio.open(out_path, "w", **profile) as dst:
                     dst.write(data)
                     _copy_valid_mask(dst, masks)
+                written.append(out_path)
                 dataset = ProjectDataset(
                     project_id=project.id,
                     dataset_kind="imagery",
@@ -407,7 +416,14 @@ def slice_imagery(project_id, payload):
                     "height": int(window.height),
                     "storage_key": _storage_key(out_path),
                 })
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception:
+            # 登记失败不留孤儿切片（2026-11-14 审查问题25）
+            db.session.rollback()
+            for path in written:
+                path.unlink(missing_ok=True)
+            raise
     return {
         "grid": {"cols": cols, "rows": rows, "tile_w": tile_w, "tile_h": tile_h},
         "created": len(items),
@@ -416,15 +432,28 @@ def slice_imagery(project_id, payload):
     }
 
 
-# 单窗读入字节上限（2GB）：clip/slice 都不允许一次把超大窗口整读进内存
-MAX_WINDOW_BYTES = 2 * 1024 ** 3
+# 单请求峰值预算（2026-11-14 审查问题25修正）：backend 容器 mem_limit 2048m，
+# 进程内并发 2 路重计算 → 每路约 768MB；估算计入同时存活的 mask/有效掩膜/
+# alpha 副本数组，不再只算原始像素数组
+MAX_WINDOW_BYTES = 768 * 1024 ** 2
+_RECOMPUTE_CONCURRENCY = 2
+_recompute_semaphore = threading.BoundedSemaphore(_RECOMPUTE_CONCURRENCY)
+
+
+def _estimate_window_bytes(src, window):
+    """单窗峰值估算：data(count×itemsize) + masks(count×1B) + valid 布尔(1B)
+    + alpha/where 副本(1B)——这些数组在 clip/slice 主体中同时存活。"""
+    pixels = int(window.width) * int(window.height)
+    bands = max(src.count, 1)
+    item = _dtype_size(src.dtypes[0] if src.dtypes else None)
+    return pixels * (bands * (item + 1) + 2)
 
 
 def _guard_window_bytes(src, window):
-    estimated = int(window.width) * int(window.height) * max(src.count, 1) * _dtype_size(src.dtypes[0] if src.dtypes else None)
+    estimated = _estimate_window_bytes(src, window)
     if estimated > MAX_WINDOW_BYTES:
         raise ImageryProcessingError(
-            f"单窗 {int(window.width)}×{int(window.height)}×{src.count} 波段超出内存上限（约 2GB），请缩小范围或切片尺寸"
+            f"单窗 {int(window.width)}×{int(window.height)}×{src.count} 波段超出内存预算（约 {MAX_WINDOW_BYTES // (1024 ** 2)}MB），请缩小范围或切片尺寸"
         )
 
 
