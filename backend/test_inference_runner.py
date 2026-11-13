@@ -1038,7 +1038,14 @@ class TestInferenceRunner(unittest.TestCase):
 
         worker.run_forever(should_stop=should_stop)
 
-        job_store.recover_abandoned_jobs.assert_called_once_with("worker-host", "worker-host:42")
+        # 启动回收（租约签名）先于首次认领；轮询周期随心跳块再次兜底回收
+        ordered_calls = [name for name, _, _ in job_store.mock_calls]
+        self.assertLess(
+            ordered_calls.index("recover_abandoned_jobs"),
+            ordered_calls.index("claim_next_job"),
+        )
+        job_store.recover_abandoned_jobs.assert_any_call("worker-host:42")
+        self.assertGreaterEqual(job_store.recover_abandoned_jobs.call_count, 2)
         job_store.claim_next_job.assert_called_once_with("worker-host:42")
 
     def test_worker_maps_no_features_to_succeeded_job_status(self):

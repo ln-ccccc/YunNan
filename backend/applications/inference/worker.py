@@ -609,10 +609,9 @@ class InferenceWorker:
     def run_forever(self, should_stop=lambda: False):
         self.initialize()
         if hasattr(self.job_store, "recover_abandoned_jobs"):
-            worker_host = self.worker_id.rsplit(":", 1)[0]
-            recovered = self.job_store.recover_abandoned_jobs(worker_host, self.worker_id)
+            recovered = self.job_store.recover_abandoned_jobs(self.worker_id)
             if recovered:
-                logger.warning("已将 %s 个上一个 Worker 进程遗留的任务标记为失败", recovered)
+                logger.warning("启动回收 %s 个持有者失联/遗留的运行任务", recovered)
         removed = sweep_stale_workdirs(self.runtime_root)
         if removed:
             logger.warning("启动清扫 %s 个超龄(>24h)任务暂存目录: %s", len(removed), removed)
@@ -622,6 +621,15 @@ class InferenceWorker:
             if now - last_heartbeat >= 30:
                 if hasattr(self.job_store, "publish_worker_capability"):
                     self.job_store.publish_worker_capability(self.worker_id, self.resolution)
+                # 周期兜底回收（审查问题26）：启动回收只跑一次，强杀后持有者
+                # 心跳行停止更新，租约到期由空闲轮询周期回收，任务不永久卡死
+                if hasattr(self.job_store, "recover_abandoned_jobs"):
+                    try:
+                        recovered = self.job_store.recover_abandoned_jobs(self.worker_id)
+                        if recovered:
+                            logger.warning("租约回收 %s 个持有者失联的运行任务", recovered)
+                    except Exception:
+                        logger.exception("回收失联运行任务失败（不影响轮询）")
                 last_heartbeat = now
             job = self.job_store.claim_next_job(self.worker_id)
             if job is None:
