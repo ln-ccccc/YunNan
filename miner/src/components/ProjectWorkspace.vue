@@ -187,7 +187,7 @@ import ProjectSelector from './projectWorkspace/ProjectSelector.vue';
 import ProjectSpatialResources from './projectWorkspace/ProjectSpatialResources.vue';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
 import { shouldUseChunkedUpload } from '../utils/basemapChunking.js';
-import { actionTarget, createSelectionGate, createSlice, INVALIDATION } from '../projectWorkspace/projectWorkspaceViewModel.js';
+import { actionTarget, createSelectionGate, createSlice, createSliceGates, INVALIDATION } from '../projectWorkspace/projectWorkspaceViewModel.js';
 import { setSelectedProjectId } from '../services/projectSelectionStore.js';
 
 defineProps({ username: { type: String, default: '' } });
@@ -220,6 +220,8 @@ const slices = reactive({
   snapshots: createSlice(),
   mineOptions: createSlice(),
 });
+// 分片级请求代次（问题15）：局部刷新只作废目标分片，全局代次仍只随项目切换递增
+const sliceGates = createSliceGates(Object.keys(slices));
 const spatialUi = reactive({
   open: false,
   busy: false,
@@ -356,15 +358,22 @@ async function loadProjectList(revision = listGate.next()) {
 async function loadSlice(name, request, revision) {
   if (!selectionGate.isCurrent(revision)) return;
   const slice = slices[name];
+  // 分片代次作废本分片上一次进行中的请求；全局代次只随项目切换递增，
+  // 局部刷新（如资产筛选）不再误伤其他分片进行中的请求（问题15）
+  const sliceRevision = sliceGates.next(name);
   slice.loading = true;
   slice.error = '';
   try {
     const data = await request();
-    if (selectionGate.isCurrent(revision)) slice.data = data;
+    if (selectionGate.isCurrent(revision) && sliceGates.isCurrent(name, sliceRevision)) {
+      slice.data = data;
+    }
   } catch (error) {
-    if (selectionGate.isCurrent(revision)) slice.error = messageFrom(error, '项目数据加载失败');
+    if (selectionGate.isCurrent(revision) && sliceGates.isCurrent(name, sliceRevision)) {
+      slice.error = messageFrom(error, '项目数据加载失败');
+    }
   } finally {
-    if (selectionGate.isCurrent(revision)) slice.loading = false;
+    if (sliceGates.isCurrent(name, sliceRevision)) slice.loading = false;
   }
 }
 
@@ -448,12 +457,13 @@ async function selectProject(projectId) {
 
 async function refreshCurrent(requestedSlices) {
   if (!currentProjectId.value) return;
-  const names = requestedSlices || Object.keys(slices);
+  const names = (requestedSlices || Object.keys(slices)).filter((name) => name !== 'list');
   const projectId = currentProjectId.value;
-  const revision = beginProjectRequest();
-  if (names.includes('list')) await loadProjectList();
-  if (!selectionGate.isCurrent(revision) || currentProjectId.value !== projectId) return;
-  await loadSelectedProject(projectId, revision, names.filter((name) => name !== 'list'));
+  if (requestedSlices && requestedSlices.includes('list')) await loadProjectList();
+  if (currentProjectId.value !== projectId) return;
+  // 局部刷新不递增全局项目代次：未请求分片（如进行中的概览）不受影响（问题15）；
+  // 期间发生项目切换时全局代次已变，loadSelectedProject 内部校验会拦截
+  await loadSelectedProject(projectId, selectionGate.current(), names);
 }
 
 function updateFilters(nextFilters) {

@@ -36,8 +36,29 @@ export function createSelectionGate() {
       revision += 1;
       return revision;
     },
+    current() {
+      return revision;
+    },
     isCurrent(token) {
       return token === revision;
+    },
+  };
+}
+
+
+// 分片级请求代次（问题15，2026-11-14）：局部刷新（如资产筛选）只递增目标
+// 分片自己的代次，未请求分片（如进行中的概览）的请求保持有效；项目切换
+// 仍由全局 selectionGate 统一作废。同分片重复请求只保留最新一次。
+export function createSliceGates(names) {
+  const gates = new Map(names.map((name) => [name, createSelectionGate()]));
+  return {
+    next(name) {
+      const gate = gates.get(name);
+      return gate ? gate.next() : 0;
+    },
+    isCurrent(name, token) {
+      const gate = gates.get(name);
+      return Boolean(gate) && gate.isCurrent(token);
     },
   };
 }
