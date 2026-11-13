@@ -203,6 +203,10 @@ docker system prune ...
 
 另注意镜像谱系（P1-5）：`yunnan-runtime:current` 镜像内的 dist 只反映**镜像构建时点**的主树，与运行容器实际服务的版本无关。送外测/离线打包前必须按 `docs/offline_deployment_guide.md` 重建镜像，禁止直接复用开发机上的旧 tag。
 
+### 8.1 构建输入同源与锁文件校验（2026-11-14 审查问题30）
+
+两个前端容器的**全部构建输入**都从主树只读 bind（frontend：src/public/vue.config.js/babel.config.js/package.json/package-lock.json/node_modules；miner-web：src/index.html/public/vite.config.js/package.json/package-lock.json），镜像基座只提供 node 运行时。启动时 `check-node-deps.mjs` 除缺包检查外，还逐项比对 node_modules 实际版本与 `package-lock.json`——版本漂移或缺失锁文件都会让容器在构建前失败并给出可执行提示（主树 `npm ci` 后重启）。因此：主树升级前端依赖后必须连同 `package-lock.json` 一起提交，否则 miner-web/frontend 重启会被预检拦下。
+
 ## 9. 宿主内存与 CPU 兜底限制
 
 - 推理 checkpoint（fp32 约 1.97GB）以 CPU 加载需宿主可用内存 ≥ 约 4.4GB（体积 × 2.2）。**宿主总内存 < 8GB 时，GPU 模型常驻后强制 `device=cpu` 的任务会在加载前被直接拒绝**（错误码 `INSUFFICIENT_HOST_MEMORY_FOR_CPU`），GPU 正常路径不受影响。这是设计行为（R1 归因体系的预检分支），扩内存或释放常驻后自愈。
