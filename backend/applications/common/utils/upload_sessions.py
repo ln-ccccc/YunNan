@@ -32,6 +32,12 @@ UPLOAD_SESSION_MIN_CHUNK_BYTES = 1024 * 1024
 UPLOAD_SESSION_STALE_DAYS = 7
 SESSION_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")  # 匹配一律走 fullmatch：$ 放行尾部 \n
 _MAX_FILENAME_LENGTH = 200
+COMPLETE_LOCK_FILENAME = ".complete.lock"
+# 哨兵超时：持锁进程崩溃（worker 被 OOM 杀等）后哨兵残留，超过该时限允许
+# 后来者接管重做完成流程；正常合并入库远小于此时限
+COMPLETE_LOCK_STALE_SECONDS = 900
+COMPLETE_LOCK_POLL_SECONDS = 0.2
+COMPLETE_LOCK_WAIT_SECONDS = 120
 
 
 class UploadSessionError(ValueError):
@@ -296,6 +302,52 @@ def assemble_session(session_id: str, dest_path: Path) -> Path:
         tmp_path.unlink(missing_ok=True)
         raise UploadSessionError(f"分块合并失败: {error}") from error
     return dest_path
+
+
+def complete_lock_path(session_id: str) -> Path:
+    return _session_dir(session_id) / COMPLETE_LOCK_FILENAME
+
+
+def try_acquire_complete_lock(session_id: str) -> bool:
+    """complete 互斥哨兵（2026-11-14 审查问题33）。
+
+    O_EXCL 创建（open "x"）：跨进程正确（生产 gunicorn 多 worker 为真多进程
+    竞态，进程内锁不够），Windows/Linux 语义一致。哨龄超时接管保证持锁进程
+    崩溃后流程不永久卡死。
+    """
+    lock_path = complete_lock_path(session_id)
+    while True:
+        try:
+            with lock_path.open("x", encoding="ascii") as handle:
+                handle.write(str(int(time.time())))
+            return True
+        except FileExistsError:
+            try:
+                if time.time() - lock_path.stat().st_mtime <= COMPLETE_LOCK_STALE_SECONDS:
+                    return False
+                lock_path.unlink()
+            except OSError:
+                return False
+        except OSError:
+            return False
+
+
+def release_complete_lock(session_id: str) -> None:
+    complete_lock_path(session_id).unlink(missing_ok=True)
+
+
+def wait_session_done(session_id: str, timeout_seconds: float = COMPLETE_LOCK_WAIT_SECONDS):
+    """等待持锁方写完成态；超时或会话中途被清理返回 None（调用方按仍在完成中处理）。"""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            result = session_is_done(session_id)
+        except UploadSessionError:
+            return None
+        if result is not None:
+            return result
+        time.sleep(COMPLETE_LOCK_POLL_SECONDS)
+    return None
 
 
 def remove_session(session_id: str) -> None:

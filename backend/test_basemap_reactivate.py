@@ -11,6 +11,9 @@ from test_project_api import TestProjectAPI
 
 class TestBasemapReactivate(TestProjectAPI):
     def _add_basemap(self, project_id, version, status, with_tiles=True):
+        # 造数对齐激活状态机语义（2026-11-14 审查问题33）：真实流程中
+        # retained 底图的 .active 已被 _activate_basemap 删除，瓦片仍在；
+        # 此前 retained 也无条件带 .active，构造出了真实流程不会出现的状态
         resource = ProjectSpatialResource(
             project_id=project_id,
             resource_type="basemap",
@@ -29,7 +32,10 @@ class TestBasemapReactivate(TestProjectAPI):
                 self.storage_root / "projects" / str(project_id) / "tiles" / str(resource.id)
             )
             tile_dir.mkdir(parents=True, exist_ok=True)
-            (tile_dir / ".active").write_text("1", encoding="utf-8")
+            (tile_dir / "8" / "0" / "0.png").parent.mkdir(parents=True, exist_ok=True)
+            (tile_dir / "8" / "0" / "0.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        if status == "active":
+            (tile_dir / ".active").write_text(str(resource.id), encoding="ascii")
         db.session.commit()
         return resource
 
