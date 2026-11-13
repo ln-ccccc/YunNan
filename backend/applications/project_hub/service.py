@@ -279,11 +279,30 @@ def create_dataset(project_id, payload, actor="system"):
 
 def get_project_detail(project_id):
     project = _get_project_or_404(project_id)
+    # 旧详情与公开序列化同口径（2026-11-14 审查问题21）：数据集 legacy 绝对路径
+    # 收敛为相对键（根外不可迁移输出 None），活动 payload/actor 复用 timeline 的
+    # 不安全值判定——物理路径不随旧 DTO 外泄
+    from applications.project_hub.snapshots import _relative_storage_key
+
+    datasets = ProjectDatasetSchema(many=True).dump(project.datasets)
+    for item in datasets:
+        item["file_path"] = _relative_storage_key(item.get("file_path"))
+
+    storage_root = get_storage_root()
+    recent_activity = ProjectActivityLogSchema(many=True).dump(project.activities[:20])
+    for item in recent_activity:
+        payload = item.get("payload")
+        if not isinstance(payload, (dict, list)) or _is_unsafe_activity_value(payload, storage_root):
+            item["payload"] = {}
+        actor = item.get("actor")
+        if not isinstance(actor, str) or not actor or _is_unsafe_activity_value(actor, storage_root):
+            item["actor"] = "system"
+
     return {
         "summary": _serialize_summary(project),
         "mines": ProjectMineBindingSchema(many=True).dump(project.mines),
-        "datasets": ProjectDatasetSchema(many=True).dump(project.datasets),
-        "recent_activity": ProjectActivityLogSchema(many=True).dump(project.activities[:20]),
+        "datasets": datasets,
+        "recent_activity": recent_activity,
         "timeline": get_project_timeline(project_id)["items"],
         "exports": ProjectExportRecordSchema(many=True).dump(project.exports),
         "backups": ProjectBackupRecordSchema(many=True).dump(project.backups),

@@ -49,15 +49,16 @@ LOGGER = logging.getLogger(__name__)
 
 def _relative_storage_key(raw):
     """manifest 对外只输出 storage 相对键（契约 B）：legacy 绝对路径在根内
-    则收敛为相对键（消除内部物理路径随快照下载外泄），根外异常值原样保留
-    由迁移脚本报告处置。"""
+    则收敛为相对键（消除内部物理路径随快照下载外泄）；根外绝对路径无法迁移，
+    服务端日志报告原值，对外返回 None（不可用状态，2026-11-14 审查问题21）。"""
     text = str(raw or "").strip()
     if not text or not Path(text).expanduser().is_absolute():
         return raw
     try:
         return Path(text).expanduser().resolve().relative_to(get_storage_root()).as_posix()
     except ValueError:
-        return raw
+        LOGGER.warning("快照数据集路径在 storage 根外，manifest 标记不可用: %s", text)
+        return None
 
 
 def _serialize_internal_dataset(dataset):
@@ -348,6 +349,12 @@ def import_backup_manifest(project_id, manifest, actor="system"):
             return rebased.as_posix()
 
         for item in manifest["datasets"]:
+            if item.get("file_path") in (None, ""):
+                # 源环境根外路径无法迁移，导入同样跳过（不再让整体导入失败）
+                LOGGER.warning(
+                    "导入跳过不可用路径数据集: display_name=%s", item.get("display_name")
+                )
+                continue
             db.session.add(
                 ProjectDataset(
                     project_id=project.id,
@@ -437,6 +444,12 @@ def restore_backup(project_id, backup_id, actor="system"):
             )
 
         for item in manifest["datasets"]:
+            if item.get("file_path") in (None, ""):
+                # 源环境根外路径无法迁移（列 NOT NULL 也不能落空），跳过恢复
+                LOGGER.warning(
+                    "恢复跳过不可用路径数据集: display_name=%s", item.get("display_name")
+                )
+                continue
             db.session.add(
                 ProjectDataset(
                     project_id=project.id,
