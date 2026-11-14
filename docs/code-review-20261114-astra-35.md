@@ -6,6 +6,7 @@
 
 ## 状态总览
 
+- **配套复扫**：2026-11-14 ZCode 用操作链镜头独立复扫，新增 10 条实锤 + 15 条待复核（见 [code-review-20261114-rescan-zcode.md](code-review-20261114-rescan-zcode.md)，其中 R1「backups/ 未入 .gitignore」建议立即处理），与本台账统一排优先级。
 - **已修 1 项**：#1（提交 0e4cb30，PR1，分支 fix/pr1-import-context；4 项回归测试，浏览器实测待补）。
 - **二次亲验属实**：#11（底图重激活死链 + fixture 掩盖，两半均实锤）。
 - **未修 33 项**，其中 **#2/#14/#19 针对"未提交在途逻辑"**（delete_dataset、undelete、登记去重）——修复它们之前需先决定这批在途代码的去留。
