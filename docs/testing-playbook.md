@@ -405,3 +405,13 @@ fulfill），或在 handler 末尾兜底 fulfill/404，禁止裸 return。
 3. 修 fixture 为"经生产流程产生状态"（如真跑一次激活→被新底图替换→变 retained），再断言目标行为；此时红灯先行（技巧 2）。
 
 **为什么好**：它堵住"测试全绿 → 验收通过"的最后一层假阳性——被测函数没错、断言也没错，错的是**前提状态不可达**；这只有把状态的生产者与消费者对账才能发现。检查单第 10 条即本条的一句话版；与 [code-review 方法论"操作链状态一致性审查"镜头](code-review/methodology.md) 配套。
+
+### 28. 同一镜像 ≠ 同一测试环境：compose 注入变量制造"那边绿这边红"（2026-11-14）✅
+
+**解决什么问题**：dc9f0ad 全量在 yunnan-backend（运行容器）3942 全绿，换一次性容器（**同一镜像** yunnan-runtime:current）挂主树式复跑却 2 例必挂（test_security_recheck 的 init_db 用例）。真根因：`init_db.py` 模块加载即读 `MYSQL_PASSWORD`（env→.flaskenv→''），运行容器被 compose 注入了该变量，`init_db()` 走完整链路抛 RuntimeError、断言通过；干净容器 PASSWORD='' 走"跳过初始化"分支直接 return，`assertRaises(RuntimeError)` 等不到异常。测试隐式依赖了**生产容器状态**而非自造前提。
+
+**做法（2×2 矩阵 + 单变量注入）**：同代码怀疑环境差异时，跑 {原环境, 干净一次性容器} × {unittest, pytest} 四格，再对可疑分支注入单个 env（`docker run -e MYSQL_PASSWORD=x`）复跑——3 passed 即实锤。全程 ≤2 分钟。
+
+**规避**：测试不得隐式依赖宿主容器 env——setUp 显式 `patch.object(module, "PASSWORD", "unit-test")` 或进程内 setenv；**全量回归的声明必须写明运行环境**（哪个容器、有无 compose env、运行器）——pytest 与 unittest 计数口径不同（本例 unittest 3942 vs pytest 3946 项+2250 subtests），运行容器内可能根本没装 pytest。
+
+**为什么好**：把"宣称全绿但别处复现不了"的信任损耗收敛成 2 分钟可判定的检查，同时堵住"测试只在带生产 env 的容器里绿"的假验收。
