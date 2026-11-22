@@ -1,5 +1,6 @@
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timezone
 from pathlib import Path
 
@@ -219,20 +220,30 @@ def _asset(
     }
 
 
-def _relative_existing_path(storage_root, value, allow_dir=False):
-    raw_value = str(value or "").strip()
-    if not raw_value:
-        return None
-    try:
-        candidate = resolve_storage_path(storage_root, raw_value)
-    except ValueError:
-        return None
-    if candidate.is_file():
-        return candidate
-    # classification_dir 类成果的 file_path 指向目录而非文件
-    if allow_dir and candidate.is_dir():
-        return candidate
-    return None
+def _probe_dataset_paths(storage_root, datasets):
+    """并发探测数据集登记路径，返回 {dataset.id: (is_file, is_dir)}。
+
+    存在性 stat 是 ready/registered 的判定依据，不能省；但生产存储
+    /project_storage 是宿主 D 盘经 9p/drvfs 挂载（单次 stat 实测 ~8ms），
+    641 条数据集串行要 5s+，把概览/资产拖过 BFF 15 秒超时线（2026-11-22）。
+    只读探测用线程池并发，判定语义与逐条 is_file()/is_dir() 一致。
+    """
+
+    def probe(dataset):
+        raw_value = str(dataset.file_path or "").strip()
+        if not raw_value:
+            return dataset.id, (False, False)
+        try:
+            candidate = resolve_storage_path(storage_root, raw_value)
+        except ValueError:
+            return dataset.id, (False, False)
+        try:
+            return dataset.id, (candidate.is_file(), candidate.is_dir())
+        except OSError:
+            return dataset.id, (False, False)
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return dict(pool.map(probe, datasets))
 
 
 def _configured_result_id(dataset):
@@ -258,16 +269,16 @@ def _dataset_matches_result(dataset, result_identities):
     return (dataset.mine_fid, _valid_year(dataset.year_start)) in result_identities
 
 
-def _dataset_asset(dataset, storage_root, result_ids, result_identities):
+def _dataset_asset(dataset, path_probe, result_ids, result_identities):
     dataset_kind = str(dataset.dataset_kind or "").strip().lower()
     source_format = _public_format(dataset.source_format)
-    candidate = _relative_existing_path(storage_root, dataset.file_path)
+    is_file, is_dir = path_probe
     suffix = Path(str(dataset.file_path or "")).suffix.lower().lstrip(".")
     temporal = _temporal_metadata(dataset.year_start, dataset.year_end)
 
     if dataset_kind == "imagery":
         is_ready = (
-            candidate is not None
+            is_file
             and suffix in SUPPORTED_INCOMING_RASTER_FORMATS
             and source_format in SUPPORTED_INCOMING_RASTER_FORMATS
         )
@@ -288,7 +299,7 @@ def _dataset_asset(dataset, storage_root, result_ids, result_identities):
         )
 
     if dataset_kind == "report":
-        asset_status = "ready" if candidate is not None else "registered"
+        asset_status = "ready" if is_file else "registered"
         return _asset(
             asset_id=f"report:{dataset.id}",
             source_type="project_report",
@@ -311,8 +322,8 @@ def _dataset_asset(dataset, storage_root, result_ids, result_identities):
         or _dataset_matches_result(dataset, result_identities)
     ):
         return None
-    candidate = _relative_existing_path(storage_root, dataset.file_path, allow_dir=True)
-    asset_status = "ready" if candidate is not None else "registered"
+    # classification_dir 类成果的 file_path 指向目录而非文件
+    asset_status = "ready" if (is_file or is_dir) else "registered"
     return _asset(
         asset_id=f"inference_dataset:{dataset.id}",
         source_type="dataset_inference_result",
@@ -351,8 +362,13 @@ def _validate_filter(value, valid_values, error_message):
     return normalized
 
 
-def _result_parent_asset_ids(result, datasets):
-    parent_asset_ids = []
+def _imagery_parent_index(datasets):
+    """imagery 数据集按 mine_fid 预建 (年份区间, asset_id) 索引。
+
+    此前每条成果全量遍历数据集找父资产（O(成果×数据集)，项目 10 实测
+    2979×641≈190 万次比较），概览/资产热路径被拖慢（AGENTS §10 重复计算）。
+    """
+    index = {}
     for dataset in datasets:
         if str(dataset.dataset_kind or "").strip().lower() != "imagery":
             continue
@@ -364,8 +380,17 @@ def _result_parent_asset_ids(result, datasets):
             start_year = end_year
         if end_year is None:
             end_year = start_year
-        if dataset.mine_fid == result.mine_fid and start_year <= result.year <= end_year:
-            parent_asset_ids.append(f"imagery:{dataset.id}")
+        index.setdefault(dataset.mine_fid, []).append(
+            (start_year, end_year, f"imagery:{dataset.id}")
+        )
+    return index
+
+
+def _result_parent_asset_ids(result, imagery_parents):
+    parent_asset_ids = []
+    for start_year, end_year, asset_id in imagery_parents.get(result.mine_fid, ()):
+        if start_year <= result.year <= end_year:
+            parent_asset_ids.append(asset_id)
     if result.mine_resource_id is not None:
         parent_asset_ids.append(f"mine_boundary:{result.mine_resource_id}")
     return parent_asset_ids
@@ -409,12 +434,34 @@ def list_project_assets(project, asset_type=None, status=None):
             )
         )
 
-    results = ClassificationResult.query.filter_by(project_id=project_id).all()
+    # 只取资产 DTO 所需轻量列：整行加载会连带拉出 roi_geometry_json 与
+    # auto/current_feature_collection_json 三个 MEDIUMTEXT 大字段（单成果矢量
+    # 64KB+），项目 10 实测 2979 条成果把概览/资产拖到 BFF 15 秒超时 502
+    # （与下方 revisions 的 load_only 同因，2026-11-22）
+    results = (
+        ClassificationResult.query.filter_by(project_id=project_id)
+        .options(
+            load_only(
+                ClassificationResult.id,
+                ClassificationResult.mine_fid,
+                ClassificationResult.year,
+                ClassificationResult.mine_resource_id,
+                ClassificationResult.current_revision_no,
+                ClassificationResult.vector_status,
+                ClassificationResult.vector_error,
+                ClassificationResult.create_time,
+                ClassificationResult.update_time,
+            )
+        )
+        .all()
+    )
     result_identities = {(result.mine_fid, result.year) for result in results}
     result_ids = {result.id for result in results}
     datasets = ProjectDataset.query.filter_by(project_id=project_id).all()
+    path_probes = _probe_dataset_paths(storage_root, datasets)
+    imagery_parents = _imagery_parent_index(datasets)
     for dataset in datasets:
-        asset = _dataset_asset(dataset, storage_root, result_ids, result_identities)
+        asset = _dataset_asset(dataset, path_probes[dataset.id], result_ids, result_identities)
         if asset is not None:
             assets.append(asset)
 
@@ -440,7 +487,7 @@ def list_project_assets(project, asset_type=None, status=None):
                 updated_at=result.update_time,
                 temporal=_temporal_metadata(result.year, result.year),
                 provenance_source="model_inference",
-                parent_asset_ids=_result_parent_asset_ids(result, datasets),
+                parent_asset_ids=_result_parent_asset_ids(result, imagery_parents),
                 error_code="CLASSIFICATION_RESULT_FAILED",
                 error_message=result.vector_error,
             )

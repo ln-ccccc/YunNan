@@ -415,3 +415,13 @@ fulfill），或在 handler 末尾兜底 fulfill/404，禁止裸 return。
 **规避**：测试不得隐式依赖宿主容器 env——setUp 显式 `patch.object(module, "PASSWORD", "unit-test")` 或进程内 setenv；**全量回归的声明必须写明运行环境**（哪个容器、有无 compose env、运行器）——pytest 与 unittest 计数口径不同（本例 unittest 3942 vs pytest 3946 项+2250 subtests），运行容器内可能根本没装 pytest。
 
 **为什么好**：把"宣称全绿但别处复现不了"的信任损耗收敛成 2 分钟可判定的检查，同时堵住"测试只在带生产 env 的容器里绿"的假验收。
+
+### 29. 慢接口拆解探针：perf_counter 分段定位非 SQL 瓶颈（2026-11-22）✅
+
+**解决什么问题**：主环境项目列表/概览/资产三接口 15 秒 BFF 超时 502，慢查询日志只指向 MySQL，但真正瓶颈有两处根本不在 SQL：成果表整行加载连带 MEDIUMTEXT 大字段（worker 直接 OOM 崩溃、连接空响应），以及生产存储 /project_storage 是宿主 D 盘 9p/drvfs 挂载、单次存在性 stat 实测 ~8ms、641 条数据集串行 5.2s。SQL 日志与接口耗时都对不出这笔账。
+
+**做法**：写只读探针脚本（create_app + app_context，perf_counter 分段计时：各条 query / 文件 stat 循环 / 组装 / schema dump / json dumps），`MSYS_NO_PATHCONV=1 docker exec -i -w /app/backend <容器> /opt/conda/envs/MMSeg310/bin/python - < probe.py` 直接在生产容器跑，用真实数据量分解。瓶颈定位后按语义选修法：大字段 load_only/列裁剪，只读 stat 线程池并发（语义不变），最后用响应逐字节比对证明 DTO 契约未动。
+
+**规避**：① 修行尾别信 Git Bash 管道信号——`grep -c $''` 会匹配所有行给出假计数，编辑器/工具翻转行尾会让 git diff 显示全文件变更，字节级判定用 `python -c` 读 blob（subprocess 二进制可靠）；② localhost 双监听（wslrelay.exe 占 127.0.0.1、com.docker.backend 占 0.0.0.0）都通向同一 WSL2 容器，不是环境分身，别误判打错栈。
+
+**为什么好**：把"接口慢"从猜测变成 5 分钟内的分段实锤，避免只盯着 MySQL 优化却放过文件系统与序列化；逐字节响应比对让性能修复与契约变更互相证明。

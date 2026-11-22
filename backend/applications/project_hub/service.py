@@ -108,19 +108,30 @@ def _project_list_features():
 
 
 def _project_list_latest_inference():
-    """项目 → 最近一次推理任务（状态/时间），供项目卡片"最新解译进度"。"""
-    latest = (
-        InferenceJob.query.filter(InferenceJob.project_id.isnot(None))
+    """项目 → 最近一次推理任务（状态/时间），供项目卡片"最新解译进度"。
+
+    只查卡片所需 4 列：整行加载会连带拉出 result_json/request_payload_json
+    等 MEDIUMTEXT 大字段（单任务实测 136KB+），2026-11-22 主环境 619 条任务
+    把列表接口拖到 BFF 15 秒超时 502（AGENTS §10 无界全量加载）。
+    """
+    rows = (
+        db.session.query(
+            InferenceJob.project_id,
+            InferenceJob.id,
+            InferenceJob.status,
+            InferenceJob.create_time,
+        )
+        .filter(InferenceJob.project_id.isnot(None))
         .order_by(InferenceJob.project_id, InferenceJob.create_time.desc())
         .all()
     )
     summary = {}
-    for job in latest:
-        if job.project_id not in summary:
-            summary[job.project_id] = {
-                "job_id": job.id,
-                "status": job.status,
-                "create_time": job.create_time,
+    for project_id, job_id, job_status, create_time in rows:
+        if project_id not in summary:
+            summary[project_id] = {
+                "job_id": job_id,
+                "status": job_status,
+                "create_time": create_time,
             }
     return summary
 
