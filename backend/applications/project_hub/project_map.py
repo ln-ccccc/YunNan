@@ -5,6 +5,8 @@ import re
 import time
 from pathlib import Path
 
+from sqlalchemy.orm import load_only
+
 from applications.models.inference_job import InferenceJob
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
@@ -613,6 +615,17 @@ def list_project_original_imagery(project_id, fid, item_limit=50):
     storage_root_for_keys = get_storage_root()
     jobs = (
         InferenceJob.query.filter_by(project_id=project.id)
+        # 只取溯源所需 4 列：整行加载连带 result_json 等 MEDIUMTEXT 大字段
+        # （同 assets.py 2026-11-22 修法），项目 10 实测 400 条 17.5s，
+        # request_payload_json 本身才 0.2MB
+        .options(
+            load_only(
+                InferenceJob.id,
+                InferenceJob.status,
+                InferenceJob.request_payload_json,
+                InferenceJob.create_time,
+            )
+        )
         .order_by(InferenceJob.create_time.desc())
         .limit(400)
     )

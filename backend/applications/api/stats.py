@@ -13,10 +13,11 @@ import csv
 import json
 import logging
 import math
+import time
 from pathlib import Path
 
 import rasterio
-from flask import Blueprint
+from flask import Blueprint, current_app, has_app_context
 from sqlalchemy.orm import load_only
 
 from applications.auth.guard import ensure_logged_in
@@ -27,6 +28,13 @@ from applications.models.classification_result import ClassificationResult
 
 stats_api = Blueprint('stats_api', __name__, url_prefix='/api/stats')
 LOGGER = logging.getLogger(__name__)
+
+# 概览聚合是纯读重计算（644 条成果 FC JSON 球面面积 + 逐项目 change_matrix
+# 9p 扫描，2026-11-22 实测 ~10s，BFF 15s 超时 502）。沿用 project_map
+# _STATS_CACHE 的模块级 TTL 先例：跨进程失效不可行，至多 _TTL 秒有界陈旧；
+# TESTING 旁路避免用例间共享缓存假绿
+_OVERVIEW_CACHE_TTL_SECONDS = 120
+_OVERVIEW_CACHE = {"expires_at": 0.0, "payload": None}
 
 # 类别码 → 类别名（与 kml_roi.change_matrix.CLASS_NAMES 同源）
 CLASS_BY_CODE = {0: "grassland", 1: "forest", 2: "building", 3: "road", 4: "bareground", 5: "water"}
@@ -239,6 +247,18 @@ def _change_metrics(project_root: Path):
 
 
 def build_stats_overview(storage_root: Path = None):
+    now = time.monotonic()
+    cacheable = (
+        storage_root is None
+        and has_app_context()
+        and not current_app.config.get("TESTING")
+    )
+    if (
+        cacheable
+        and _OVERVIEW_CACHE["payload"] is not None
+        and now < _OVERVIEW_CACHE["expires_at"]
+    ):
+        return _OVERVIEW_CACHE["payload"]
     projects = Project.query.filter_by(deleted_at=None).all()
     project_counts = {"draft": 0, "active": 0, "completed": 0, "archived": 0}
     for project in projects:
@@ -270,6 +290,9 @@ def build_stats_overview(storage_root: Path = None):
         suspect_fids.extend(f"{project.id}:{fid}" for fid in metrics["suspect_fids"])
     overview["restored_area_m2"] = round(max(restored_m2, 0.0), 1)
     overview["suspect_mine_count"] = len(suspect_fids)
+    if cacheable:
+        _OVERVIEW_CACHE["expires_at"] = now + _OVERVIEW_CACHE_TTL_SECONDS
+        _OVERVIEW_CACHE["payload"] = overview
     return overview
 
 

@@ -13,6 +13,8 @@ import json
 import logging
 from pathlib import Path
 
+from sqlalchemy.orm import load_only
+
 from applications.models.classification_result import (
     ClassificationEditAudit,
     ClassificationResult,
@@ -157,6 +159,20 @@ def list_project_classification_results(project_id):
     project = _get_project(project_id)
     rows = (
         ClassificationResult.query.filter_by(project_id=project.id)
+        # 只取清单摘要所需 7 列：整行加载会连带 roi/auto/current 三个
+        # MEDIUMTEXT 大字段（同 assets.py 2026-11-22 修法），项目 10 实测
+        # 2979 条把编辑导航清单拖到 50s、BFF 15s 超时 502
+        .options(
+            load_only(
+                ClassificationResult.id,
+                ClassificationResult.mine_fid,
+                ClassificationResult.year,
+                ClassificationResult.vector_status,
+                ClassificationResult.feature_count,
+                ClassificationResult.current_revision_no,
+                ClassificationResult.create_time,
+            )
+        )
         .order_by(ClassificationResult.year.desc(), ClassificationResult.id.desc())
         .all()
     )
