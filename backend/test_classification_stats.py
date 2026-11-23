@@ -1,23 +1,41 @@
 # -*- coding: utf-8 -*-
-"""分类统计口径改造（2026-10-31 方案 b）单元测试：纯函数与文件型逻辑。
+"""分类成果派生统计（2026-11-24 重构）单元测试：纯函数与文件型逻辑。
 
-集成链（保存修订 → 回写 → 溯源/趋势消费）见 test_project_api.py。
+- 逐修订的地类占比/面积：compute_revision_stats 与 revisions/<版本号>.stats.json
+  sidecar（按成果+版本号寻址、不可变、身份不符不采信）；
+- 有效成果选择规则 select_effective_result_refs；
+- 变化矩阵现值判定 evaluate_change_matrix_state（只读回执 + 矩阵）；
+- 栅格化与统一网格（跨 CRS）。
+集成链（保存修订 → sidecar/矩阵 → 溯源/趋势消费）见 test_classification_derived_stats.py。
 """
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
+from applications.kml_roi.change_matrix import CLASS_NAMES
 from applications.project_hub.classification_stats import (
-    apply_revised_class_ratio,
+    MATRIX_STATE_PENDING,
+    MATRIX_STATE_REVISED,
+    MATRIX_STATE_REVISED_EMPTY,
+    MATRIX_STATE_UNAVAILABLE,
+    _change_matrix_path,
+    _revision_stats_path,
+    _write_rebuild_marker,
+    compute_revision_stats,
     compute_vector_class_ratio,
+    evaluate_change_matrix_state,
     rasterize_year_vector,
-    resolve_ratio_series,
+    read_revision_stats,
+    resolve_result_stats,
+    select_effective_result_refs,
+    write_revision_stats,
 )
 
 
@@ -74,107 +92,207 @@ class ComputeVectorClassRatioTests(unittest.TestCase):
         self.assertIsNone(compute_vector_class_ratio(None))
 
 
-class ResolveRatioSeriesTests(unittest.TestCase):
-    def test_revised_block_takes_priority(self):
-        doc = {
-            "years": [2023, 2024],
-            "series_percent": {"grassland": [10.0, 20.0]},
-            "revised": {
-                "revision_no": 3,
-                "area_source": "vector_shoelace",
-                "series_percent": {"grassland": [10.0, 55.5]},
-            },
-        }
-        series, source, revision = resolve_ratio_series(doc)
-        self.assertEqual(series["grassland"], [10.0, 55.5])
-        self.assertEqual(source, "vector_shoelace")
-        self.assertEqual(revision, 3)
+class ComputeRevisionStatsTests(unittest.TestCase):
+    def test_empty_collection_is_explicit_zero_not_a_fallback(self):
+        # 人工删光图斑是真实状态：占比全 0，不能回落成推理值或别的年份的值
+        stats = compute_revision_stats({"type": "FeatureCollection", "features": []})
+        self.assertEqual(stats["percent"], {name: 0.0 for name in CLASS_NAMES})
+        self.assertEqual(stats["area_m2"], {name: 0.0 for name in CLASS_NAMES})
+        self.assertEqual(stats["feature_count"], 0)
 
-    def test_falls_back_to_inference_series(self):
-        series, source, revision = resolve_ratio_series({
-            "years": [2024], "series_percent": {"grassland": [30.0]},
-        })
-        self.assertEqual(series["grassland"], [30.0])
-        self.assertEqual(source, "inference_mask")
-        self.assertIsNone(revision)
-        self.assertEqual(resolve_ratio_series(None), (None, None, None))
+    def test_areas_are_absolute_square_metres(self):
+        stats = compute_revision_stats({"type": "FeatureCollection", "features": [
+            _feature(5, _square(100.0, 26.0)),
+        ]})
+        self.assertAlmostEqual(stats["percent"]["water"], 100.0, places=1)
+        # 0.001° 边长 ≈ 111m → 量级 1.2e4 m²（球面鞋带）
+        self.assertTrue(1.0e4 < stats["area_m2"]["water"] < 1.5e4)
+
+    def test_accepts_stored_json_string(self):
+        fc = {"type": "FeatureCollection", "features": [_feature(0, _square(100.0, 26.0))]}
+        self.assertEqual(compute_revision_stats(json.dumps(fc)), compute_revision_stats(fc))
 
 
-class ApplyRevisedClassRatioTests(unittest.TestCase):
+class RevisionStatsSidecarTests(unittest.TestCase):
+    # 修订派生统计 sidecar：按 (result_id, revision_no) 寻址、内容不可变
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.storage = Path(self.temp.name)
-        os.environ["PROJECT_STORAGE_ROOT"] = str(self.storage)
-        self.fid_dir = self.storage / "projects" / "10" / "outputs" / "inference" / "713"
-        self.fid_dir.mkdir(parents=True)
-        (self.fid_dir / "class_ratio_percent.json").write_text(json.dumps({
-            "fid": "713",
-            "class_names": ["grassland", "forest", "building", "road", "bareground", "water"],
-            "years": [2023, 2024],
-            "totals": [100, 200],
-            "series_percent": {
-                "grassland": [30.0, 40.0], "forest": [20.0, 20.0], "building": [10.0, 10.0],
-                "road": [5.0, 5.0], "bareground": [15.0, 15.0], "water": [20.0, 10.0],
-            },
-        }, ensure_ascii=False), encoding="utf-8")
+        self.previous = os.environ.get("PROJECT_STORAGE_ROOT")
+        os.environ["PROJECT_STORAGE_ROOT"] = self.temp.name
+        self.addCleanup(self._restore)
 
-    def test_revised_block_written_at_year_index(self):
-        fc = {"type": "FeatureCollection", "features": [
-            _feature(0, _square(100.0, 26.0)),
-            _feature(0, _square(100.001, 26.0)),
+    def _restore(self):
+        if self.previous is None:
+            os.environ.pop("PROJECT_STORAGE_ROOT", None)
+        else:
+            os.environ["PROJECT_STORAGE_ROOT"] = self.previous
+
+    @staticmethod
+    def _fc(class_code, count=2):
+        return {"type": "FeatureCollection", "features": [
+            _feature(class_code, _square(100.0 + index * 0.002, 26.0)) for index in range(count)
         ]}
-        self.assertTrue(apply_revised_class_ratio(10, 713, 2024, 5, fc))
-        payload = json.loads((self.fid_dir / "class_ratio_percent.json").read_text(encoding="utf-8"))
-        revised = payload["revised"]
-        self.assertEqual(revised["revision_no"], 5)
-        self.assertEqual(revised["area_source"], "vector_shoelace")
-        # 2024 索引位被审校值替换，2023 位保持推理原值
-        self.assertAlmostEqual(revised["series_percent"]["grassland"][1], 100.0, places=1)
-        self.assertAlmostEqual(revised["series_percent"]["grassland"][0], 30.0, places=1)
-        # 推理口径原值保留
-        self.assertAlmostEqual(payload["series_percent"]["grassland"][1], 40.0, places=1)
 
-    def test_year_not_in_series_and_missing_file_return_false(self):
-        fc = {"type": "FeatureCollection", "features": [_feature(0, _square(100.0, 26.0))]}
-        self.assertFalse(apply_revised_class_ratio(10, 713, 2019, 1, fc))
-        (self.fid_dir / "class_ratio_percent.json").unlink()
-        self.assertFalse(apply_revised_class_ratio(10, 713, 2024, 1, fc))
+    def test_write_then_read_roundtrip_carries_identity(self):
+        path = write_revision_stats(10, 55, 3, self._fc(2))
+        self.assertEqual(path.parent.name, "revisions")
+        self.assertEqual(path.name, "3.stats.json")
+        stored = read_revision_stats(10, 55, 3)
+        self.assertEqual((stored["result_id"], stored["revision_no"]), (55, 3))
+        self.assertEqual(stored["feature_count"], 2)
+        self.assertAlmostEqual(stored["percent"]["building"], 100.0, places=1)
+        self.assertFalse(list(path.parent.glob("*.tmp")), "临时文件不得残留")
+
+    def test_is_addressed_by_result_and_revision(self):
+        write_revision_stats(10, 55, 3, self._fc(2))
+        self.assertIsNone(read_revision_stats(10, 55, 4))
+        self.assertIsNone(read_revision_stats(10, 56, 3))
+        self.assertIsNone(read_revision_stats(11, 55, 3))
+
+    def test_tampered_or_corrupt_file_is_rejected(self):
+        path = write_revision_stats(10, 55, 3, self._fc(2))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["revision_no"] = 9
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertIsNone(read_revision_stats(10, 55, 3), "文件名与内容身份不符不得采信")
+        path.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(read_revision_stats(10, 55, 3))
+
+    def test_rewriting_one_revision_never_touches_another(self):
+        # 跨年份互冲的根因防护：两个年份的统计各是各的文件，重写一个不动另一个
+        write_revision_stats(10, 55, 1, self._fc(0))
+        second = write_revision_stats(10, 56, 2, self._fc(1))
+        before = second.read_bytes()
+        write_revision_stats(10, 55, 1, self._fc(2))
+        self.assertEqual(second.read_bytes(), before)
+        self.assertAlmostEqual(read_revision_stats(10, 55, 1)["percent"]["building"], 100.0, places=1)
+        self.assertAlmostEqual(read_revision_stats(10, 56, 2)["percent"]["forest"], 100.0, places=1)
+
+    def test_resolve_recomputes_when_sidecar_is_missing(self):
+        result = SimpleNamespace(
+            id=55, current_revision_no=2, feature_count=2,
+            current_feature_collection_json=json.dumps(self._fc(3)),
+        )
+        stats = resolve_result_stats(10, result)
+        self.assertAlmostEqual(stats["percent"]["road"], 100.0, places=1)
+        self.assertNotIn("computed_at", stats, "现算结果不带落盘时间")
+        self.assertFalse(_revision_stats_path(10, 55, 2).exists(), "GET 路径只读：现算不得写文件")
+
+    def test_resolve_prefers_sidecar_once_written(self):
+        result = SimpleNamespace(
+            id=55, current_revision_no=2, feature_count=2,
+            current_feature_collection_json=json.dumps(self._fc(3)),
+        )
+        write_revision_stats(10, 55, 2, self._fc(3))
+        self.assertIn("computed_at", resolve_result_stats(10, result))
+
+    def test_resolve_recomputes_when_feature_count_disagrees(self):
+        write_revision_stats(10, 55, 2, self._fc(3, count=2))
+        result = SimpleNamespace(
+            id=55, current_revision_no=2, feature_count=7,
+            current_feature_collection_json=json.dumps(self._fc(3, count=7)),
+        )
+        self.assertEqual(resolve_result_stats(10, result)["feature_count"], 7)
 
 
-    def test_multi_year_revisions_merge_instead_of_reset(self):
-        """跨年修订不得互相冲掉（2026-11-23 修复）。
+class SelectEffectiveResultRefsTests(unittest.TestCase):
+    # 「同矿山同年哪条成果有效」只有这一份规则——溯源、矩阵、趋势、补算共用
 
-        此前每次回写都从推理原值重建序列：先修订 2023 再修订 2024，
-        2023 的人工占比会被冲回推理值。
-        """
-        fc2023 = {"type": "FeatureCollection", "features": [_feature(1, _square(100.0, 26.0))]}
-        self.assertTrue(apply_revised_class_ratio(10, 713, 2023, 2, fc2023))
-        fc2024 = {"type": "FeatureCollection", "features": [_feature(0, _square(100.0, 26.0))]}
-        self.assertTrue(apply_revised_class_ratio(10, 713, 2024, 3, fc2024))
-        payload = json.loads((self.fid_dir / "class_ratio_percent.json").read_text(encoding="utf-8"))
-        revised = payload["revised"]
-        # 两处人工值都保留：2023 全林地、2024 全草地
-        self.assertAlmostEqual(revised["series_percent"]["forest"][0], 100.0, places=1)
-        self.assertAlmostEqual(revised["series_percent"]["grassland"][1], 100.0, places=1)
-        # 推理原值不受影响
-        self.assertAlmostEqual(payload["series_percent"]["grassland"][0], 30.0, places=1)
+    def test_latest_result_wins_per_year(self):
+        refs = select_effective_result_refs([
+            (12, 2024, "ready", 0), (11, 2024, "ready", 2), (10, 2023, "ready", 1),
+        ])
+        self.assertEqual(refs, {2024: (12, 0), 2023: (10, 1)})
 
-    def test_empty_revision_writes_zero_series(self):
-        """人工清空当年图斑后占比归零回写（2026-11-23 修复）。
+    def test_vector_failed_yields_to_non_failed_sibling(self):
+        refs = select_effective_result_refs([
+            (12, 2024, "vector_failed", 0), (11, 2024, "ready", 1),
+        ])
+        self.assertEqual(refs, {2024: (11, 1)})
 
-        此前 compute 返回 None 直接 return False，清空后溯源/趋势
-        仍显示修订前的旧占比。
-        """
-        fc = {"type": "FeatureCollection", "features": [_feature(0, _square(100.0, 26.0))]}
-        self.assertTrue(apply_revised_class_ratio(10, 713, 2024, 2, fc))
-        cleared = {"type": "FeatureCollection", "features": []}
-        self.assertTrue(apply_revised_class_ratio(10, 713, 2024, 3, cleared))
-        payload = json.loads((self.fid_dir / "class_ratio_percent.json").read_text(encoding="utf-8"))
-        series = payload["revised"]["series_percent"]
-        for name in series:
-            self.assertEqual(series[name][1], 0.0)
-        self.assertAlmostEqual(payload["series_percent"]["grassland"][1], 40.0, places=1)
+    def test_vector_failed_is_used_when_it_is_the_only_one(self):
+        refs = select_effective_result_refs([(12, 2024, "vector_failed", 0)])
+        self.assertEqual(refs, {2024: (12, 0)})
+
+
+class EvaluateChangeMatrixStateTests(unittest.TestCase):
+    # 矩阵现值判定只读回执与矩阵两个小文件；覆盖正常、待重算与三种终态
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.previous = os.environ.get("PROJECT_STORAGE_ROOT")
+        os.environ["PROJECT_STORAGE_ROOT"] = self.temp.name
+        self.addCleanup(self._restore)
+        self.refs = {2023: (10, 0), 2024: (11, 2)}
+        self.matrix_path = _change_matrix_path(10, 713)
+        self.matrix_path.parent.mkdir(parents=True)
+
+    def _restore(self):
+        if self.previous is None:
+            os.environ.pop("PROJECT_STORAGE_ROOT", None)
+        else:
+            os.environ["PROJECT_STORAGE_ROOT"] = self.previous
+
+    def _write_matrix(self, basis):
+        self.matrix_path.write_text(json.dumps({"basis": basis, "matrix": []}), encoding="utf-8")
+
+    def test_without_manual_revision_the_inference_matrix_is_the_right_basis(self):
+        self.assertEqual(
+            evaluate_change_matrix_state(10, 713, {2023: (10, 0), 2024: (11, 0)}),
+            ("inference", None),
+        )
+
+    def test_manual_revision_outside_the_matrix_years_is_inference(self):
+        # 修订只落在 2020（不在最近两期里）：矩阵与人工修订无关，推理矩阵即正确口径；
+        # 否则会永远判"待重算"，每次读取都白触发一遍
+        refs = {2020: (9, 3), 2023: (10, 0), 2024: (11, 0)}
+        self.assertEqual(evaluate_change_matrix_state(10, 713, refs), ("inference", None))
+
+    def test_manual_revision_without_receipt_is_pending(self):
+        state, note = evaluate_change_matrix_state(10, 713, self.refs)
+        self.assertEqual(state, MATRIX_STATE_PENDING)
+        self.assertIn("重算", note)
+
+    def test_receipt_for_another_set_of_results_is_pending(self):
+        self._write_matrix("revised_vector")
+        _write_rebuild_marker(
+            10, 713, {2023: (10, 0), 2024: (11, 1)}, (2023, 2024), "written", has_matrix=True
+        )
+        self.assertEqual(evaluate_change_matrix_state(10, 713, self.refs)[0], MATRIX_STATE_PENDING)
+
+    def test_written_matrix_matching_receipt_is_revised(self):
+        self._write_matrix("revised_vector")
+        _write_rebuild_marker(10, 713, self.refs, (2023, 2024), "written", has_matrix=True)
+        self.assertEqual(
+            evaluate_change_matrix_state(10, 713, self.refs), (MATRIX_STATE_REVISED, None)
+        )
+
+    def test_matrix_overwritten_by_publish_is_pending_again(self):
+        # 推理发布整文件覆盖矩阵（内容变了但回执还在）必须判为待重算，
+        # 不能把推理矩阵当成审校矩阵
+        self._write_matrix("revised_vector")
+        _write_rebuild_marker(10, 713, self.refs, (2023, 2024), "written", has_matrix=True)
+        self._write_matrix("inference")
+        self.assertEqual(
+            evaluate_change_matrix_state(10, 713, self.refs)[0], MATRIX_STATE_PENDING
+        )
+
+    def test_invalidated_and_skipped_are_terminal_states_with_notes(self):
+        self._write_matrix("revised_vector_invalid")
+        _write_rebuild_marker(
+            10, 713, self.refs, (2023, 2024), "invalidated", "2024 年图斑为空", has_matrix=True
+        )
+        state, note = evaluate_change_matrix_state(10, 713, self.refs)
+        self.assertEqual(state, MATRIX_STATE_REVISED_EMPTY)
+        self.assertIn("图斑为空", note)
+        _write_rebuild_marker(10, 713, self.refs, (2023,), "skipped", "不足两期成果")
+        state, note = evaluate_change_matrix_state(10, 713, self.refs)
+        self.assertEqual(state, MATRIX_STATE_UNAVAILABLE)
+        self.assertIn("不足两期成果", note)
+
 
 class RasterizeYearVectorTests(unittest.TestCase):
     def setUp(self):

@@ -41,14 +41,14 @@ class TraceabilityBase(TestProjectAPI):
         db.session.commit()
         self.inference_root = self.storage_root / "projects" / str(self.project_id) / "outputs" / "inference" / "713"
 
-    def _make_result(self, year, feature_count=3, job_suffix="a"):
+    def _make_result(self, year, feature_count=3, job_suffix="a", revision_no=1):
         collection = {"type": "FeatureCollection", "features": [_feature(0)] * feature_count}
         result = ClassificationResult(
             project_id=self.project_id, mine_fid=713, year=year,
             inference_job_id=str(uuid.uuid4())[:35] + job_suffix,
             model_id="mmseg:test", mine_resource_id=1,
             current_feature_collection_json=json.dumps(collection),
-            current_revision_no=1, vector_status="ready",
+            current_revision_no=revision_no, vector_status="ready",
             feature_count=feature_count,
             create_time=datetime(2026, 9, 1, 10, 0, 0),
         )
@@ -72,8 +72,10 @@ class TraceabilityBase(TestProjectAPI):
 
 class TestMineTraceability(TraceabilityBase):
     def test_aggregates_years_with_ratio_and_image_urls(self):
-        self._make_result(2023, feature_count=2)
-        self._make_result(2024, feature_count=5)
+        # 修订号 0 = 未人工修订 → 占比取推理占比序列（修订过的年份取修订自己的
+        # 派生统计，见 test_classification_derived_stats.py）
+        self._make_result(2023, feature_count=2, revision_no=0)
+        self._make_result(2024, feature_count=5, revision_no=0)
         self._write_ratio([2023, 2024], {"grassland": [50.0, 30.0], "water": [50.0, 70.0]})
         db.session.commit()
 
@@ -85,7 +87,9 @@ class TestMineTraceability(TraceabilityBase):
         self.assertEqual(y2024["feature_count"], 5)
         self.assertIn(f"/api/projects/{self.project_id}/outputs/inference/713/713+2024.png", y2024["result_image_url"])
         self.assertEqual(y2024["class_ratio_percent"]["grassland"], 30.0)
+        self.assertEqual(y2024["class_ratio_area_source"], "inference_mask")
         self.assertEqual(data["ratio_series"]["years"], [2023, 2024])
+        self.assertEqual(data["ratio_series"]["area_source"], "inference_mask")
         # 文件缺失的维度降级为 None 而非报错
         self.assertIsNone(data["change_matrix"])
         self.assertIsNone(data["indices"])

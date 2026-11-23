@@ -21,8 +21,9 @@ from applications.models.classification_result import (
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.classification_stats import (
-    apply_revised_class_ratio,
-    compute_revised_change_matrix,
+    _revision_stats_path,
+    request_change_matrix_rebuild_for_result,
+    write_revision_stats,
 )
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 from applications.common.utils.utc_time import to_utc_z
@@ -429,6 +430,48 @@ def _save_conflict(result, base_revision_no):
     )
 
 
+def _settle_snapshot_after_failure(result, revision_no, snapshot_path, revision_stats_path, snapshot_installed):
+    """提交失败后处置已转正的修订快照与统计 sidecar，返回 removed / committed / unknown。
+
+    保存的顺序是"先落盘、后提交"（文件先于 DB：提交成功而文件缺失，比反过来
+    更糟），所以 commit 失败时 revisions/<n>.geojson 与 <n>.stats.json 已经就位。
+    此前失败分支只删临时文件——它早已被 rename 走，于是每次提交失败都留下一个
+    库里不存在的孤立快照（2026-11-24 审计可复现）。是否清理由数据库对账决定：
+    - 修订行不存在 → 提交确未生效，删除本次转正的文件；
+    - 修订行存在   → 提交其实成功，文件必须保留（否则 DB 指向不存在的快照）；
+    - 对账本身失败（数据库不可用）→ 不动文件：孤儿文件无害（下次保存同一修订号
+      会原子覆盖；统计 sidecar 按版本号寻址，孤儿不会被任何有效成果引用），
+      缺失快照有害。
+    调用前必须已 rollback。未转正（snapshot_installed=False）时无需处置。
+    """
+    if not snapshot_installed:
+        return "removed"
+    try:
+        committed = (
+            ClassificationRevision.query.filter_by(
+                result_id=result.id, revision_no=revision_no
+            ).first()
+            is not None
+        )
+    except Exception:  # noqa: BLE001 - 对账失败按"不确定"处理，不动文件
+        LOGGER.warning(
+            "保存提交失败后无法对账修订快照，保留文件 result_id=%s revision_no=%s",
+            result.id, revision_no, exc_info=True,
+        )
+        return "unknown"
+    if committed:
+        return "committed"
+    for path in (snapshot_path, revision_stats_path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.warning(
+                "清理未提交修订的落盘文件失败 result_id=%s revision_no=%s",
+                result.id, revision_no, exc_info=True,
+            )
+    return "removed"
+
+
 def save_classification_revision(project_id, result_id, payload, *, actor, body_size=None):
     result = _result_for_project(project_id, result_id)
     if result.vector_status == "vector_failed":
@@ -454,8 +497,12 @@ def save_classification_revision(project_id, result_id, payload, *, actor, body_
     )
     snapshot_path = resolve_storage_path(get_storage_root(), snapshot_relative_path)
     feature_collection_json = json.dumps(feature_collection, ensure_ascii=False)
-    temporary_snapshot_path = _write_json_temporary(snapshot_path, feature_collection)
+    # 快照是否已从临时名转正到 revisions/<n>.geojson（转正发生在 commit 之前）
+    snapshot_installed = False
+    temporary_snapshot_path = None
+    revision_stats_path = _revision_stats_path(result.project_id, result.id, revision_no)
     try:
+        temporary_snapshot_path = _write_json_temporary(snapshot_path, feature_collection_json)
         if _claim_current_revision(
             result,
             base_revision_no,
@@ -464,6 +511,16 @@ def save_classification_revision(project_id, result_id, payload, *, actor, body_
         ) != 1:
             db.session.rollback()
             raise _save_conflict(result, base_revision_no)
+        # CAS 成功：本次保存是「该成果这一版本号」的唯一写者（并发保存在上面的条件
+        # 更新处落败，走不到这里），此时才写修订的派生统计 sidecar——先文件、后提交
+        # 数据库。写失败不阻断保存：读端在 sidecar 缺失时按当前矢量现算同一个纯函数
+        try:
+            write_revision_stats(result.project_id, result.id, revision_no, feature_collection)
+        except OSError:
+            LOGGER.warning(
+                "修订派生统计写盘失败（读取时将现算）result_id=%s revision_no=%s",
+                result.id, revision_no, exc_info=True,
+            )
         # UPDATE 用 synchronize_session=False，同步内存对象供后续统计回写
         # （revised_revision_no 等）读取正确修订号
         result.current_revision_no = revision_no
@@ -491,34 +548,54 @@ def save_classification_revision(project_id, result_id, payload, *, actor, body_
         )
         db.session.flush()
         os.replace(temporary_snapshot_path, snapshot_path)
+        snapshot_installed = True
         db.session.commit()
-        # 审校统计回写（2026-10-31 方案 b）：保存成功后按审校矢量重算占比与
-        # 变化矩阵，失败仅记日志不回滚——统计产物非关键数据，溯源/趋势有
-        # 推理口径回落（见 classification_stats 模块注释）
+        # 变化矩阵是整矿级重计算（栅格化），不在这条保存请求里同步等待：提交后交给
+        # 后台队列，读端（溯源）按重算回执判断是否现值，不是就再补一次请求。
+        # 逐修订的地类占比已在上方随快照落盘，保存返回时即为就绪
         try:
-            apply_revised_class_ratio(
-                result.project_id, result.mine_fid, result.year, revision_no, feature_collection
+            request_change_matrix_rebuild_for_result(
+                result.project_id, result.mine_fid, result.year, result.id
             )
-            compute_revised_change_matrix(result.project_id, result.mine_fid)
-        except Exception:  # noqa: BLE001 - 统计回写绝不影响保存结果
+        except Exception:  # noqa: BLE001 - 矩阵派生绝不影响保存结果
             LOGGER.warning(
-                "审校统计回写异常 result_id=%s mine_fid=%s year=%s",
-                result.id, result.mine_fid, result.year, exc_info=True,
+                "审校矩阵重算请求失败 result_id=%s mine_fid=%s",
+                result.id, result.mine_fid, exc_info=True,
             )
     except ClassificationConflictError:
         db.session.rollback()
-        with suppress(OSError):
-            temporary_snapshot_path.unlink(missing_ok=True)
+        if temporary_snapshot_path is not None:
+            with suppress(OSError):
+                temporary_snapshot_path.unlink(missing_ok=True)
         raise
     except IntegrityError as error:
         db.session.rollback()
-        with suppress(OSError):
-            temporary_snapshot_path.unlink(missing_ok=True)
+        _settle_snapshot_after_failure(
+            result, revision_no, snapshot_path, revision_stats_path, snapshot_installed
+        )
+        if temporary_snapshot_path is not None:
+            with suppress(OSError):
+                temporary_snapshot_path.unlink(missing_ok=True)
         raise _save_conflict(result, base_revision_no) from error
     except Exception:
         db.session.rollback()
-        with suppress(OSError):
-            temporary_snapshot_path.unlink(missing_ok=True)
+        if (
+            snapshot_installed
+            and _settle_snapshot_after_failure(
+                result, revision_no, snapshot_path, revision_stats_path, snapshot_installed
+            )
+            == "committed"
+        ):
+            # commit 抛错但修订其实已落库（连接在应答途中断开等不确定结局）：
+            # 客户端手里的基准版本已过期，按冲突提示重新加载，而不是报一个
+            # 让用户重试的 500
+            if temporary_snapshot_path is not None:
+                with suppress(OSError):
+                    temporary_snapshot_path.unlink(missing_ok=True)
+            raise _save_conflict(result, base_revision_no)
+        if temporary_snapshot_path is not None:
+            with suppress(OSError):
+                temporary_snapshot_path.unlink(missing_ok=True)
         raise
     return {
         "result_id": result.id,

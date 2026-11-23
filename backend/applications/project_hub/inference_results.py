@@ -12,10 +12,25 @@ from applications.extensions import db
 from applications.kml_roi.change_matrix import write_change_matrix_csv, write_class_ratio_json
 from applications.kml_roi.tiles import scan_year_masks
 from applications.models.project import Project, ProjectDataset
+from applications.project_hub.classification_stats import (
+    _effective_result_refs_by_year,
+    request_change_matrix_rebuild,
+)
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _read_json_document(path):
+    """读一个 JSON 文件为 dict；不存在/不可解析返回 None（发布前快照用，缺失即视为无）。"""
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _parse_year(value):
@@ -243,6 +258,11 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
         summary_backup = summary_root / f".{fid}.backup-{uuid.uuid4().hex}.json"
         had_directory = target_dir.exists()
         had_summary = summary_target.exists()
+        # 发布会用推理矩阵覆盖整矿的变化矩阵文件。记下它此前是否为审校口径：成果发布
+        # 完成后，该矿只要有人工修订就按当前有效矢量重算一遍（见下方）
+        previous_matrix_revised = (
+            (_read_json_document(summary_target) or {}).get("basis") == "revised_vector"
+        )
         inference_dataset = None
         try:
             if had_directory:
@@ -330,6 +350,23 @@ def publish_project_inference_result(project_id, request_payload, pipeline_summa
                         fid,
                         exc_info=True,
                     )
+        # 变化矩阵是整矿级派生缓存，刚被推理矩阵覆盖。该矿只要有人工修订（有效成果
+        # 修订号 > 0）或此前就是审校矩阵，就按当前有效矢量重算。逐修订的地类占比存放在
+        # 各修订自己的 sidecar 里，发布碰不到，无需处理。发布本来就在后台任务里：这里
+        # 同步算完再结束，做到"发布完成 ⇒ 统计就绪"；失败只告警——读端发现矩阵不是
+        # 现值会再触发重算
+        try:
+            refs = _effective_result_refs_by_year(project.id, fid)
+            if previous_matrix_revised or any(
+                int(revision_no or 0) > 0 for _result_id, revision_no in refs.values()
+            ):
+                request_change_matrix_rebuild(project.id, fid, background=False)
+        except Exception:  # noqa: BLE001
+            db.session.rollback()
+            LOGGER.warning(
+                "发布后重算审校变化矩阵失败（推理成果不受影响）: project_id=%s fid=%s",
+                project.id, fid, exc_info=True,
+            )
         synced_fids.append(fid)
 
     # 推理成果审计事件（此前已知缺口：推理链路无活动记录）：发布成功后按

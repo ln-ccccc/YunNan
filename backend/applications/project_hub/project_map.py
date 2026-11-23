@@ -10,7 +10,10 @@ from sqlalchemy.orm import load_only
 from applications.models.inference_job import InferenceJob
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
-from applications.project_hub.classification_stats import resolve_ratio_series
+from applications.project_hub.classification_stats import (
+    effective_result_refs_by_project,
+    load_revision_stats_by_ref,
+)
 from applications.project_hub.spatial_service import sanitize_public_geojson_value
 from applications.project_hub.spatial_state import serialize_project_spatial_state
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
@@ -98,7 +101,13 @@ def has_active_basemap_tiles(project_id):
     return _has_available_basemap_tiles(_active_resource(project_id, "basemap"))
 
 
-def get_project_geojson(project_id):
+def get_project_geojson_with_source(project_id):
+    """项目 GeoJSON + 实际读取的矿山边界来源（F7，2026-11-14 验收返修，自 main 移植）。
+
+    几何与来源在同一个资源解析中返回并冻结：导出流程在"构建几何"与
+    "写 manifest"之间会提交中间事务（pending 记录），期间矿山边界可能被
+    并发换版——manifest 必须标注实际构成几何的那一版，不得事后重读
+    "当前激活"资源（否则出现几何 A / manifest B）。"""
     _project(project_id)
     resource = _active_resource(project_id, "mine_vector")
     if resource is None or not resource.normalized_path:
@@ -112,7 +121,12 @@ def get_project_geojson(project_id):
         raise ValueError("项目矿山数据无法读取") from exc
     if payload.get("type") != "FeatureCollection" or not isinstance(payload.get("features"), list):
         raise ValueError("项目矿山数据格式错误")
-    return sanitize_public_geojson_value(payload)
+    source = {"resource_id": resource.id, "version": resource.version}
+    return sanitize_public_geojson_value(payload), source
+
+
+def get_project_geojson(project_id):
+    return get_project_geojson_with_source(project_id)[0]
 
 
 def get_project_map_manifest(project_id):
@@ -451,6 +465,8 @@ def _build_trend_report_summary(project_id, class_name, direction):
     ready = 0
     available_classes = set()
     upward = downward = stable = 0
+    # 各矿山"同年有效成果"引用：一次轻量查询（五列），逐矿山判断端点年份是否修订过
+    refs_by_fid = effective_result_refs_by_project(project_id)
     for binding in project.mines:
         fid = binding.mine_fid
         doc = None
@@ -465,16 +481,49 @@ def _build_trend_report_summary(project_id, class_name, direction):
                 doc = None
         if not doc or len(doc.get("years") or []) < 2:
             continue
+        years = [int(value) for value in doc["years"]]
+        start_year, end_year = years[0], years[-1]
+        meta = mine_meta.get(fid) or {"name": f"FID {fid}", "area_m2": None}
+        mine_area_m2 = meta.get("area_m2")
+
+        def estimated_area_km2(percent):
+            # 未修订年份的面积估计：推理占比 × 矿山面积（占比的分母是矿界内有效像元，
+            # 近似铺满矿界；矿界面积缺失时不出面积）
+            if not mine_area_m2 or percent is None:
+                return None
+            return round(mine_area_m2 * percent / 100.0 / 1e6, 6)
+
+        # 逐端点取值（2026-11-24 审计，面积分母口径）。此前一律"占比序列 × 整矿面积"：
+        # 审校占比的分母是"已绘图斑面积"，图斑不铺满矿界时会把整矿算成某个地类
+        # （删到只剩一个小水体面 → 整矿皆水）。
+        # - 未修订年份：推理占比，面积 = 占比 × 矿山面积（有效像元近似铺满矿界）；
+        # - 修订年份：该修订自己的派生统计——审校占比 + 图斑绝对面积。
+        endpoints = []
+        mine_refs = refs_by_fid.get(fid) or {}
+        for year in (start_year, end_year):
+            ref = mine_refs.get(year)
+            index = years.index(year)
+            if ref is None or int(ref[1] or 0) <= 0:
+                raw_series = (doc.get("series_percent") or {}).get(class_name) or []
+                percent = float(raw_series[index]) if index < len(raw_series) else None
+                endpoints.append((percent, estimated_area_km2(percent)))
+                continue
+            stats = load_revision_stats_by_ref(project_id, ref)
+            if stats is None:
+                # 汇总期间这条成果被删/被替换：本次跳过该矿山，下一次汇总自然恢复
+                break
+            endpoints.append((
+                float((stats.get("percent") or {}).get(class_name, 0.0)),
+                round(float((stats.get("area_m2") or {}).get(class_name, 0.0)) / 1e6, 6),
+            ))
+        if len(endpoints) < 2:
+            continue
         ready += 1
         available_classes.update(doc.get("class_names") or [])
-        # 审校口径优先（2026-10-31 方案 b）：有修订回写时用 revised 序列
-        trend_series_percent, _area_source, _rev = resolve_ratio_series(doc)
-        series = (trend_series_percent or {}).get(class_name) or []
-        if len(series) < 2:
+        start_percent, start_area = endpoints[0]
+        end_percent, end_area = endpoints[1]
+        if start_percent is None or end_percent is None:
             continue
-        years = doc["years"]
-        start_year, end_year = int(years[0]), int(years[-1])
-        start_percent, end_percent = float(series[0]), float(series[-1])
         delta_percent = end_percent - start_percent
         if delta_percent > 0.5:
             upward += 1
@@ -486,16 +535,6 @@ def _build_trend_report_summary(project_id, class_name, direction):
             continue
         if direction == "down" and delta_percent >= -0.5:
             continue
-        meta = mine_meta.get(fid) or {"name": f"FID {fid}", "area_m2": None}
-        area_m2 = meta.get("area_m2")
-
-        def class_area_km2(percent):
-            if not area_m2:
-                return None
-            return round(area_m2 * percent / 100.0 / 1e6, 6)
-
-        start_area = class_area_km2(start_percent)
-        end_area = class_area_km2(end_percent)
         rows.append(
             {
                 "fid": fid,

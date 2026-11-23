@@ -631,19 +631,29 @@ class TestProjectAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
 
+        # 推理占比文件不被保存改写（它只有推理发布一个主人）；修订占比存放在修订
+        # 自己的 sidecar 里，按 (成果, 版本号) 寻址（2026-11-24 派生统计重构）
         ratio = json.loads((fid_dir / "class_ratio_percent.json").read_text(encoding="utf-8"))
-        self.assertEqual(ratio["revised"]["revision_no"], 1)
-        self.assertEqual(ratio["revised"]["area_source"], "vector_shoelace")
-        # 2024 索引位 = 审校值（两块等面积：建筑/裸地各 50%），2023 位保持推理原值
-        self.assertAlmostEqual(ratio["revised"]["series_percent"]["building"][1], 50.0, places=1)
-        self.assertAlmostEqual(ratio["revised"]["series_percent"]["grassland"][1], 0.0, places=1)
+        self.assertNotIn("revised", ratio)
         self.assertAlmostEqual(ratio["series_percent"]["grassland"][1], 40.0, places=1)
+        from applications.project_hub.classification_stats import read_revision_stats
+
+        stored = read_revision_stats(project_id, result_2024.id, 1)
+        self.assertEqual((stored["result_id"], stored["revision_no"]), (result_2024.id, 1))
+        # 两块等面积：建筑/裸地各 50%
+        self.assertAlmostEqual(stored["percent"]["building"], 50.0, places=1)
+        self.assertAlmostEqual(stored["percent"]["grassland"], 0.0, places=1)
 
         response = self.client.get(f"/api/projects/{project_id}/mines/713/traceability")
-        years = self._json(response)["data"]["years"]
+        payload = self._json(response)["data"]
+        years = payload["years"]
         year_2024 = next(entry for entry in years if entry["year"] == 2024)
         self.assertAlmostEqual(year_2024["class_ratio_percent"]["building"], 50.0, places=1)
         self.assertEqual(year_2024["class_ratio_area_source"], "vector_shoelace")
+        year_2023 = next(entry for entry in years if entry["year"] == 2023)
+        self.assertEqual(year_2023["class_ratio_area_source"], "inference_mask")
+        self.assertAlmostEqual(year_2023["class_ratio_percent"]["grassland"], 30.0, places=1)
+        self.assertEqual(payload["change_matrix_state"], "revised")
 
         response = self.client.get(f"/api/projects/{project_id}/mines/change-matrix?fid=713")
         matrix = self._json(response)["data"]

@@ -9,6 +9,7 @@
 口径：外扩距离（米）按影像中心纬度换算为度，再换算像素窗口外扩。
 """
 import base64
+import contextlib
 import io
 import logging
 import math
@@ -44,6 +45,28 @@ _METERS_PER_DEG_LAT = 111320.0
 
 class ImageryProcessingError(ValueError):
     """面向客户端的裁剪/切片错误（400 语义）。"""
+
+
+# 重计算资源槽位（2026-11-24 自 main 分支移植，统计链移植的一部分）：设施本体在
+# applications/common/utils/resource_slots.py（容器级跨进程文件锁信号量，满载排队、
+# 超时拒绝）。这里保留兼容包装——超时翻译为 400 语义的 ImageryProcessingError。
+# 当前消费者是审校矩阵栅格化（classification_stats.compute_revised_change_matrix）；
+# clip/slice 入槽与预览/分析两池随 main 分支合并一并到位，不在本次移植范围。
+from applications.common.utils.resource_slots import (  # noqa: E401
+    _RECOMPUTE_QUEUE_TIMEOUT_SECONDS,
+    SlotTimeoutError,
+    recompute_budget_slot,
+)
+
+
+@contextlib.contextmanager
+def _recompute_budget_slot(timeout=_RECOMPUTE_QUEUE_TIMEOUT_SECONDS):
+    """重计算池兼容包装：超时翻译为 400 语义的 ImageryProcessingError。"""
+    try:
+        with recompute_budget_slot(timeout):
+            yield
+    except SlotTimeoutError as exc:
+        raise ImageryProcessingError(str(exc)) from None
 
 
 def _project_or_404(project_id):
