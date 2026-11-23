@@ -10,8 +10,8 @@
     <section class="view-body">
       <div class="info-grid">
         <article class="info-card">
-          <span>平台</span>
-          <strong>矿山生态修复智能监测平台</strong>
+          <span>系统名称</span>
+          <strong>废弃矿山生态自然恢复过程管理系统V1.0</strong>
         </article>
         <article class="info-card">
           <span>主控台版本</span>

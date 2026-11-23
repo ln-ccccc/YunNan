@@ -1,7 +1,7 @@
 <template>
   <div class="login-page">
     <div class="login-card">
-      <p class="login-kicker">矿山项目化监测平台</p>
+      <p class="login-kicker">废弃矿山生态自然恢复过程管理系统V1.0</p>
       <h1>管理员登录</h1>
       <p class="login-subtitle">输入管理员账号和密码后访问平台。</p>
       <form class="login-form" @submit.prevent="submitLogin">

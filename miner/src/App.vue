@@ -8,9 +8,9 @@
   />
   <div v-else class="app-shell" :class="{ 'with-sidebar': showSidebar }">
     <aside v-if="showSidebar" class="side-nav" :class="{ collapsed: navCollapsed }">
-      <div class="brand" title="矿山监测主控台">
+      <div class="brand" title="废弃矿山生态自然恢复过程管理系统V1.0">
         <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M5 29 16 10l8 14 5-8 7 13M10 29h21M13 16l3 4 3-4" /></svg>
-        <div v-if="!navCollapsed" class="brand-copy">矿山监测<span>生态修复 · 项目工作台</span></div>
+        <div v-if="!navCollapsed" class="brand-copy">废弃矿山生态自然恢复<span>过程管理系统V1.0</span></div>
       </div>
       <nav class="nav-list" aria-label="主导航">
         <button type="button"
@@ -363,11 +363,18 @@ onUnmounted(() => {
 }
 
 .brand {
-  font-size: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
   font-weight: 700;
-  line-height: 1.4;
-  padding: 4px 8px 12px;
+  line-height: 1.45;
+  padding: 4px 4px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.brand-copy {
+  word-break: break-all;
 }
 
 .nav-list { display: flex; flex-direction: column; gap: 4px; }
