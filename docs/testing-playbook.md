@@ -425,3 +425,13 @@ fulfill），或在 handler 末尾兜底 fulfill/404，禁止裸 return。
 **规避**：① 修行尾别信 Git Bash 管道信号——`grep -c $''` 会匹配所有行给出假计数，编辑器/工具翻转行尾会让 git diff 显示全文件变更，字节级判定用 `python -c` 读 blob（subprocess 二进制可靠）；② localhost 双监听（wslrelay.exe 占 127.0.0.1、com.docker.backend 占 0.0.0.0）都通向同一 WSL2 容器，不是环境分身，别误判打错栈。
 
 **为什么好**：把"接口慢"从猜测变成 5 分钟内的分段实锤，避免只盯着 MySQL 优化却放过文件系统与序列化；逐字节响应比对让性能修复与契约变更互相证明。
+
+### 30. WebGL 画布验证：IAB rAF 饿死假象 + 无头真 GPU 裁决法（2026-11-23）✅
+
+**解决什么问题**：视觉验收 WebGIS（MapLibre）画布时，IAB 内嵌浏览器给出的"空白画布"可能是纯环境假象：标签页/面板被遮挡时 `visibilityState=visible` 但 **rAF 一帧不发**（实测 2.5s 0 帧）——MapLibre 全靠 rAF 绘帧，画布永远空白、'load' 事件可能不触发、控件缺失；而截图管道部分可用（DOM 内容新鲜）会加深"页面活着就是没画"的迷惑。曾据此把地图空白误判为"dist 构建回归"，浪费整轮排查。
+
+**做法**：①先用页面探针判环境：`requestAnimationFrame` 1-2s 计帧，0 帧=测量环境失效，停止在 IAB 内下结论；②裁决用**本机 playwright-core + 真 GPU 无头 Chromium**（临时目录 `npm i playwright-core`，`executablePath` 指向 `~/AppData/Local/ms-playwright/chromium-*/chrome-win64/chrome.exe`，启动参数 `--use-gl=angle --use-angle=d3d11`；SwiftShader 软渲染也可能不画，别用它下结论）；③**画布区域独立颜色数 + top3 占比**做客观判据：丰富渲染 ≥数万色/top3<5%，空白 ≈90%+ 单色；④"这边好那边不好"的地图问题，先比对**数据地理覆盖**（成果 fitBounds 的矿山 vs 底图金字塔 bounds）再查代码。
+
+**规避**：不要用 IAB 的画布截图给 WebGL 页面做验收结论；同 harness 对照（好/坏页面各跑一次无头）是分辨"环境假象 vs 真缺陷"的最快路径。
+
+**为什么好**：把"画布空白"从主观截图判断变成三步可复现的判定链（rAF 探针→无头真 GPU→色彩统计），避免在错误归因上消耗整轮时间。
