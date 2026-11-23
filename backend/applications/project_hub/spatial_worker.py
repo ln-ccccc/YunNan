@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 # 激活新底图时保留的历史底图数量（不含当前激活的那一张）
 RETAINED_BASEMAP_KEEP = 2
+
+# 切片被取消的资源落 failed 时写入的原因。此前落 retained：半成品瓦片于是出现在
+# "可重新激活的历史底图"列表里，一张 z8 瓦片也能换掉正在用的整幅底图
+# （2026-11-24 审计 C1 的根因）。spatial_service.basemap_reactivation_blocker
+# 是它后面的那道防线：存量里已被标成 retained 的半成品同样会被拦下
+CANCELLED_TILING_MESSAGE = "切片任务已取消，瓦片不完整；可重新提交任务断点续切"
 from applications.project_hub.spatial_storage import ensure_storage_layout, resolve_storage_path
 
 
@@ -74,7 +80,8 @@ def recover_running_jobs():
             job.status = "cancelled"
             job.stage = "cancelled"
             if resource is not None and resource.status != "active":
-                resource.status = "retained"
+                resource.status = "failed"
+                resource.error_message = CANCELLED_TILING_MESSAGE
         else:
             job.status = "queued"
             job.stage = "queued"
@@ -357,7 +364,9 @@ def process_job(job, poll_seconds=1.0):
         job.status = "cancelled"
         job.stage = "cancelled"
         job.error_message = str(exc)
-        resource.status = "retained"
+        # 取消的切片不是"切换下来的历史底图"：落 failed 并写明原因（见 CANCELLED_TILING_MESSAGE）
+        resource.status = "failed"
+        resource.error_message = CANCELLED_TILING_MESSAGE
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
