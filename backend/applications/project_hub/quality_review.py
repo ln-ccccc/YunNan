@@ -151,11 +151,16 @@ def build_result_quality_review(project_id, result_id, small_area_threshold_m2=N
     }
     current = _serialize_feature_collection(result.current_feature_collection_json)
     auto = _serialize_feature_collection(result.auto_feature_collection_json)
-    # 版本口径（2026-11-23 修复）：current 是已保存的显式集合——包括"人工清空"
-    # 的空集合（features=[]）——复核必须反映当前版本；只有 current 从未落库
-    # 才回退 auto 推理值。此前空集合回退 auto，导致删光图斑保存 V1 后复核
-    # 仍显示 V0 图斑，画布/质检/溯源三个口径分叉
-    if result.current_feature_collection_json and isinstance(current, dict):
+    # 版本口径（2026-11-23 修复，2026-11-24 收紧）：current 是已保存的显式
+    # 集合——包括"人工清空"的空集合（features=[]）——复核必须反映当前版本；
+    # 只有 current 从未落库、或成果本身 vector_failed（无可编辑矢量，复核
+    # 提供的是 auto 原始线索）才回退 auto。此前空集合一律回退 auto，导致
+    # 删光图斑保存 V1 后复核仍显示 V0 图斑，画布/质检/溯源口径分叉
+    if (
+        result.vector_status != "vector_failed"
+        and result.current_feature_collection_json
+        and isinstance(current, dict)
+    ):
         collection = current
         source = "current"
     elif isinstance(auto, dict) and bool(auto.get("features")):

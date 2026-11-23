@@ -199,6 +199,31 @@ class TestQualityReviewApi(QualityReviewBase):
         self.assertEqual(data["class_kind_count"], 0)
         self.assertEqual(data["suspects"], [])
 
+    def test_failed_result_keeps_auto_clues_even_with_current_written(self):
+        """vector_failed 成果即使 current 落过库也回退 auto 线索（2026-11-24 收紧）。
+
+        failed 成果无可编辑矢量，复核的价值是原始分类线索；不参与
+        current 优先规则。
+        """
+        failed_with_current = ClassificationResult(
+            project_id=self.project_id, mine_fid=713, year=2024,
+            inference_job_id=str(uuid.uuid4())[:36],
+            model_id="mmseg:test", mine_resource_id=1,
+            current_feature_collection_json=json.dumps(_collection()),
+            auto_feature_collection_json=json.dumps(_collection(_square_feature(2))),
+            current_revision_no=1,
+            vector_status="vector_failed",
+            feature_count=0,
+        )
+        db.session.add(failed_with_current)
+        db.session.commit()
+
+        data = self._review(failed_with_current.id).get_json()["data"]
+        self.assertEqual(data["vector_source"], "auto")
+        self.assertEqual(data["feature_count"], 1)
+
+
+
 class TestTimeZSweep(QualityReviewBase):
     def test_traceability_and_revisions_created_at_carry_z(self):
         result = self._make_result([_square_feature(0)])

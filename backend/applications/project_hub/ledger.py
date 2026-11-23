@@ -5,7 +5,9 @@ import io
 import json
 
 from openpyxl import Workbook
+from sqlalchemy import bindparam, text
 
+from applications.extensions import db
 from applications.models.classification_result import ClassificationResult
 from applications.models.inference_job import InferenceJob
 
@@ -16,11 +18,45 @@ VECTOR_STATUS_LABELS = {
 }
 
 
-def _job_timings(inference_job_id):
+def _prefetch_job_timings(job_ids):
+    """批量预取推理计时（2026-11-24 修复：项目 10 台账实测 556s）。
+
+    result_json 单条均 2.4MB/最大 12.8MB、项目 10 关联 585 个 job 共 1.42GB
+    ——逐成果 Query.get 是 GB 级传输（389s）且随成果数恶化。改为服务端
+    JSON_EXTRACT 只取两个标量（KB 级传输，MySQL/SQLite 通用路径语法）；
+    result_json 非法的行以 JSON_VALID 过滤跳过，与原 try/except 容错同口径。
+    """
+    timings = {}
+    unique_ids = [job_id for job_id in dict.fromkeys(job_ids) if job_id]
+    if not unique_ids:
+        return timings
+    stmt = text(
+        "SELECT id, "
+        "JSON_EXTRACT(result_json, '$.\"stage_durations\".\"inference\"') AS inference_seconds, "
+        "JSON_EXTRACT(result_json, '$.\"total_seconds\"') AS total_seconds "
+        "FROM inference_jobs "
+        "WHERE id IN :ids AND JSON_VALID(result_json)"
+    ).bindparams(bindparam("ids", expanding=True))
+    for start in range(0, len(unique_ids), 200):
+        rows = db.session.execute(stmt, {"ids": unique_ids[start:start + 200]}).fetchall()
+        for job_id, inference_seconds, total_seconds in rows:
+            def _num(value):
+                try:
+                    parsed = json.loads(value) if isinstance(value, str) else value
+                    return float(parsed) if isinstance(parsed, (int, float)) else None
+                except (TypeError, ValueError):
+                    return None
+            timings[str(job_id)] = (_num(inference_seconds), _num(total_seconds))
+    return timings
+
+
+def _job_timings(inference_job_id, _timings_cache=None):
     """从关联推理任务的 result_json 取逐阶段计时（性能优化的数据来源）。"""
     empty = (None, None)
     if not inference_job_id:
         return empty
+    if _timings_cache is not None:
+        return _timings_cache.get(str(inference_job_id), empty)
     job = InferenceJob.query.get(inference_job_id)
     if job is None or not job.result_json:
         return empty
@@ -72,8 +108,9 @@ def build_project_ledger_workbook(project):
     class_sheet = workbook.create_sheet("地类图斑统计")
     class_sheet.append(["成果ID", "矿山FID", "年份", "类别代码", "类别名称", "图斑数量"])
 
+    timings_cache = _prefetch_job_timings([result.inference_job_id for result in results])
     for result in results:
-        inference_seconds, total_seconds = _job_timings(result.inference_job_id)
+        inference_seconds, total_seconds = _job_timings(result.inference_job_id, timings_cache)
         sheet.append([
             result.id,
             result.mine_fid,
