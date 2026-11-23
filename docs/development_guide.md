@@ -169,13 +169,22 @@ Response 至少包含：
 - `GET /api/projects/{project_id}/spatial/basemaps/retained` 每条附 `reactivable` 与 `reactivate_blocked_reason`。
 - `POST /api/projects/{project_id}/spatial/basemaps/{resource_id}/reactivate` 只接受同时满足三条件的底图：状态为 `retained`、最近一次切片任务 `succeeded`、声明的每个缩放级别都有瓦片；否则 `400` 并说明原因。归档项目 `400`。
 - `.active` 标记切换顺序与切片 worker 一致：写新标记 → 提交数据库 → 成功后才删旧标记（提交失败时旧标记不动）。
+- 资源回收（激活新底图时执行）：同项目超额的 `retained` 保留最近 2 个；`failed` 的切片保留最近 1 个供重试断点续切（`retry_spatial_job` 复用同一资源，gdal2tiles 带 `--resume`），更早的连同源文件副本、瓦片目录、任务行一并删除，并记 `spatial_resource_removed`（`reason=failed_tiling_pruned`）。正在重试的资源（`pending`/`processing`）不在清理范围内。此前 failed 的半成品没有任何清理方。
 
 ### 导出（2026-11-24）
 
 - 同项目同格式已有一条仍在生成的 `pending` 导出时，`POST /api/projects/{project_id}/exports` 返回 `422`（"…导出正在生成中，请稍后在导出列表查看并下载，不要重复提交"）。
-- 后端单次台账生成的时间预算为 4 分钟（`EXPORT_TIME_BUDGET_SECONDS`），超时把记录落 `failed` 并清理目录；Miner BFF 对创建导出的出站超时为 10 分钟。后端一定先于链路上任何一跳给出明确结果。
+- 后端单次台账生成的时间预算为 4 分钟（`EXPORT_TIME_BUDGET_SECONDS`），超时把记录落 `failed` 并清理目录；Miner BFF 对创建导出的出站超时为 10 分钟。后端一定先于链路上任何一跳给出明确结果。预算对两条大 JSON 抽取同样生效：MySQL 语句带 `MAX_EXECUTION_TIME`（剩余毫秒数），语句被数据库中断（错误码 3024）时按预算超时处理，不重试——此前只在写表循环里检查，而耗时几乎全在抽取上。
 - `manifest.json`：`xlsx` 台账附 `classification_results`（台账实际读取的每条成果的 `result_id`、`revision_no`、`vector_status`、`mine_resource_version`）；`geojson/shp/dxf` 附 `mine_vector`（构成几何的矿山边界资源版本）。
 - Miner BFF：路由参数校验失败一律 `400`（此前兜成 `502`），且不向上游发请求。
+
+### Miner BFF 出站请求（2026-11-24）
+
+- BFF 访问 Flask 后端的全部请求经 `miner/services/backendFetch.js`（`fetchBackend`），每个请求 `Connection: close`，不复用连接。新增出站调用必须走它，不得直接 `fetch`（守护：`miner/test/backendFetch.test.js`）。
+- 原因：gunicorn 未设 `--keep-alive`（默认空闲 2 秒关闭连接）且不发 `Keep-Alive` 超时提示；Node 18 自带 undici 的连接池默认保留空闲连接 4 秒。复用到服务端正在关闭的连接会得到 `UND_ERR_SOCKET`（other side closed），在浏览器里是随机的 502（"登录校验服务不可用"或"上游服务不可用"）。线上日志保留范围内 38 次（会话校验 9、接口转发 29）。
+- 实测：间隔约 2 秒的只读请求，修复前 240 次失败 27 次；修复后三轮共 720 次 0 失败。代价是每次上游请求多约 0.6ms（容器内微基准：复用 p50 约 1.2ms，不复用约 1.8ms）。
+- 会话校验对连接类瞬态错误（`ECONNRESET`/`ECONNREFUSED`/`ETIMEDOUT`/`EPIPE`/`UND_ERR_SOCKET`）重试一次，间隔 300ms；接口转发不重试（哪些 POST 可以安全重放未逐个确认）。
+- 若后端调整 keep-alive（发超时提示或调大 `--keep-alive`），可重新评估恢复连接池；那属于部署变更，需负责人决定。
 
 ### 项目工作台存储迁移
 
@@ -216,6 +225,9 @@ python -m unittest test_project_api test_project_read_models test_project_spatia
 - 页面级失败必须可见：数据加载失败、趋势统计失败、推理失败不能静默降级为 0 数据。
 - 删除矿山等高风险入口只有在后端接口真实支持并经过验证后才允许展示。
 - 地图首次加载可自动缩放到全量边界；筛选刷新不应反复打断用户视角，搜索命中时只定位目标矿山。
+- 把 blob 存成本地文件统一经 `saveBlobAsFile`（Miner `src/utils/blobDownload.js`，GeoView `src/utils/blobDownload.mjs`）：下载发起 60 秒后才释放 object URL，同步释放会截断尚未开始的下载。下载入口不得自己 `createObjectURL`/`revokeObjectURL`（守护：两侧的 `test/blobDownload.test.*`）；预览图等非下载用途除外。
+- 盖在地图上的纯文字提示不拦截鼠标（`pointer-events: none`）：被它盖住的那块地图上点击画不出顶点、选不中图斑，且没有任何反馈。
+- 同一接口的请求在途时不发第二个；首屏不要两个组件各拉一次同一接口。`/api/stats/overview` 在 120 秒缓存过期后要重算约 9 秒（实测墙钟 8.75 秒，其中进程 CPU 时间 6.28 秒，其余是数据库与文件读取），重算期间同一 worker 上的其它接口会被拖慢（2026-11-24 实测：重复请求去掉后，重算期间其它接口由最慢约 670ms 降到约 46ms）。该接口冷缓存约 9 秒的问题本身尚未解决。
 
 ## 6. 编码边界
 
@@ -230,6 +242,8 @@ python -m unittest test_project_api test_project_read_models test_project_spatia
 按 [开发规范](development-standard.md) 的测试矩阵选择现有 Node/Python 测试、对应前端构建和浏览器路径。项目化推理联调用登记影像与 `/api/inference/jobs`，矢量编辑联调使用 GeoView 的成果 API。旧 KML 上传只在修改其历史消费者时验证。
 
 报告必须区分 mock 与真实运行、通过与跳过；构建不能替代浏览器操作，单元测试不能替代 GPU 和性能实测。
+
+夹具式真实浏览器回归放在 `tests/browser/`（说明见该目录 README）：HTTP 夹具只在测试浏览器内拦截，不登录真实账号、不写真实项目。只有真实浏览器才能发现的问题（消息组件渲染、浮层吞点击等）修完后要沉淀为其中的脚本，并对修复前的构建跑出红灯。
 
 ## 8. 交付要求
 
