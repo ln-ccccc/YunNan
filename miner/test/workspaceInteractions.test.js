@@ -12,6 +12,7 @@ import {
   isExportOutcomeUncertain,
 } from '../src/projectWorkspace/exportRequestFeedback.js';
 import { shouldUseChunkedUpload } from '../src/utils/basemapChunking.js';
+import { formatAreaKm2 } from '../src/utils/areaDisplay.js';
 import { saveBlobAsFile } from '../src/utils/blobDownload.js';
 import { sortInterpretationRecords } from '../src/utils/interpretationOrdering.js';
 
@@ -25,6 +26,7 @@ function setupComponent(filename, axios, extras = {}) {
     createProjectWorkspaceApi,
     shouldUseChunkedUpload,
     saveBlobAsFile,
+    formatAreaKm2,
     // 组件 import 的绑定都要在这里注入：下方 script 会剥掉 import、靠 with (dependencies) 解析
     isExportOutcomeUncertain,
     exportOutcomePendingMessage,
@@ -204,4 +206,66 @@ test('workspace clears a failed download message when retry succeeds', async () 
   } finally {
     fakes.restore();
   }
+});
+
+// ---- 看板概览：同一时刻只发一个请求（2026-11-24）----
+// 后端概览在缓存过期时是约 9 秒的纯计算，计算期间同一 worker 上的其它接口会被拖慢。工作台
+// 首屏此前同一刻发两个相同请求（看板组件 onMounted + 工作台 loadProjects 各一次），等于让
+// 两个 worker 同时重算。真实浏览器实测：同一毫秒发出两个请求各约 8.8 秒，其间其它接口最慢
+// 约 670ms（平时约 27ms）。
+test('stats panel keeps a single overview request in flight and refetches once for calls that arrived meanwhile', async () => {
+  const pending = [];
+  const harness = setupComponent('StatsOverviewPanel.vue', {
+    get: () => new Promise((resolve) => pending.push(resolve)),
+  });
+  const first = harness.bindings.fetchOverview();
+  const second = harness.bindings.fetchOverview();   // 在途期间又被调了一次
+  await flushRequests();
+  assert.equal(pending.length, 1, '在途请求未回来前不得再发第二个');
+  assert.equal(harness.bindings.loading.value, true);
+  pending[0]({ data: { data: { project_total: 5 } } });
+  await flushRequests();
+  assert.equal(pending.length, 2, '在途期间到达的调用（新建/归档后的刷新）不能被吞掉：补发一次');
+  pending[1]({ data: { data: { project_total: 6 } } });
+  await Promise.all([first, second]);
+  await flushRequests();
+  assert.equal(harness.bindings.overview.value.project_total, 6, '最终展示的是补发那次的数据');
+  assert.equal(harness.bindings.loading.value, false);
+  assert.equal(pending.length, 2, '补发一次即可，不得连锁再发');
+});
+
+test('stats panel sends a real request again once the previous one has returned', async () => {
+  const responses = [{ data: { data: { project_total: 1 } } }, { data: { data: { project_total: 2 } } }];
+  let calls = 0;
+  const harness = setupComponent('StatsOverviewPanel.vue', {
+    get: async () => { calls += 1; return responses[calls - 1]; },
+  });
+  await harness.bindings.fetchOverview();
+  assert.equal(harness.bindings.overview.value.project_total, 1);
+  await harness.bindings.fetchOverview();
+  assert.equal(calls, 2, '上一个请求已回来，新的刷新必须真的发出去');
+  assert.equal(harness.bindings.overview.value.project_total, 2);
+});
+
+test('stats panel shows the failure and recovers on the next call', async () => {
+  let failing = true;
+  const harness = setupComponent('StatsOverviewPanel.vue', {
+    get: async () => {
+      if (failing) throw new Error('502');
+      return { data: { data: { project_total: 3 } } };
+    },
+  });
+  await harness.bindings.fetchOverview();
+  assert.equal(harness.bindings.error.value, '统计读取失败，请稍后刷新');
+  assert.equal(harness.bindings.loading.value, false, '失败后加载态必须复位');
+  failing = false;
+  await harness.bindings.fetchOverview();
+  assert.equal(harness.bindings.error.value, '');
+  assert.equal(harness.bindings.overview.value.project_total, 3);
+});
+
+test('workspace first screen leaves the overview request to the stats panel', () => {
+  const source = fs.readFileSync(new URL('../src/components/ProjectWorkspace.vue', import.meta.url), 'utf8');
+  assert.match(source, /onMounted\(\(\) => loadProjects\(null, \{ refreshStats: false \}\)\)/, '首屏由看板组件自己拉，工作台不得再调一次');
+  assert.match(source, /if \(refreshStats\) statsPanelRef\.value\?\.fetchOverview\?\.\(\)/, '新建/归档/手动刷新后的看板刷新必须保留');
 });

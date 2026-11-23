@@ -391,10 +391,11 @@ async function loadSelectedProject(projectId, revision, requestedSlices = Object
   }
 }
 
-async function loadProjects(preferredProjectId = null) {
+async function loadProjects(preferredProjectId = null, { refreshStats = true } = {}) {
   const revision = listGate.next();
-  // 看板与项目列表同刷：新建/归档后统计即时跟随
-  statsPanelRef.value?.fetchOverview?.();
+  // 看板与项目列表同刷：新建/归档后统计即时跟随。首屏除外——看板组件自己会拉，
+  // 这里再调一次就是同一时刻两个相同的请求（refreshStats 只在首屏传 false）
+  if (refreshStats) statsPanelRef.value?.fetchOverview?.();
   if (!await loadProjectList(revision) || listSlice.error) return;
   const items = listSlice.data?.items || [];
   const preferred = preferredProjectId || currentProjectId.value || items[0]?.id;
@@ -1019,7 +1020,7 @@ function scheduleSpatialPoll() {
   }, 2000);
 }
 
-onMounted(() => loadProjects());
+onMounted(() => loadProjects(null, { refreshStats: false }));
 onUnmounted(() => {
   if (spatialPollTimer) window.clearTimeout(spatialPollTimer);
 });
