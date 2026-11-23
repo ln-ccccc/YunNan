@@ -2,6 +2,15 @@
 
 `liquid-glass-smoke.cjs` 验证 Miner；`geoview-glass-smoke.cjs` 验证 GeoView；`geoview-editor-save-race-smoke.cjs` 回归分类编辑器保存竞态（2026-10-31 审计 P1：保存挂起期间改类入口冻结、绘图新修改被保留并可再次保存、绘制中未闭合手势由快照比对兜底）；`geoview-editor-tile-zoom-smoke.cjs` 回归编辑器底图 zoom 收敛（2026-10-31 审计 P2：manifest min_zoom/max_zoom 应用于 raster source，放大不越级请求）。使用可见 Chromium、真实鼠标/键盘及下载，生成截图、视频、trace 和结果 JSON。HTTP fixture 仅在该浏览器上下文拦截；不登录真实账号，不写入真实项目，不调用实际推理。
 
+`geoview-editor-vertex-guard-smoke.cjs` 回归分类编辑器的顶点删除防护和几项不依赖后端即可验证的编辑行为（2026-11-24 审计 A1/E 组）：三角面用删除按钮和 Delete 键都必须被拦且弹出看得见的说明；四边形 Shift 选两个顶点被拦、删一个生效、再删被拦；脏状态导出的是草稿；放弃全部修改要确认；无底图提示浮层不拦截地图点击；异类选中时合并置灰；保存 422 时提示序号并定位。无头 + 真 GPU，只出截图和结果 JSON，默认连 4402 端口的 GeoView 预览：
+
+```powershell
+$env:GEOVIEW_UI_URL='http://127.0.0.1:4502'
+node tests/browser/geoview-editor-vertex-guard-smoke.cjs
+```
+
+写这类地图脚本踩过的四个坑（键盘事件只认画布焦点、浮层吞掉地图点击、重叠图斑点击选中的是最上面那个、消息框淡入完成前截图是空的）记在 `docs/testing-playbook.md` 技巧 33。
+
 前提：启动对应前端或本地生产构建预览，具备独立 Playwright 安装及其 Chromium。GeoView 预览使用项目既有 `VUE_APP_BACKEND_PORT` 环境配置，否则 API URL 不合法。测试提供鉴权和业务 HTTP fixture；不能把这些页面测通当作真实后端/GPU测通。
 
 从仓库根目录运行（PowerShell；路径换成自己的独立安装/输出目录）：
