@@ -1,10 +1,10 @@
 # 真实大数据全功能验收记录（H-2）
 
-日期：2026-10-25 起（进行中）。执行环境：本机 Docker 栈 + GPU 推理 Worker。
+日期：2026-10-25 起（H-2/H-3 已于 2026-10-25 当日收口，结论见 §6）。执行环境：本机 Docker 栈 + GPU 推理 Worker。
 对应计划：docs/fix-plan-20261024.md 批次 H-2；上游审查：docs/code-review-2026-10-24.md。
 配套交付：自包含交互报告 [docs/interactive-report-2026-11.html](interactive-report-2026-11.html)（零外部依赖，离线浏览器直接打开）。
 
-> 状态：本文档随验收推进逐节填写。每步记录操作、证据（ID/版本/来源一致性）与实测耗时。
+> 状态：已收口。本档验收基线为 main@ffbd82d；其后 main 的变更（复测、固化回归、生产化加固 f73278e、备份闭环 4d996ed、2026-11-13 风险修复批等）的验证见 docs/test-regression-2026-10-28.md、docs/yunnan-migration-fix-acceptance-20261105.md 与迁移审计 §7 修复记录，不再在本档追加章节。每步记录操作、证据（ID/版本/来源一致性）与实测耗时。
 
 ## 0. 环境基线
 
@@ -152,4 +152,4 @@ R1 建议（进 I-1 设计文档；①–④ 已于 2026-10-25 落地入库 286e
 5. **验收数据已清理**：项目 7（11G）与项目 8 均删除入 trash（`7_20261024_203403_961adf5e`、`8_20261024_182346_86df60d3`），trash 手工恢复路径已在步骤 15 演练验证；项目 1 原始数据全程只读未动。
 6. **修复复测通过**（2026-10-25 下午，§5.1）：R1/R3/R5 修复在真实数据上多轮复测通过；R5 首轮停滞定案为演练脚本 bug（非产品缺陷）；R1 的 Errno 12 真机注入受"引擎共置 VM"环境限制不可安全复现，以单测 40/40 + 原始实证覆盖并如实声明。
 
-**遗留与移交（进批次 I-1 设计建议文档）**：R1/R3/R5 修复部分已落地（286ef70 / e5a0968 / 53ac439，标记见 §5）；仍待后续：R5 单发上传流式化、推理任务无 retry API、trash 恢复无受控 API、编辑器绘制无 ROI 事前提示、direct_select 下 trash 无效果缺提示、项目详情业务失败 HTTP 200 语义、登记接口非幂等且无删除 API。
+**遗留与移交（原列 6 项，2026-11-13 遗留闭环批全部收口）**：R1/R3/R5 修复部分已落地（286ef70 / e5a0968 / 53ac439，标记见 §5）。原"仍待后续"6 项处置——①**R5 单发上传流式化：实测推翻前提，无需改代码**（werkzeug 2.2.3 对 multipart 已流式落盘 spool 临时文件；原始 socket 直发 300MB multipart 实测服务端进程峰值 RSS 仅 ~30MB；此前 1.78GiB 系 cgroup 计入可回收 page cache（temp spool+落盘双写）的误读；1GB 单发上限 + 前端 >512MB 分流分片已足够）；②**推理 retry API**（POST /api/inference/jobs/<id>/retry：仅终态可重试，legacy 无上下文/非终态 409、任务 404、影像被删 400；按私有 request_payload 重建公共入参重走全量校验）；③**trash 恢复受控 API**（POST /api/projects/<id>/undelete：目录从 trash 移回、恢复后保持 archived；与归档→active 的 restore 是两条生命周期通道，各自审计事件）；④**direct_select 下 trash 提示**（编辑器捕获 trash 按钮：顶点模式未选中顶点时给出"先点击选中顶点"指引）；⑤**项目详情业务失败 HTTP 200 语义**（ProjectNotFoundError 类型化异常 → 404，先于 ValueError→400 分支；配套 fail_api 全仓 28 处补状态码，见迁移审计 §7 批次 6）；⑥**数据集删除 API**（DELETE /api/projects/<pid>/datasets/<did>：仅 imagery 可删；classification_dir 或推理任务引用时 409 拒绝；共享文件保留）。另有 2026-11-13 风险复盘批两项收口：编辑器绘制无 ROI 事前提示（成果详情下发 roi_geometry，编辑器叠加 ROI 边界并在绘制/拖点时即时提示，后端保存校验不变）；登记接口非幂等（同键重复登记返回既有记录 already_registered）。
