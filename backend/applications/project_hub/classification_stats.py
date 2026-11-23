@@ -38,6 +38,7 @@ import logging
 import os
 import queue
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -695,6 +696,10 @@ def evaluate_change_matrix_state(project_id, mine_fid, refs):
     return MATRIX_STATE_PENDING, _MATRIX_STATE_TEXT[MATRIX_STATE_PENDING]
 
 
+# 单座矿的后台重算超过这个时长记一条告警（只观测，不打断：栅格化无法在途中安全中止）
+_REBUILD_SLOW_SECONDS = 120.0
+
+
 class _RebuildQueue:
     """进程内单线程后台重算队列。
 
@@ -738,6 +743,7 @@ class _RebuildQueue:
             if item is None:
                 return
             app, key = item
+            started = time.monotonic()
             try:
                 with app.app_context():
                     try:
@@ -747,6 +753,14 @@ class _RebuildQueue:
             except Exception:  # noqa: BLE001 - 后台线程不得被单个任务杀死
                 LOGGER.exception("审校矩阵后台重算异常 project_id=%s mine_fid=%s", *key)
             finally:
+                elapsed = time.monotonic() - started
+                # 队列只有一条线程且栅格化无法在途中打断：单座矿的重算一旦异常缓慢，
+                # 排在后面的矿山都要等它。至少让这件事在日志里看得见（2026-11-24 回收审查）
+                if elapsed > _REBUILD_SLOW_SECONDS:
+                    LOGGER.warning(
+                        "审校矩阵重算耗时 %.1fs（超过 %.0fs 告警线）project_id=%s mine_fid=%s，其后的重算请求在排队",
+                        elapsed, _REBUILD_SLOW_SECONDS, *key,
+                    )
                 with self._lock:
                     self._queued.discard(key)
 
