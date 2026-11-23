@@ -63,3 +63,16 @@ test('deleteProjectDataset sends DELETE to the dataset endpoint with cookie and 
     global.fetch = originalFetch;
   }
 });
+
+test('deleteProjectDataset rejects non-positive route ids before any request', async () => {
+  const originalFetch = global.fetch;
+  let called = 0;
+  global.fetch = async () => { called += 1; throw new Error('should not be called'); };
+  try {
+    await assert.rejects(async () => projectApi.deleteProjectDataset('7', 'abc', 'session=x'), /数据集参数不合法/);
+    await assert.rejects(async () => projectApi.deleteProjectDataset('-1', '9', 'session=x'), /项目参数不合法/);
+    assert.equal(called, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

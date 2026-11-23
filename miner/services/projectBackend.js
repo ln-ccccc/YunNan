@@ -217,7 +217,9 @@ export const projectApi = {
     return requestJson('POST', `/api/projects/${projectId}/datasets`, { body: payload, cookie });
   },
   deleteProjectDataset(projectId, datasetId, cookie) {
-    return requestJson('DELETE', `/api/projects/${projectId}/datasets/${datasetId}`, { cookie });
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    const safeDatasetId = positiveRouteId(datasetId, '数据集');
+    return requestJson('DELETE', `/api/projects/${safeProjectId}/datasets/${safeDatasetId}`, { cookie });
   },
   getProjectTimeline(projectId, cookie) {
     return requestJson('GET', `/api/projects/${projectId}/timeline`, { cookie });
