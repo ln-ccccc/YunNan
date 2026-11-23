@@ -665,6 +665,15 @@ button {
   color: #2f7a68;
 }
 
+/* 禁用态要看得出来（2026-11-24 浏览器验收）：全局对 button:disabled 只设了鼠标指针，
+   文字链接按钮禁用后与可用态同色——"不可重新激活"的底图、"地图未就绪"时的定位等
+   只能靠点不动来发现 */
+.link-btn:disabled,
+.ghost-btn:disabled {
+  color: #9fb3ae;
+  cursor: not-allowed;
+}
+
 .success-text {
   color: #237a59;
   font-weight: 600;
