@@ -594,7 +594,11 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         storage_root,
         Path("projects") / str(project_id) / "tiles" / str(target.id),
     )
-    if not (target_tile_dir / ".active").is_file():
+    # 瓦片仍在的判定以目录内容为准（2026-11-23 修复）：激活状态机每次切换
+    # 都会删旧底图的 .active 标记（spatial_worker._activate_basemap 设计如此），
+    # retained 底图天然无标记——按标记判"已清理"会让所有被切换过的历史底图
+    # 永远无法重激活（生产实测 v1 3.9GB 瓦片完好仍被拒）
+    if not target_tile_dir.is_dir() or not any(target_tile_dir.iterdir()):
         raise ValueError("该底图的瓦片数据已被清理，无法重新激活")
 
     current_active = (

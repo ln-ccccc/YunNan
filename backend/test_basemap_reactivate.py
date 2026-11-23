@@ -29,7 +29,14 @@ class TestBasemapReactivate(TestProjectAPI):
                 self.storage_root / "projects" / str(project_id) / "tiles" / str(resource.id)
             )
             tile_dir.mkdir(parents=True, exist_ok=True)
-            (tile_dir / ".active").write_text("1", encoding="utf-8")
+            # 生产态对齐（2026-11-23 修复配套）：retained 底图的 .active 标记
+            # 已被激活状态机切除，只有 active 底图带标记；旧夹具给 retained
+            # 也写标记，掩盖了"标记判活"对被切换底图永远拒绝的缺陷
+            zoom_dir = tile_dir / "8" / "207"
+            zoom_dir.mkdir(parents=True, exist_ok=True)
+            (zoom_dir / "107.png").write_bytes(b"png-placeholder")
+            if status == "active":
+                (tile_dir / ".active").write_text("1", encoding="utf-8")
         db.session.commit()
         return resource
 
