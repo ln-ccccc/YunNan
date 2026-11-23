@@ -5,6 +5,7 @@ import io
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from openpyxl import Workbook
 from sqlalchemy import bindparam, text
@@ -21,35 +22,150 @@ VECTOR_STATUS_LABELS = {
 }
 
 
-def _prefetch_job_timings(job_ids):
-    """批量预取推理计时（2026-11-24 修复：项目 10 台账实测 556s）。
+# 台账抽取的并行度：按 id 均分切片，每个切片一个数据库连接（用完即还）。
+LEDGER_EXTRACT_WORKERS = max(1, int(os.getenv("LEDGER_EXTRACT_WORKERS", "4")))
+# MySQL "Invalid JSON text"：快路径不预先做全文校验，真遇到非法文本再退回带校验的慢路径
+_MYSQL_INVALID_JSON_ERROR = 3141
 
-    result_json 单条均 2.4MB/最大 12.8MB、项目 10 关联 585 个 job 共 1.42GB
-    ——逐成果 Query.get 是 GB 级传输（389s）且随成果数恶化。改为服务端
-    JSON_EXTRACT 只取两个标量（KB 级传输，MySQL/SQLite 通用路径语法）；
-    result_json 非法的行以 JSON_VALID 过滤跳过，与原 try/except 容错同口径。
+
+def _is_invalid_json_error(error):
+    return getattr(getattr(error, "orig", None), "args", (None,))[0] == _MYSQL_INVALID_JSON_ERROR
+
+
+def _fetch_rows(engine, statement, params):
+    """独立连接执行一条只读抽取。并行切片时每个线程各用自己的连接，不碰请求会话。
+
+    engine 必须由调用线程解析后传入：Flask-SQLAlchemy 的 db.engine 要经当前应用上下文
+    解析，工作线程里没有上下文，直接在里面写 db.engine 会抛 "No application found"
+    （生产库活体探针抓到，SQLite 单测走不到并行路径）。"""
+    with engine.connect() as connection:
+        return connection.execute(statement, params).fetchall()
+
+
+def _query_in_shards(engine, build_query, ids):
+    """把 id 均分成若干片并行查询后合并；只有一片时直接串行。
+
+    为什么在数据库侧解析：逐成果只需要几个标量或一个小数组，但它们埋在 MEDIUMTEXT 里
+    （项目 10 成果矢量合计 711MB、推理任务 result_json 合计 1.4GB）——整行拉回应用侧
+    同样要付这笔解析成本，外加传输。而 MySQL 每调用一次 JSON 函数就把整篇文本重新解析
+    一遍（生产库实测：成果单遍约 3.5 秒、任务结果单遍约 13 秒），所以：
+    - 每个 JSON 列只调用一次 JSON_EXTRACT（类别名称由类别码按固定类别表推出，
+      存量 454 条成果抽样 100% 一致）；
+    - 不在 WHERE 里预先 JSON_VALID（那又是一遍全文解析）——数据都是 json.dumps 写出的
+      合法文本，遇到非法文本（3141）由调用方退回带校验的慢路径跳过坏行；
+    - 按 id 均分切片并行：MySQL 侧是 CPU 解析，4 核开 4 个连接。
+    """
+    ids = list(ids)
+    if not ids:
+        return []
+    workers = max(1, min(int(LEDGER_EXTRACT_WORKERS), len(ids)))
+    quotient, remainder = divmod(len(ids), workers)
+    # 均分：前 remainder 片各多一个（10 个 id 切 4 片是 3/3/2/2，不是 3/3/3/1）
+    sizes = [quotient + (1 if index < remainder else 0) for index in range(workers)]
+    shards = []
+    offset = 0
+    for size in sizes:
+        shards.append(ids[offset:offset + size])
+        offset += size
+    if len(shards) == 1:
+        return _fetch_rows(engine, *build_query(shards[0]))
+    with ThreadPoolExecutor(max_workers=len(shards)) as pool:
+        return [
+            row
+            for rows in pool.map(lambda shard: _fetch_rows(engine, *build_query(shard)), shards)
+            for row in rows
+        ]
+
+
+def _extract_with_json_fallback(engine, build_query, ids):
+    """快路径抽取；只有 MySQL 报"非法 JSON 文本"(3141)时才退回带 JSON_VALID 的慢路径。
+
+    build_query(shard, guarded) 返回 (statement, params)。其余异常原样抛出。"""
+    try:
+        return _query_in_shards(engine, lambda shard: build_query(shard, False), ids)
+    except Exception as error:  # noqa: BLE001 - 仅非法 JSON 文本回退，其余照常抛出
+        if not _is_invalid_json_error(error):
+            raise
+        return _query_in_shards(engine, lambda shard: build_query(shard, True), ids)
+
+
+def _to_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            parsed = float(value)
+        except ValueError:
+            return None
+        return parsed
+    return None
+
+
+def _timings_from_extracted(extracted):
+    """把一次 JSON_EXTRACT(result_json, '$.stage_durations', '$.total_seconds') 的结果
+    拆成 (推理秒数, 总秒数)。MySQL 把多路径结果摊平成数组且缺失的路径不占位，
+    所以按值的类型区分：对象是阶段计时、数字是总耗时。"""
+    try:
+        values = json.loads(extracted) if isinstance(extracted, (str, bytes)) else extracted
+    except (TypeError, ValueError):
+        return None, None
+    if values is None:
+        return None, None
+    if not isinstance(values, list):
+        values = [values]
+    inference = total = None
+    for value in values:
+        if isinstance(value, dict):
+            inference = _to_number(value.get("inference"))
+        elif not isinstance(value, list):
+            total = _to_number(value)
+    return inference, total
+
+
+def _prefetch_job_timings(job_ids):
+    """批量预取推理计时：{job_id: (推理秒数, 总秒数)}，缺失为 None。
+
+    result_json 单条均值 2.4MB、项目 10 关联 585 个任务共 1.42GB——逐任务 Query.get 是
+    GB 级传输（曾实测 389 秒）。此前改成服务端抽取后仍要 38 秒：WHERE 里的 JSON_VALID
+    加两次 JSON_EXTRACT 把每篇文本解析了三遍；现在一遍、四路并行。
+    非 MySQL 方言（测试环境）逐个读取后解析。
     """
     timings = {}
     unique_ids = [job_id for job_id in dict.fromkeys(job_ids) if job_id]
     if not unique_ids:
         return timings
-    stmt = text(
-        "SELECT id, "
-        "JSON_EXTRACT(result_json, '$.\"stage_durations\".\"inference\"') AS inference_seconds, "
-        "JSON_EXTRACT(result_json, '$.\"total_seconds\"') AS total_seconds "
-        "FROM inference_jobs "
-        "WHERE id IN :ids AND JSON_VALID(result_json)"
-    ).bindparams(bindparam("ids", expanding=True))
-    for start in range(0, len(unique_ids), 200):
-        rows = db.session.execute(stmt, {"ids": unique_ids[start:start + 200]}).fetchall()
-        for job_id, inference_seconds, total_seconds in rows:
-            def _num(value):
-                try:
-                    parsed = json.loads(value) if isinstance(value, str) else value
-                    return float(parsed) if isinstance(parsed, (int, float)) else None
-                except (TypeError, ValueError):
-                    return None
-            timings[str(job_id)] = (_num(inference_seconds), _num(total_seconds))
+    if db.engine.dialect.name != "mysql":
+        for job_id in unique_ids:
+            job = InferenceJob.query.get(job_id)
+            if job is None or not job.result_json:
+                continue
+            try:
+                result = json.loads(job.result_json)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(result, dict):
+                continue
+            durations = result.get("stage_durations")
+            timings[str(job_id)] = (
+                _to_number(durations.get("inference")) if isinstance(durations, dict) else None,
+                _to_number(result.get("total_seconds")),
+            )
+        return timings
+
+    def build_query(shard, guarded):
+        guard = "AND JSON_VALID(result_json)" if guarded else ""
+        statement = text(
+            "SELECT id, JSON_EXTRACT(result_json, '$.stage_durations', '$.total_seconds') "
+            "FROM inference_jobs WHERE id IN :ids AND result_json IS NOT NULL " + guard
+        ).bindparams(bindparam("ids", expanding=True))
+        return statement, {"ids": shard}
+
+    # engine 在有应用上下文的调用线程里解析，线程内只认引擎对象
+    rows = _extract_with_json_fallback(db.engine, build_query, unique_ids)
+    for job_id, extracted in rows:
+        timings[str(job_id)] = _timings_from_extracted(extracted)
     return timings
 
 
@@ -100,7 +216,7 @@ def _iter_class_counts(feature_collection_json):
 # 半成品，才不会出现"前端已看到失败、后端仍在生成并最终落一条 completed 记录、用户
 # 重试又建一份"（2026-11-24 审计 D1）。取 4 分钟：短于 Node 默认的请求超时
 # （requestTimeout 5 分钟，BFF 与静态站代理都没显式改）与 BFF 的 10 分钟；
-# 服务端抽取类别码后项目 10 的台账是秒级，正常永远碰不到它
+# 抽取改为一遍解析并行后项目 10 的台账是秒级，正常碰不到它
 LEDGER_TIME_BUDGET_SECONDS = int(os.getenv("EXPORT_TIME_BUDGET_SECONDS", "240"))
 
 
@@ -138,68 +254,72 @@ def collect_project_results(project):
 
 
 def _tally(counts, result_id, pairs):
+    pairs = list(pairs)
+    if not pairs:
+        return  # 没有图斑（矢量失败/已清空）的成果不留空条目，两种方言口径一致
     tally = counts.setdefault(result_id, {})
     for key in pairs:
         tally[key] = tally.get(key, 0) + 1
 
 
-def _pairs_from_arrays(codes_json, names_json):
-    """把 JSON_EXTRACT 取回的两个数组配对成 (class_code, class_name)；对不齐返回 None。"""
+def _class_name_of(class_code):
+    from applications.kml_roi.vectorization.classification import CLASS_DEFINITIONS
+
+    definition = CLASS_DEFINITIONS.get(class_code) if isinstance(class_code, int) and not isinstance(class_code, bool) else None
+    return definition["class_name"] if definition else None
+
+
+def _pairs_from_codes(codes):
+    """JSON_EXTRACT 取回的类别码数组 -> [(class_code, class_name)]。空成果/无类别属性时为 None。"""
     try:
-        codes = json.loads(codes_json) if isinstance(codes_json, (str, bytes)) else codes_json
-        names = json.loads(names_json) if isinstance(names_json, (str, bytes)) else names_json
+        values = json.loads(codes) if isinstance(codes, (str, bytes)) else codes
     except (TypeError, ValueError):
-        return None
-    if codes is None and names is None:
         return []
-    if not isinstance(codes, list) or not isinstance(names, list) or len(codes) != len(names):
-        return None
-    return list(zip(codes, names))
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        values = [values]
+    return [(code, _class_name_of(code)) for code in values]
 
 
 def _prefetch_class_counts(project_id):
     """逐成果的地类图斑计数：{result_id: {(class_code, class_name): count}}（按首次出现排序）。
 
-    这是台账 55 秒的真正来源：逐成果地类计数只需要每个图斑的类别码/名称，此前却把
-    成果整行（含三个 MEDIUMTEXT 矢量大字段）全部拉回应用侧再解析——项目 10 实测
-    2979 条成果共 1.43GB，而数据库侧抽取后的全部结果只有几 MB。
-    MySQL 走服务端 JSON_EXTRACT（通配路径返回数组；单要素也是数组、空数组为 NULL）；
-    个别行两个数组长度不一致（要素缺 class_name）时只对这一行回退到应用侧解析。
-    SQLite（测试环境）不支持该通配路径，整体回退为只取所需列后在应用侧解析。
+    台账慢的真正来源：逐成果计数只需要每个图斑的类别码，此前却把成果整行（含矢量
+    MEDIUMTEXT）拉回应用侧解析；改成数据库侧抽取后仍要 14 秒，因为校验加两次抽取把
+    每篇解析了三遍。现在只抽类别码、一遍、四路并行（原因见 _query_in_shards）。
+    非 MySQL 方言（测试环境）只取所需两列后在应用侧解析。
     """
     counts = {}
-    fallback_ids = []
-    if db.engine.dialect.name == "mysql":
-        stmt = text(
-            "SELECT id, "
-            "JSON_EXTRACT(current_feature_collection_json, '$.features[*].properties.class_code') AS codes, "
-            "JSON_EXTRACT(current_feature_collection_json, '$.features[*].properties.class_name') AS names "
-            "FROM classification_results "
-            "WHERE project_id = :project_id AND JSON_VALID(current_feature_collection_json)"
-        ).bindparams(bindparam("project_id"))
-        for result_id, codes_json, names_json in db.session.execute(stmt, {"project_id": project_id}).fetchall():
-            pairs = _pairs_from_arrays(codes_json, names_json)
-            if pairs is None:
-                fallback_ids.append(result_id)
-                continue
-            _tally(counts, result_id, pairs)
-        if not fallback_ids:
-            return counts
-    else:
-        fallback_ids = [
-            row_id for (row_id,) in db.session.query(ClassificationResult.id).filter_by(
-                project_id=project_id
-            ).all()
-        ]
-    rows = (
-        db.session.query(ClassificationResult.id, ClassificationResult.current_feature_collection_json)
-        .filter(ClassificationResult.id.in_(fallback_ids))
-        .all()
-        if fallback_ids
-        else []
-    )
-    for result_id, collection_json in rows:
-        _tally(counts, result_id, _iter_class_counts(collection_json))
+    result_ids = [
+        row_id for (row_id,) in db.session.query(ClassificationResult.id).filter_by(project_id=project_id).all()
+    ]
+    if not result_ids:
+        return counts
+    if db.engine.dialect.name != "mysql":
+        rows = (
+            db.session.query(ClassificationResult.id, ClassificationResult.current_feature_collection_json)
+            .filter(ClassificationResult.id.in_(result_ids))
+            .all()
+        )
+        for result_id, collection_json in rows:
+            # 与 MySQL 路径同源：类别名由类别码按固定类别表推出，不取矢量里存的名称
+            codes = [class_code for class_code, _stored_name in _iter_class_counts(collection_json)]
+            _tally(counts, result_id, _pairs_from_codes(codes))
+        return counts
+
+    def build_query(shard, guarded):
+        guard = "AND JSON_VALID(current_feature_collection_json)" if guarded else ""
+        statement = text(
+            "SELECT id, JSON_EXTRACT(current_feature_collection_json, '$.features[*].properties.class_code') "
+            "FROM classification_results WHERE id IN :ids " + guard
+        ).bindparams(bindparam("ids", expanding=True))
+        return statement, {"ids": shard}
+
+    # engine 在有应用上下文的调用线程里解析，线程内只认引擎对象
+    rows = _extract_with_json_fallback(db.engine, build_query, result_ids)
+    for result_id, codes in rows:
+        _tally(counts, result_id, _pairs_from_codes(codes))
     return counts
 
 
