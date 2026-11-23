@@ -172,6 +172,33 @@ class TestQualityReviewApi(QualityReviewBase):
         self.assertEqual(response.status_code, 401)
 
 
+    def test_explicitly_emptied_current_reports_zero_not_auto(self):
+        """人工清空保存后复核必须报 0 图斑（2026-11-23 口径修复）。
+
+        此前 current 为空集合会回退 auto——删光图斑保存 V1 后，智能复核
+        仍显示 V0 推理图斑，与画布/溯源口径分叉。
+        """
+        empty_current = json.dumps(_collection())
+        auto_fc = json.dumps(_collection(_square_feature(2)))
+        result = ClassificationResult(
+            project_id=self.project_id, mine_fid=713, year=2024,
+            inference_job_id=str(uuid.uuid4())[:36],
+            model_id="mmseg:test", mine_resource_id=1,
+            current_feature_collection_json=empty_current,
+            auto_feature_collection_json=auto_fc,
+            current_revision_no=1,
+            vector_status="ready",
+            feature_count=0,
+        )
+        db.session.add(result)
+        db.session.commit()
+
+        data = self._review(result.id).get_json()["data"]
+        self.assertEqual(data["vector_source"], "current")
+        self.assertEqual(data["feature_count"], 0)
+        self.assertEqual(data["class_kind_count"], 0)
+        self.assertEqual(data["suspects"], [])
+
 class TestTimeZSweep(QualityReviewBase):
     def test_traceability_and_revisions_created_at_carry_z(self):
         result = self._make_result([_square_feature(0)])

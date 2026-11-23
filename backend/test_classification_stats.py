@@ -142,6 +142,40 @@ class ApplyRevisedClassRatioTests(unittest.TestCase):
         self.assertFalse(apply_revised_class_ratio(10, 713, 2024, 1, fc))
 
 
+    def test_multi_year_revisions_merge_instead_of_reset(self):
+        """跨年修订不得互相冲掉（2026-11-23 修复）。
+
+        此前每次回写都从推理原值重建序列：先修订 2023 再修订 2024，
+        2023 的人工占比会被冲回推理值。
+        """
+        fc2023 = {"type": "FeatureCollection", "features": [_feature(1, _square(100.0, 26.0))]}
+        self.assertTrue(apply_revised_class_ratio(10, 713, 2023, 2, fc2023))
+        fc2024 = {"type": "FeatureCollection", "features": [_feature(0, _square(100.0, 26.0))]}
+        self.assertTrue(apply_revised_class_ratio(10, 713, 2024, 3, fc2024))
+        payload = json.loads((self.fid_dir / "class_ratio_percent.json").read_text(encoding="utf-8"))
+        revised = payload["revised"]
+        # 两处人工值都保留：2023 全林地、2024 全草地
+        self.assertAlmostEqual(revised["series_percent"]["forest"][0], 100.0, places=1)
+        self.assertAlmostEqual(revised["series_percent"]["grassland"][1], 100.0, places=1)
+        # 推理原值不受影响
+        self.assertAlmostEqual(payload["series_percent"]["grassland"][0], 30.0, places=1)
+
+    def test_empty_revision_writes_zero_series(self):
+        """人工清空当年图斑后占比归零回写（2026-11-23 修复）。
+
+        此前 compute 返回 None 直接 return False，清空后溯源/趋势
+        仍显示修订前的旧占比。
+        """
+        fc = {"type": "FeatureCollection", "features": [_feature(0, _square(100.0, 26.0))]}
+        self.assertTrue(apply_revised_class_ratio(10, 713, 2024, 2, fc))
+        cleared = {"type": "FeatureCollection", "features": []}
+        self.assertTrue(apply_revised_class_ratio(10, 713, 2024, 3, cleared))
+        payload = json.loads((self.fid_dir / "class_ratio_percent.json").read_text(encoding="utf-8"))
+        series = payload["revised"]["series_percent"]
+        for name in series:
+            self.assertEqual(series[name][1], 0.0)
+        self.assertAlmostEqual(payload["series_percent"]["grassland"][1], 40.0, places=1)
+
 class RasterizeYearVectorTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

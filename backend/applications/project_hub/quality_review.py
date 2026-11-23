@@ -151,10 +151,19 @@ def build_result_quality_review(project_id, result_id, small_area_threshold_m2=N
     }
     current = _serialize_feature_collection(result.current_feature_collection_json)
     auto = _serialize_feature_collection(result.auto_feature_collection_json)
-    current_usable = isinstance(current, dict) and bool(current.get("features"))
-    auto_usable = isinstance(auto, dict) and bool(auto.get("features"))
-    collection = current if current_usable else (auto if auto_usable else None)
-    source = "current" if current_usable else ("auto" if auto_usable else "none")
+    # 版本口径（2026-11-23 修复）：current 是已保存的显式集合——包括"人工清空"
+    # 的空集合（features=[]）——复核必须反映当前版本；只有 current 从未落库
+    # 才回退 auto 推理值。此前空集合回退 auto，导致删光图斑保存 V1 后复核
+    # 仍显示 V0 图斑，画布/质检/溯源三个口径分叉
+    if result.current_feature_collection_json and isinstance(current, dict):
+        collection = current
+        source = "current"
+    elif isinstance(auto, dict) and bool(auto.get("features")):
+        collection = auto
+        source = "auto"
+    else:
+        collection = None
+        source = "none"
 
     features = (collection or {}).get("features") or []
     class_stats = {}

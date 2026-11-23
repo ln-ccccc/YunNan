@@ -96,7 +96,12 @@ def apply_revised_class_ratio(project_id, mine_fid, year, revision_no, feature_c
     """
     vector_ratio = compute_vector_class_ratio(feature_collection)
     if vector_ratio is None:
-        return False
+        # 显式空集合（人工清空当年图斑，2026-11-23 修复）：占比归零也要回写，
+        # 此前直接 return False 会让清空后的溯源/趋势仍显示修订前旧占比
+        if isinstance(feature_collection, dict):
+            vector_ratio = {name: 0.0 for name in CLASS_NAMES}
+        else:
+            return False
     try:
         fid_dir = _inference_fid_dir(project_id, mine_fid)
         ratio_path = fid_dir / "class_ratio_percent.json"
@@ -116,7 +121,15 @@ def apply_revised_class_ratio(project_id, mine_fid, year, revision_no, feature_c
                 year, years, project_id, mine_fid,
             )
             return False
-        original = payload.get("series_percent") or {}
+        # 多年合并基线（2026-11-23 修复）：已有 revised 序列优先作为底稿——
+        # 此前每次从推理原值重建，后修订年份会把先修订年份的人工占比冲回推理值
+        existing_revised = payload.get("revised") if isinstance(payload.get("revised"), dict) else {}
+        base_series = (
+            existing_revised.get("series_percent")
+            if isinstance(existing_revised.get("series_percent"), dict)
+            else None
+        )
+        original = base_series or payload.get("series_percent") or {}
         revised_series = {}
         for name in CLASS_NAMES:
             series = [float(value) for value in (original.get(name) or [])]
