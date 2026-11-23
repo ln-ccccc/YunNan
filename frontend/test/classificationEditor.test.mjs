@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   basemapCoverageNotice,
   buildAssignedFeatureIdMap,
+  polygonVertexCount,
   buildEditableFeatureCollection,
   isEditableVectorStatus,
   resolveSecureTileTemplate,
@@ -190,4 +191,16 @@ test('basemapCoverageNotice classifies feature bounds against manifest bounds', 
   // 任一边界缺失：不提示
   assert.equal(basemapCoverageNotice(null, manifest), null);
   assert.equal(basemapCoverageNotice([100.7, 26.0, 100.8, 26.1], null), null);
+});
+
+test('polygonVertexCount handles closed rings, open rings, and degenerate input', () => {
+  const closedTriangle = { geometry: { coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } };
+  assert.equal(polygonVertexCount(closedTriangle), 3);
+  const openSquare = { geometry: { coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1]]] } };
+  assert.equal(polygonVertexCount(openSquare), 4);
+  const closedPentagon = { geometry: { coordinates: [[[0, 0], [1, 0], [2, 1], [1, 2], [0, 1], [0, 0]]] } };
+  assert.equal(polygonVertexCount(closedPentagon), 5);
+  assert.equal(polygonVertexCount(null), 0);
+  assert.equal(polygonVertexCount({ geometry: { coordinates: [[]] } }), 0);
+  assert.equal(polygonVertexCount({ geometry: { coordinates: [[[0, 0]]] } }), 1);
 });

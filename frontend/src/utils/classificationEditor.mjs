@@ -171,3 +171,17 @@ export function basemapCoverageNotice(featureBounds, manifestBounds) {
     message: '成果范围部分超出激活底图覆盖，视野边缘可能缺少底图影像',
   };
 }
+
+export function polygonVertexCount(feature) {
+  /* 多边形真实顶点数（外环，去闭合重复点）：direct_select 删除防护用。
+   * mapbox-gl-draw 1.5.1 的 DirectSelect.onTrash 在删顶点后 isValid() 为假时
+   * 会 deleteFeature 整面——三角面(3 顶点)删任意顶点必然整面删除，
+   * 上游没有"最少顶点保护"，须在编辑器侧拦截（2026-11-23 P1）。 */
+  const ring = feature?.geometry?.coordinates?.[0];
+  if (!Array.isArray(ring) || ring.length === 0) return 0;
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  const closed = Array.isArray(first) && Array.isArray(last)
+    && first[0] === last[0] && first[1] === last[1] && ring.length > 1;
+  return closed ? ring.length - 1 : ring.length;
+}

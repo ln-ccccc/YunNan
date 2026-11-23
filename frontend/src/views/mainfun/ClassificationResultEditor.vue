@@ -139,6 +139,7 @@ import global from '@/global';
 import {
   basemapCoverageNotice,
   buildAssignedFeatureIdMap,
+  polygonVertexCount,
   buildEditableFeatureCollection,
   isEditableVectorStatus,
   resolveSecureTileTemplate,
@@ -353,9 +354,11 @@ export default {
         return;
       }
       try {
+        // 版本列表 best-effort（2026-11-23 修复）：详情才是画布的门控数据，
+        // 此前 Promise.all 把两者绑死——版本接口失败会挡住整个编辑器
         const [result, revisionPayload] = await Promise.all([
           getClassificationResult(this.context.projectId, this.context.resultId),
-          getClassificationRevisions(this.context.projectId, this.context.resultId),
+          getClassificationRevisions(this.context.projectId, this.context.resultId).catch(() => null),
         ]);
         if (seq !== this.reloadSeq || seq === -1) {
           // 过期响应（已被更新的 reload 或卸载取代）：丢弃，不覆盖新状态
@@ -363,6 +366,9 @@ export default {
         }
         this.result = result;
         this.revisions = revisionPayload?.revisions || [];
+        if (revisionPayload === null) {
+          this.$message.warning('版本列表读取失败，可点击"重新加载"重试；不影响画布编辑。');
+        }
         this.activeClassCode = Number(result?.classes?.[0]?.class_code ?? 0);
         this.tileTemplate = resolveSecureTileTemplate(result?.map_manifest?.api_tile_url, global.BASEURL);
         const featureBbox = featureBounds(result?.current_feature_collection);
@@ -445,12 +451,37 @@ export default {
             if (!(e.target instanceof Element) || !e.target.closest('.mapbox-gl-draw_trash')) return;
             if (!this.draw || this.draw.getMode() !== 'direct_select') return;
             const selectedPoints = this.draw.getSelectedPoints?.();
-            if (selectedPoints && selectedPoints.features && selectedPoints.features.length) return;
-            this.$message.info(
-              '当前处于顶点编辑模式：请先点击选中某个顶点，删除按钮才会移除该顶点；要删除整个面，请按 Esc 退出顶点编辑后单击选中面再删除',
-            );
+            const hasSelectedVertex = !!(selectedPoints && selectedPoints.features && selectedPoints.features.length);
+            if (!hasSelectedVertex) {
+              this.$message.info(
+                '当前处于顶点编辑模式：请先点击选中某个顶点，删除按钮才会移除该顶点；要删除整个面，请按 Esc 退出顶点编辑后单击选中面再删除',
+              );
+              return;
+            }
+            // 三角面删顶点防护（2026-11-23 P1）：draw 1.5.1 的 onTrash 在剩余
+            // 顶点使几何无效时 deleteFeature 整面——3 顶点面删任一顶点必删整面。
+            // 容器捕获阶段 stopPropagation 先于 draw 自身监听执行，可拦下默认行为
+            const feature = this.draw.getSelected?.()?.features?.[0];
+            const vertexCount = feature ? polygonVertexCount(feature) : 0;
+            if (vertexCount > 0 && vertexCount <= 3) {
+              e.preventDefault();
+              e.stopPropagation();
+              this.$message.info(
+                '该面只剩 3 个顶点（最少顶点），再删顶点会连带删除整个面；如需删除整个面，请按 Esc 退出顶点编辑后选中面再删除',
+              );
+            }
           },
           true,
+        );
+        // Esc 退出 direct_select（2026-11-23 P1）：draw 1.5.1 顶点模式不处理
+        // Escape，上面引导文案里的"按 Esc 退出"此前无法执行；容器 keydown 补齐
+        this.map.getContainer().addEventListener(
+          'keydown',
+          (e) => {
+            if (e.key !== 'Escape' || !this.draw || this.draw.getMode() !== 'direct_select') return;
+            const selectedId = this.draw.getSelected?.()?.features?.[0]?.id;
+            this.draw.changeMode('simple_select', selectedId != null ? { featureIds: [selectedId] } : {});
+          },
         );
         // ROI 边界叠加（2026-11-13 风险复盘）：此前绘制越界只能等保存 422 才
         // 暴露，现把矿山边界画在画布上并在绘制/拖顶点时即时提示
@@ -577,10 +608,12 @@ export default {
       this.recordMutation('create');
       this.warnFeaturesOutsideRoi(event.features);
     },
-    handleDrawUpdate() {
+    handleDrawUpdate(event) {
+      // 事件参数必须接收（2026-11-23 修复）：此前缺参，body 引用 event 抛
+      // ReferenceError，顶点拖动的 ROI 即时警告从未生效（P2-1）
       if (this.suppressDrawEvents) return;
       this.recordMutation('vertex');
-      this.warnFeaturesOutsideRoi(event.features, '，请调整顶点位置');
+      this.warnFeaturesOutsideRoi(event?.features, '，请调整顶点位置');
     },
     roiContainsGeometry(geometry) {
       const roi = this.result?.roi_geometry;
@@ -752,7 +785,11 @@ export default {
           }
           this.history.markSaved(rewriteFeatureCollectionJson(submittedDrawJson, assignedIds));
           this.syncHistoryState();
-          await this.loadRevisions();
+          // 问题11（2026-11-15，自 B2 候选移植 2026-11-23）：保存成功与列表刷新
+          // 分离——刷新失败不伪装成保存失败，不诱导用户重复保存
+          await this.loadRevisions().catch(() => {
+            this.$message.warning(`已保存为 V${saved.current_revision_no}；版本列表刷新失败，可手动刷新查看。`);
+          });
           this.$message.warning(`已保存为 V${saved.current_revision_no}；保存期间又有新的修改，请再次保存。`);
           return;
         }
@@ -760,8 +797,11 @@ export default {
         // 新版本即新基线：编辑历史作废，撤销只服务当前版本的未保存手势
         this.resetEditHistory();
         this.selectedDrawIds = [];
-        await this.loadRevisions();
+        // 问题11（同上）：保存事务已成功立即明确提示，刷新失败单独提示
         this.$message.success(`已保存为 V${saved.current_revision_no}`);
+        await this.loadRevisions().catch(() => {
+          this.$message.warning(`已保存为 V${saved.current_revision_no}；版本列表刷新失败，可手动刷新查看。`);
+        });
       } catch (error) {
         if (!stillOwnsState()) return;
         if (error?.status === 409) {
@@ -794,9 +834,23 @@ export default {
     },
     async loadRevisions() {
       if (!this.context) return;
-      const payload = await getClassificationRevisions(this.context.projectId, this.context.resultId);
+      // 问题12（2026-11-15，自 B2 候选移植 2026-11-23）：响应归属检查——发出时
+      // 捕获项目/成果/加载代次，返回后复核；A 的慢响应不得覆盖已切换到 B 的版本列表
+      const { projectId, resultId } = this.context;
+      const seq = (this.revisionsLoadSeq = (this.revisionsLoadSeq || 0) + 1);
+      const payload = await getClassificationRevisions(projectId, resultId);
+      const current = this.context;
+      if (
+        seq !== this.revisionsLoadSeq ||
+        !current ||
+        current.projectId !== projectId ||
+        current.resultId !== resultId
+      ) {
+        return;
+      }
       this.revisions = payload?.revisions || [];
-    },    async downloadCurrent() {
+    },
+    async downloadCurrent() {
       if (!this.context) return;
       this.exporting = true;
       try {
