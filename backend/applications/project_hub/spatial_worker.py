@@ -18,12 +18,23 @@ logger = logging.getLogger(__name__)
 # 激活新底图时保留的历史底图数量（不含当前激活的那一张）
 RETAINED_BASEMAP_KEEP = 2
 
+# 激活新底图时保留的失败切片资源数量（供重试断点续切），更早的一并回收
+FAILED_BASEMAP_KEEP = 1
+
 # 切片被取消的资源落 failed 时写入的原因。此前落 retained：半成品瓦片于是出现在
 # "可重新激活的历史底图"列表里，一张 z8 瓦片也能换掉正在用的整幅底图
 # （2026-11-24 审计 C1 的根因）。spatial_service.basemap_reactivation_blocker
 # 是它后面的那道防线：存量里已被标成 retained 的半成品同样会被拦下
 CANCELLED_TILING_MESSAGE = "切片任务已取消，瓦片不完整；可重新提交任务断点续切"
 from applications.project_hub.spatial_storage import ensure_storage_layout, resolve_storage_path
+
+
+def _resource_dirs(storage_root, resource):
+    """一张底图在存储上占的两个目录：源文件副本与瓦片。回收资源时一并删除。"""
+    return [
+        storage_root / "projects" / str(resource.project_id) / "basemaps" / str(resource.id),
+        storage_root / "projects" / str(resource.project_id) / "tiles" / str(resource.id),
+    ]
 
 
 # 容器健康心跳文件（2026-10-24 审查 P2-12）：DB 的 heartbeat_at 仅任务运行中
@@ -312,16 +323,39 @@ def _activate_basemap(job, resource, storage_root, actor="system"):
     # 原逻辑 retained[1:] 会在每次激活时把更早的历史底图连库记录、原图与瓦片
     # 一起永久删除——生产上 10GB 级原图被静默清除是事故（2026-09-09 上线前实测）。
     for obsolete in retained[RETAINED_BASEMAP_KEEP:]:
-        obsolete_dirs.extend(
-            [
-                storage_root / "projects" / str(obsolete.project_id) / "basemaps" / str(obsolete.id),
-                storage_root / "projects" / str(obsolete.project_id) / "tiles" / str(obsolete.id),
-            ]
-        )
+        obsolete_dirs.extend(_resource_dirs(storage_root, obsolete))
         _activity(
             resource.project_id,
             "spatial_resource_removed",
             {"resource_id": obsolete.id, "resource_type": "basemap", "version": obsolete.version},
+            actor=actor,
+        )
+        db.session.delete(obsolete)
+    # 失败/被取消的切片也要回收（2026-11-24 回收审查）：取消的切片现在落 failed
+    # （见 CANCELLED_TILING_MESSAGE），而"保留最近 2 个"只管 retained——failed 的半成品
+    # 瓦片目录与源文件副本此前没有任何清理方，会长期占盘（GB 级底图切片一半就是数 GB）。
+    # 保留最近 1 个 failed 供"重试断点续切"，更早的连同记录一并清掉；正在重试的资源
+    # 状态是 pending/processing，不在清理范围内。
+    failed = (
+        ProjectSpatialResource.query.filter_by(
+            project_id=resource.project_id,
+            resource_type="basemap",
+            status="failed",
+        )
+        .order_by(ProjectSpatialResource.version.desc())
+        .all()
+    )
+    for obsolete in failed[FAILED_BASEMAP_KEEP:]:
+        obsolete_dirs.extend(_resource_dirs(storage_root, obsolete))
+        _activity(
+            resource.project_id,
+            "spatial_resource_removed",
+            {
+                "resource_id": obsolete.id,
+                "resource_type": "basemap",
+                "version": obsolete.version,
+                "reason": "failed_tiling_pruned",
+            },
             actor=actor,
         )
         db.session.delete(obsolete)

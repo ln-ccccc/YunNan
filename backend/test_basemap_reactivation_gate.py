@@ -275,3 +275,50 @@ class TestBasemapReactivationGate(TestProjectAPI):
         stored = ProjectSpatialResource.query.get(resource.id)
         self.assertEqual(stored.status, "failed")
         self.assertEqual(stored.error_message, CANCELLED_TILING_MESSAGE)
+
+    def test_activating_a_new_basemap_reclaims_older_failed_tilings(self):
+        """回收审查(2026-11-24)：取消/失败的切片落 failed 后，半成品瓦片与源文件副本必须有人回收。
+        "保留最近 2 个"只管 retained——没有这一步，failed 的半成品会长期占盘。"""
+        from applications.models.project import ProjectActivityLog
+
+        project_id = self._seed_project()
+        failed = []
+        for version in (1, 2, 3):
+            resource = self._add_basemap(
+                project_id, version=version, status="failed", levels=[8], job_status="failed"
+            )
+            source_copy = self.storage_root / "projects" / str(project_id) / "basemaps" / str(resource.id)
+            source_copy.mkdir(parents=True)
+            (source_copy / "base.tif").write_bytes(b"partial-copy")
+            failed.append(resource)
+        fresh = self._add_basemap(project_id, version=4, status="processing")
+        job = ProjectSpatialJob(
+            id="job-activate-fresh", project_id=project_id, resource_id=fresh.id,
+            job_type="basemap_tiling", status="running", stage="tiling",
+        )
+        db.session.add(job)
+        db.session.commit()
+
+        spatial_worker._activate_basemap(job, fresh, self.storage_root)
+
+        db.session.expire_all()
+        remaining = ProjectSpatialResource.query.filter_by(project_id=project_id, status="failed").all()
+        self.assertEqual([item.version for item in remaining], [3], "只保留最近一个 failed 供重试断点续切")
+        self.assertIsNone(ProjectSpatialResource.query.get(failed[0].id))
+        self.assertIsNone(ProjectSpatialResource.query.get(failed[1].id))
+        self.assertIsNone(ProjectSpatialJob.query.get("job-basemap-%s" % failed[0].id), "任务行随资源级联删除")
+        for gone in failed[:2]:
+            self.assertFalse((self.storage_root / "projects" / str(project_id) / "basemaps" / str(gone.id)).exists())
+            self.assertFalse((self.storage_root / "projects" / str(project_id) / "tiles" / str(gone.id)).exists())
+        # 保留下来的那个：源副本与已切出的瓦片都在，重试可以续切
+        self.assertTrue((self.storage_root / "projects" / str(project_id) / "basemaps" / str(failed[2].id) / "base.tif").is_file())
+        self.assertTrue((self.storage_root / "projects" / str(project_id) / "tiles" / str(failed[2].id) / "8" / "207" / "107.png").is_file())
+        removed = [
+            json.loads(row.payload_json) for row in ProjectActivityLog.query.filter_by(
+                project_id=project_id, event_type="spatial_resource_removed"
+            ).all()
+        ]
+        self.assertEqual(
+            sorted(item["resource_id"] for item in removed if item.get("reason") == "failed_tiling_pruned"),
+            [failed[0].id, failed[1].id],
+        )
