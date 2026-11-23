@@ -216,6 +216,9 @@ export const projectApi = {
   createProjectDataset(projectId, payload, cookie) {
     return requestJson('POST', `/api/projects/${projectId}/datasets`, { body: payload, cookie });
   },
+  deleteProjectDataset(projectId, datasetId, cookie) {
+    return requestJson('DELETE', `/api/projects/${projectId}/datasets/${datasetId}`, { cookie });
+  },
   getProjectTimeline(projectId, cookie) {
     return requestJson('GET', `/api/projects/${projectId}/timeline`, { cookie });
   },

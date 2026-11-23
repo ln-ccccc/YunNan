@@ -38,3 +38,28 @@ test('project backend refuses unsafe inference output route segments before fetc
     /项目参数不合法/,
   );
 });
+
+test('deleteProjectDataset sends DELETE to the dataset endpoint with cookie and timeout', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    return new Response(JSON.stringify({ success: true, code: 0, data: { id: 9, deleted: true } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const result = await projectApi.deleteProjectDataset('7', '9', 'session=x');
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.deleted, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'http://localhost:5008/api/projects/7/datasets/9');
+    assert.equal(calls[0].options.method, 'DELETE');
+    assert.deepEqual(calls[0].options.headers, { cookie: 'session=x' });
+    // BFF 出站请求必须带超时，避免上游挂起时无限占用请求线程
+    assert.ok(calls[0].options.signal instanceof AbortSignal);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

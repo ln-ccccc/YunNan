@@ -290,10 +290,18 @@ def project_update_api(project_id):
 @login_required
 def project_replace_mines_api(project_id):
     try:
+        payload = request.json
+        # 请求体形状校验（2026-11-22 回归 P3-1）：裸数组/非对象载荷此前在
+        # .get("mines") 上抛 AttributeError 落 500，按 400 客户端错误收口
+        if payload is not None and not isinstance(payload, dict):
+            return fail_api("请求体必须是包含 mines 数组的 JSON 对象"), 400
+        mines = (payload or {}).get("mines")
+        if mines is not None and not isinstance(mines, list):
+            return fail_api("mines 必须是数组"), 400
         return success_api(
             data=replace_project_mines(
                 project_id,
-                (request.json or {}).get("mines") or [],
+                mines or [],
                 actor=_request_actor(),
             )
         )

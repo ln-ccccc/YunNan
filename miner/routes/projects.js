@@ -328,6 +328,21 @@ export function createProjectRoutes({
     }
   });
 
+  // 删除影像登记（后端已有能力，BFF 此前缺同构转发——2026-11-22 全功能回归 P3-2）
+  router.delete('/:projectId/datasets/:datasetId', async (req, res) => {
+    try {
+      relayJson(res, await projectApi.deleteProjectDataset(
+        req.params.projectId,
+        req.params.datasetId,
+        requestCookie(req),
+      ));
+    } catch (error) {
+      // 上游异常细节只进服务端日志，不回显给浏览器
+      console.error('projects route upstream error:', error);
+      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+    }
+  });
+
   router.get('/:projectId/timeline', async (req, res) => {
     try {
       relayJson(res, await projectApi.getProjectTimeline(req.params.projectId, requestCookie(req)));

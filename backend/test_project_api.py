@@ -2038,5 +2038,34 @@ class TestProjectAPI(unittest.TestCase):
         self.assertEqual(body["source_width"], 64)
 
 
+    def test_replace_mines_rejects_malformed_payload_with_400(self):
+        """矿山绑定入参形状校验（2026-11-22 回归 P3-1）。
+
+        裸数组/非对象载荷此前在 .get("mines") 上抛 AttributeError 落 500，
+        必须按 400 客户端错误收口；mines 非数组同理。
+        """
+        self.login_as_admin()
+        project_id = self._create_project("绑定入参校验项目")
+
+        response = self.client.put(
+            f"/api/projects/{project_id}/mines",
+            json=[{"mine_fid": 101}],
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("mines", self._json(response)["msg"])
+
+        response = self.client.put(
+            f"/api/projects/{project_id}/mines",
+            json={"mines": {"mine_fid": 101}},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("数组", self._json(response)["msg"])
+
+        # 空对象等价于清空绑定，仍走正常路径
+        response = self.client.put(f"/api/projects/{project_id}/mines", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._json(response)["data"]["mine_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
