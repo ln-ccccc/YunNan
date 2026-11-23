@@ -65,7 +65,11 @@ export async function getClassificationResult(projectId, resultId) {
 }
 
 export async function getClassificationRevisions(projectId, resultId) {
-  const response = await classificationClient.get(resultUrl(projectId, resultId, '/revisions'));
+  // 版本列表很小且有界(最多几十条)。客户端其余请求默认不限时, 只有它需要超时:
+  // 首屏不再等它(2026-11-23 A2), 但请求挂住会让版本面板一直停在"加载中…"
+  const response = await classificationClient.get(resultUrl(projectId, resultId, '/revisions'), {
+    timeout: 30000,
+  });
   return response.data.data;
 }
 

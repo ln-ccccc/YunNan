@@ -167,6 +167,7 @@ import {
 } from '@/utils/classificationEditor.mjs';
 import { polygonStructureProblem, simplifyPolygonSafely } from '@/utils/classificationEditorGeometry.mjs';
 import { createEditorHistory } from '@/utils/classificationEditorHistory.mjs';
+import { saveBlobAsFile } from '@/utils/blobDownload.mjs';
 import {
   classColor as resolveClassColor,
   classColorExpression,
@@ -244,17 +245,6 @@ function validBounds(value) {
   const [west, south, east, north] = value;
   if (west < -180 || east > 180 || south < -90 || north > 90 || west >= east || south >= north) return null;
   return value;
-}
-
-function triggerDownload(objectUrl, filename) {
-  /* 服务端导出与草稿导出共用的浏览器下载触发（Object URL 用后即释放） */
-  const anchor = document.createElement('a');
-  anchor.href = objectUrl;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(objectUrl);
 }
 
 function createClientFeatureId() {
@@ -1019,8 +1009,8 @@ export default {
       this.exporting = true;
       try {
         const response = await exportClassificationResult(this.context.projectId, exportResultId);
-        triggerDownload(
-          URL.createObjectURL(response.data),
+        saveBlobAsFile(
+          response.data,
           filenameFromContentDisposition(response.headers?.['content-disposition']),
         );
       } catch (error) {
@@ -1044,10 +1034,10 @@ export default {
         this.$message.error(error?.message || '草稿矢量数据无效');
         return;
       }
-      const objectUrl = URL.createObjectURL(
+      saveBlobAsFile(
         new Blob([JSON.stringify(draft)], { type: 'application/geo+json' }),
+        draftExportFilename(resultId, this.result?.current_revision_no),
       );
-      triggerDownload(objectUrl, draftExportFilename(resultId, this.result?.current_revision_no));
       this.$message.info('已导出草稿（包含未保存的修改）；保存后导出的才是正式版本');
     },
     classColor(definition) {
@@ -1263,8 +1253,11 @@ h1 {
   min-height: 650px;
 }
 
+/* 纯文字提示，没有可点内容：不拦截鼠标。否则被它盖住的那块地图上点击画不出顶点、
+   选不中图斑，且没有任何反馈（2026-11-24 真实浏览器回归抓到；没有底图的项目一直显示它） */
 .map-notice {
   position: absolute;
+  pointer-events: none;
   right: 14px;
   bottom: 14px;
   max-width: 330px;

@@ -4,6 +4,7 @@ import FileSaver from 'file-saver'
 
 import global from '@/global'
 import {hideFullScreenLoading} from "@/utils/loading";
+import { saveBlobAsFile } from "@/utils/blobDownload.mjs";
 function downloadimgWithWords(index, src, funtype) {
   // 凭证必带：图片资源在 :5008（/_uploads 全部要求登录），页面在 :3000 跨源，
   // fetch 默认 same-origin 不带 Cookie 会 401（2026-09-20 审查 P1 回归修复）
@@ -13,25 +14,8 @@ function downloadimgWithWords(index, src, funtype) {
       return response.blob();
     })//链式编程
     .then((res) => {
-      let blob = new Blob([res]);
-      // 通过URL.createObjectURL生成文件路径
-      let url = window.URL.createObjectURL(blob);
-      // 创建a标签
-      let ele = document.createElement("a");
-      ele.style.display = "none";
-      // 设置href属性为文件路径，download属性可以设置文件名称
-      ele.href = url;
-      if(index === -1){ele.download = `${funtype}`}
-      else{
-        ele.download = `第${index}组${funtype}`;
-      }
-      // 将a标签添加到页面并模拟点击
-      document.querySelectorAll("body")[0].appendChild(ele);
-      ele.click();
-      // 移除a标签
-      ele.remove();
-      // 下载已触发，释放 object URL
-      window.URL.revokeObjectURL(url);
+      // 经公共函数触发下载：object URL 由它延迟释放（同步释放会截断尚未开始的下载）
+      saveBlobAsFile(new Blob([res]), index === -1 ? `${funtype}` : `第${index}组${funtype}`);
     })
     .catch((error) => {
       // 失败时留在控制台留痕即可，不能把错误页面内容当图片下载
