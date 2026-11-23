@@ -543,7 +543,8 @@ class TestPaginationAndJsonTolerance(SecurityRecheckBase):
         type_utils 命名空间内的整型常量，历史调用方均已退役。）"""
         self.login_as_admin()
         response = self.client.get("/api/analysis/show/anything?page=abc&limit=xyz")
-        self.assertEqual(response.status_code, 200)
+        # 类型白名单拒绝按 P2-2 契约返回 400（仍保持 JSON 包络，不进全局 500）
+        self.assertEqual(response.status_code, 400)
         body = self._json(response)
         self.assertIn("success", body)
         self.assertIn("msg", body)
@@ -561,7 +562,7 @@ class TestPaginationAndJsonTolerance(SecurityRecheckBase):
         """回归：show/type_map 曾因 hasattr 放行非标量属性导致 filter_by(type=list) 500。"""
         self.login_as_admin()
         response = self.client.get("/api/analysis/show/type_map")
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         body = self._json(response)
         self.assertFalse(body.get("success"))
         self.assertIn("暂未开放", body.get("msg", ""))
@@ -573,7 +574,7 @@ class TestPaginationAndJsonTolerance(SecurityRecheckBase):
             data="null",
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         body = self._json(response)
         self.assertFalse(body.get("success"))
         # 消息前缀契约保持"参数异常"，后接具体原因（ids 必须是整型列表）

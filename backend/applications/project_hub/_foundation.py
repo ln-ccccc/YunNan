@@ -31,6 +31,10 @@ from applications.project_hub.spatial_storage import SUPPORTED_INCOMING_RASTER_F
 LOGGER = logging.getLogger(__name__)
 
 
+class ProjectNotFoundError(ValueError):
+    """项目不存在/已软删——携带 404 语义（继承 ValueError 保持既有
+    except ValueError 分支兼容）。"""
+
 
 def _log_storage_cleanup_failure(area, project_id, record_id, stage, exc):
     LOGGER.warning(
@@ -60,6 +64,32 @@ def _json_load(value, default):
         return json.loads(value)
     except Exception:
         return default
+
+def dataset_ids_referenced_by_inference_jobs():
+    """被推理任务请求载荷引用的数据集 ID 集合。
+
+    数据集删除、配置快照导入/恢复的引用保护共用（同一口径，改一处即可）。
+
+    只取 id + request_payload_json 两列：InferenceJob 整行含 result_json 大字段
+    （生产项目 10 单条均值 2.4MB、585 个任务共 1.4GB），此前 `query(...).all()`
+    整实体加载会把这批大字段全部拉进内存——删除一条影像登记就要等 GB 级传输，
+    BFF 15s 先超时回 502，而后端仍继续执行（2026-11-24 回收/超时审查）。
+    载荷 JSON 只有 KB 级，整批取回后在进程内解析。
+    """
+    from applications.models.inference_job import InferenceJob
+
+    rows = (
+        db.session.query(InferenceJob.id, InferenceJob.request_payload_json)
+        .filter(InferenceJob.request_payload_json.like('%"dataset_id"%'))
+        .all()
+    )
+    referenced = set()
+    for _job_id, payload_json in rows:
+        payload = _json_load(payload_json, {})
+        dataset_id = payload.get("dataset_id") if isinstance(payload, dict) else None
+        if isinstance(dataset_id, int) and not isinstance(dataset_id, bool):
+            referenced.add(dataset_id)
+    return referenced
 
 def _parse_iso_datetime(value):
     """快照 manifest 里的 ISO 时间串回 datetime；非法/缺失返回 None。"""
@@ -133,7 +163,7 @@ def _append_activity(
 def _get_project_or_404(project_id):
     project = Project.query.filter_by(id=project_id, deleted_at=None).first()
     if not project:
-        raise ValueError(f"项目不存在: {project_id}")
+        raise ProjectNotFoundError(f"项目不存在: {project_id}")
     return project
 
 def record_inference_failure(project_id, payload=None, actor="system"):

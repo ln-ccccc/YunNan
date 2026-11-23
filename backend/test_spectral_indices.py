@@ -268,7 +268,8 @@ class TestSpectralIndicesAPI(unittest.TestCase):
                 "index_type": "ABC",
             }
         )
-        self.assertEqual(status, 200)
+        # 参数校验失败按 P2-2 契约返回 400（不再 HTTP 200 + code=1）
+        self.assertEqual(status, 400)
         self.assertEqual(body["code"], 1)
         self.assertIn("不支持的指数类型", body["msg"])
 
@@ -281,7 +282,7 @@ class TestSpectralIndicesAPI(unittest.TestCase):
                 "band_map": {"nir": 4},
             }
         )
-        self.assertEqual(status, 200)
+        self.assertEqual(status, 400)
         self.assertEqual(body["code"], 1)
         self.assertIn("波段映射缺失", body["msg"])
 
@@ -294,7 +295,7 @@ class TestSpectralIndicesAPI(unittest.TestCase):
                 "band_map": {"nir": 99, "red": 3},
             }
         )
-        self.assertEqual(status, 200)
+        self.assertEqual(status, 400)
         self.assertEqual(body["code"], 1)
         self.assertIn("波段序号超出范围", body["msg"])
 

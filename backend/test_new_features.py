@@ -75,7 +75,8 @@ class TestNewFeatures(unittest.TestCase):
     def test_invalid_model_type(self):
         self.login_as_admin()
         response = self.client.get("/api/model/list/not_real")
-        self.assertEqual(response.status_code, 200)
+        # 无效模型类型按 P2-2 契约返回 400（不再 HTTP 200 + code=1）
+        self.assertEqual(response.status_code, 400)
         body = self._json(response)
         self.assertEqual(body["code"], 1)
 

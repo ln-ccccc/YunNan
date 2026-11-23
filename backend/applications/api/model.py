@@ -106,7 +106,7 @@ def get_model_list(model_type):
         "tracking": "tracker"
     }
     if model_type not in types_list:
-        return fail_api("模型类型不正确")
+        return fail_api("模型类型不正确", status=400)
     
     expected_type = types_list[model_type]
     model_list = []
