@@ -12,6 +12,75 @@ const source = fs.readFileSync(
   'utf8',
 );
 
+// 把注释替换成等长空白：注释里的示例写法不应被当成调用
+function stripComments(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:'"`\\])\/\/[^\n]*/g, (line, lead) => lead + ' '.repeat(line.length - lead.length));
+}
+
+// 找出源码里所有 $message.<type>(…) 调用，arguments 为括号内的源码。括号/字符串按字面配对，
+// 忽略注释与字符串内部的分隔符。
+function messageCalls(text) {
+  const code = stripComments(text);
+  const calls = [];
+  const pattern = /\$message\.(success|warning|info|error)\(/g;
+  let match = pattern.exec(code);
+  while (match) {
+    const start = match.index + match[0].length;
+    let depth = 1;
+    let index = start;
+    let quote = null;
+    while (index < code.length && depth > 0) {
+      const char = code[index];
+      if (quote) {
+        if (char === '\\') index += 1;
+        else if (char === quote) quote = null;
+      } else if (char === '"' || char === "'" || char === '`') {
+        quote = char;
+      } else if (char === '(' || char === '[' || char === '{') {
+        depth += 1;
+      } else if (char === ')' || char === ']' || char === '}') {
+        depth -= 1;
+      }
+      index += 1;
+    }
+    calls.push({ signature: match[0].slice(0, -1), arguments: code.slice(start, index - 1) });
+    pattern.lastIndex = index - 1;
+    match = pattern.exec(code);
+  }
+  return calls;
+}
+
+// 按顶层逗号拆分实参
+function topLevelArguments(argsSource) {
+  const args = [];
+  let depth = 0;
+  let quote = null;
+  let start = 0;
+  for (let index = 0; index < argsSource.length; index += 1) {
+    const char = argsSource[index];
+    if (quote) {
+      if (char === '\\') index += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+    } else if (char === '(' || char === '[' || char === '{') {
+      depth += 1;
+    } else if (char === ')' || char === ']' || char === '}') {
+      depth -= 1;
+    } else if (char === ',' && depth === 0) {
+      args.push(argsSource.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  const tail = argsSource.slice(start).trim();
+  if (tail) args.push(tail);
+  return args;
+}
+
 test('editor initializes the map only after loading settles to false', () => {
   const callSites = [...source.matchAll(/this\.initializeMap\(\)/g)];
   assert.equal(callSites.length, 1, 'initializeMap 应只有一个调用点');
@@ -159,11 +228,23 @@ test('vertex deletion guard is registered on the real direct_select entry (A1)',
     /modes: \{\s*\.\.\.MapboxDraw\.modes,\s*direct_select: createGuardedDirectSelect\(\s*MapboxDraw\.modes\.direct_select,/,
     '必须用带防护的工厂替换 direct_select，其余模式原样保留',
   );
-  // 拦截文案由纯函数生成，连按不堆叠
+  // 拦截文案由纯函数生成，连按不堆叠。选项必须放进第一个对象参数：Element Plus 2.1.10 的
+  // $message.warning(text, X) 第二个参数是 appContext——曾写成 (text, { grouping: true })，
+  // 真实浏览器里消息组件渲染时抛 "Object prototype may only be an Object or null"，
+  // 面保住了但提示弹不出来（2026-11-24 浏览器验收抓到；旧断言反而把这个写法锁成了"正确"）
   assert.match(
     source,
-    /this\.\$message\.warning\(describeVertexDeletionBlockers\(blockers, geometry\), \{ grouping: true \}\)/,
+    /this\.\$message\.warning\(\{\s*message: describeVertexDeletionBlockers\(blockers, geometry\),\s*grouping: true,\s*\}\)/,
+    '分组提示的选项必须作为 message 对象的字段传入',
   );
+  // 全组件通检：任何 $message.<type>(...) 调用都只能有一个顶层参数
+  for (const [index, call] of messageCalls(source).entries()) {
+    assert.equal(
+      topLevelArguments(call.arguments).length,
+      1,
+      `第 ${index + 1} 处 ${call.signature} 必须只有一个顶层参数（选项放进第一个对象，第二个参数是 appContext）`,
+    );
+  }
   // 旧的"数当前顶点数"函数及其容器捕获拦截已删除
   assert.doesNotMatch(source, /polygonVertexCount/, 'polygonVertexCount 已被 vertexDeletionBlockers 取代');
   const clickGuard = source.slice(source.indexOf("'click',"), source.indexOf('// Esc 退出 direct_select'));

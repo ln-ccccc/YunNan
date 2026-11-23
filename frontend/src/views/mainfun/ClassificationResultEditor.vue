@@ -476,8 +476,16 @@ export default {
             direct_select: createGuardedDirectSelect(
               MapboxDraw.modes.direct_select,
               (blockers, geometry) => {
+                // 选项必须放在第一个对象参数里：Element Plus 的 $message.warning(text, X)
+                // 第二个参数是应用上下文(appContext)，传 { grouping } 会被当成上下文，
+                // 消息组件渲染时抛 "Object prototype may only be an Object or null"——
+                // 面被保住了，提示却弹不出来，看起来像删除按钮坏了
+                // （2026-11-24 真实浏览器验收抓到；Node 单测用假处理器碰不到真实消息组件）。
                 // grouping：连按 Delete 时同文案合并，不堆叠
-                this.$message.warning(describeVertexDeletionBlockers(blockers, geometry), { grouping: true });
+                this.$message.warning({
+                  message: describeVertexDeletionBlockers(blockers, geometry),
+                  grouping: true,
+                });
               },
             ),
           },
