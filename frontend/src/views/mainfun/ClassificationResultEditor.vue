@@ -29,6 +29,17 @@
     <el-skeleton v-else-if="loading" :rows="8" animated />
 
     <template v-else-if="result">
+      <!-- 底图覆盖提示独立于 vector_failed 的 v-if/v-else 链：必须放在其前，
+           否则工具栏的 v-else 会改绑到本告警，有提示时隐藏整个编辑工具栏 -->
+      <el-alert
+        v-if="coverageNotice"
+        class="editor-alert"
+        :type="coverageNotice.level"
+        :closable="false"
+        :title="coverageNotice.message"
+        show-icon
+      />
+
       <el-alert
         v-if="result.vector_status === 'vector_failed'"
         class="editor-alert"
@@ -126,6 +137,7 @@ import {
 } from '@/api/classificationResults';
 import global from '@/global';
 import {
+  basemapCoverageNotice,
   buildAssignedFeatureIdMap,
   buildEditableFeatureCollection,
   isEditableVectorStatus,
@@ -250,6 +262,8 @@ export default {
       revisions: [],
       loading: true,
       loadError: '',
+      // 底图覆盖提示（2026-11-23 处置 B）：null=不提示
+      coverageNotice: null,
       saving: false,
       exporting: false,
       isDirty: false,
@@ -351,6 +365,11 @@ export default {
         this.revisions = revisionPayload?.revisions || [];
         this.activeClassCode = Number(result?.classes?.[0]?.class_code ?? 0);
         this.tileTemplate = resolveSecureTileTemplate(result?.map_manifest?.api_tile_url, global.BASEURL);
+        const featureBbox = featureBounds(result?.current_feature_collection);
+        this.coverageNotice = basemapCoverageNotice(
+          featureBbox ? [featureBbox.getWest(), featureBbox.getSouth(), featureBbox.getEast(), featureBbox.getNorth()] : null,
+          validBounds(result?.map_manifest?.bounds),
+        );
       } catch (error) {
         if (seq !== this.reloadSeq) {
           return;

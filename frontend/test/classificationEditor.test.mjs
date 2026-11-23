@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  basemapCoverageNotice,
   buildAssignedFeatureIdMap,
   buildEditableFeatureCollection,
   isEditableVectorStatus,
@@ -173,4 +174,20 @@ test('rewriteFeatureCollectionJson rewrites only mapped ids and keeps unrelated 
   assert.equal(rewriteFeatureCollectionJson(undefined, mapping), undefined);
   const noMatch = JSON.stringify({ type: 'FeatureCollection', features: [featureWithId('auto-142-1')] });
   assert.equal(rewriteFeatureCollectionJson(noMatch, mapping), noMatch);
+});
+
+test('basemapCoverageNotice classifies feature bounds against manifest bounds', () => {
+  const manifest = [100.5, 25.9, 101.4, 26.3];
+  // 完全在覆盖内：不提示
+  assert.equal(basemapCoverageNotice([100.7, 26.0, 100.8, 26.1], manifest), null);
+  // 完全在覆盖外（南缘外）：warning
+  const outside = basemapCoverageNotice([100.70, 25.33, 100.71, 25.34], manifest);
+  assert.equal(outside.level, 'warning');
+  assert.match(outside.message, /覆盖范围之外/);
+  // 部分相交：info
+  const partial = basemapCoverageNotice([100.7, 25.8, 100.8, 26.1], manifest);
+  assert.equal(partial.level, 'info');
+  // 任一边界缺失：不提示
+  assert.equal(basemapCoverageNotice(null, manifest), null);
+  assert.equal(basemapCoverageNotice([100.7, 26.0, 100.8, 26.1], null), null);
 });

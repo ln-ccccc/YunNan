@@ -148,3 +148,26 @@ export function rewriteFeatureCollectionJson(snapshotJson, idMap) {
 export function isEditableVectorStatus(vectorStatus) {
   return vectorStatus === 'ready' || vectorStatus === 'ready_empty';
 }
+
+export function basemapCoverageNotice(featureBounds, manifestBounds) {
+  /* 底图覆盖提示（2026-11-23 底图覆盖缺口处置 B）：编辑器框选的是成果要素，
+   * 当矿山落在激活底图金字塔覆盖之外时画布"正确地空白"，此前用户无从分辨
+   * 是缺陷还是缺数据。这里按 [w,s,e,n] 判相交/包含，返回提示或 null。
+   * 任一边界缺失（无要素/无 manifest）不打扰。 */
+  if (!Array.isArray(featureBounds) || !Array.isArray(manifestBounds)) return null;
+  const intersects = featureBounds[0] <= manifestBounds[2] && manifestBounds[0] <= featureBounds[2]
+    && featureBounds[1] <= manifestBounds[3] && manifestBounds[1] <= featureBounds[3];
+  if (!intersects) {
+    return {
+      level: 'warning',
+      message: '当前矿山位于激活底图覆盖范围之外，地图不显示底图影像（矢量编辑与保存不受影响）',
+    };
+  }
+  const inside = featureBounds[0] >= manifestBounds[0] && featureBounds[1] >= manifestBounds[1]
+    && featureBounds[2] <= manifestBounds[2] && featureBounds[3] <= manifestBounds[3];
+  if (inside) return null;
+  return {
+    level: 'info',
+    message: '成果范围部分超出激活底图覆盖，视野边缘可能缺少底图影像',
+  };
+}
