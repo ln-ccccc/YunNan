@@ -172,16 +172,174 @@ export function basemapCoverageNotice(featureBounds, manifestBounds) {
   };
 }
 
-export function polygonVertexCount(feature) {
-  /* 多边形真实顶点数（外环，去闭合重复点）：direct_select 删除防护用。
-   * mapbox-gl-draw 1.5.1 的 DirectSelect.onTrash 在删顶点后 isValid() 为假时
-   * 会 deleteFeature 整面——三角面(3 顶点)删任意顶点必然整面删除，
-   * 上游没有"最少顶点保护"，须在编辑器侧拦截（2026-11-23 P1）。 */
-  const ring = feature?.geometry?.coordinates?.[0];
+function ringVertexCount(ring) {
+  /* 环的真实顶点数（去闭合重复点）：与 mapbox-gl-draw 内部不含闭合点的顶点下标一致 */
   if (!Array.isArray(ring) || ring.length === 0) return 0;
   const first = ring[0];
   const last = ring[ring.length - 1];
   const closed = Array.isArray(first) && Array.isArray(last)
     && first[0] === last[0] && first[1] === last[1] && ring.length > 1;
   return closed ? ring.length - 1 : ring.length;
+}
+
+/**
+ * 本次删除顶点是否会让某个子面的外环塌陷（direct_select 真实删除入口的防护，
+ * 2026-11-23 P1）。
+ *
+ * mapbox-gl-draw 1.5.1 的 DirectSelect.onTrash（删除按钮与 Delete/Backspace 键盘
+ * 两条路都汇到这里）对选中顶点逐个 removeCoordinate：某环剩 <3 点时整个环被删，
+ * 随后 isValid() 为假即 deleteFeature 整面——上游没有"最少顶点保护"。
+ * Polygon 路径形如 "<环>.<顶点>"；MultiPolygon 是 MultiFeature，路径形如
+ * "<子面>.<环>.<顶点>"。
+ *
+ * 只看各子面的外环（环序号 0）：本次选中的外环顶点按子面去重计数，
+ * 「外环顶点数 − 本次删除数 < 3」即记一个 blocker。内环（洞）塌陷是合法操作，不拦。
+ * 几何缺失或类型不支持时返回空数组（不拦，保持上游行为）。
+ *
+ * @param {object} geometry state.feature.toGeoJSON().geometry（标准 GeoJSON，环已闭合）
+ * @param {string[]} selectedCoordPaths state.selectedCoordPaths
+ * @returns {{ polygonIndex: number, vertexCount: number, removed: number, remaining: number }[]}
+ */
+export function vertexDeletionBlockers(geometry, selectedCoordPaths) {
+  if (!geometry || (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon')) return [];
+  const isMulti = geometry.type === 'MultiPolygon';
+  const polygons = isMulti ? geometry.coordinates : [geometry.coordinates];
+  if (!Array.isArray(polygons)) return [];
+
+  const removedByPolygon = new Map();
+  for (const rawPath of Array.isArray(selectedCoordPaths) ? selectedCoordPaths : []) {
+    if (typeof rawPath !== 'string') continue;
+    const parts = rawPath.split('.');
+    const [polygonIndex, ringIndex, vertexIndex] = isMulti
+      ? [parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10)]
+      : [0, parseInt(parts[0], 10), parseInt(parts[1], 10)];
+    if (![polygonIndex, ringIndex, vertexIndex].every(Number.isInteger)) continue;
+    if (ringIndex !== 0) continue;
+    const outerRing = Array.isArray(polygons[polygonIndex]) ? polygons[polygonIndex][0] : null;
+    if (!Array.isArray(outerRing)) continue;
+    // 下标越界时上游 removeCoordinate 的 splice 不删任何点，不计入本次删除数
+    if (vertexIndex >= ringVertexCount(outerRing)) continue;
+    const key = `${polygonIndex}.${vertexIndex}`;
+    if (!removedByPolygon.has(key)) removedByPolygon.set(key, polygonIndex);
+  }
+
+  const removedCounts = new Map();
+  for (const polygonIndex of removedByPolygon.values()) {
+    removedCounts.set(polygonIndex, (removedCounts.get(polygonIndex) || 0) + 1);
+  }
+  const blockers = [];
+  [...removedCounts.keys()].sort((a, b) => a - b).forEach((polygonIndex) => {
+    const removed = removedCounts.get(polygonIndex);
+    const vertexCount = ringVertexCount(polygons[polygonIndex][0]);
+    const remaining = vertexCount - removed;
+    if (remaining < 3) blockers.push({ polygonIndex, vertexCount, removed, remaining });
+  });
+  return blockers;
+}
+
+/**
+ * 顶点删除被拦截时的提示文案（纯文本，便于无 DOM 测试）。
+ * MultiPolygon 点明是第几个子面（序号从 1 起）。
+ */
+export function describeVertexDeletionBlockers(blockers, geometry) {
+  const isMulti = geometry?.type === 'MultiPolygon';
+  const detail = (blockers || [])
+    .map((blocker) => {
+      const target = isMulti ? `第 ${blocker.polygonIndex + 1} 个子面` : '该面';
+      return `本次删除后${target}只剩 ${blocker.remaining} 个顶点（最少 3 个）`;
+    })
+    .join('；');
+  return `${detail}，会连带删除整个面；如需删除整个面，请按 Esc 退出顶点编辑后单击选中面再删除`;
+}
+
+/**
+ * 带顶点删除防护的 direct_select 模式工厂（官方扩展点：
+ * new MapboxDraw({ modes: { ...MapboxDraw.modes, direct_select: 自定义对象 } })）。
+ * 返回的对象保留上游模式的全部方法，只接管 onTrash——删除按钮与键盘
+ * Delete/Backspace 两条路都必经此处，不再依赖地图容器的点击捕获（键盘路完全绕过）。
+ *
+ * 模式方法被调用时 this 是 mapbox-gl-draw 的模式处理器（带 fireActionable /
+ * deleteFeature / changeMode 等），因此放行时用 call(this) 复用上游逻辑。
+ *
+ * @param {object} baseDirectSelect MapboxDraw.modes.direct_select
+ * @param {(blockers: object[], geometry: object) => void} onBlocked 拦截时的提示回调
+ */
+export function createGuardedDirectSelect(baseDirectSelect, onBlocked) {
+  return {
+    ...baseDirectSelect,
+    onTrash(state) {
+      const selectedCoordPaths = Array.isArray(state?.selectedCoordPaths) ? state.selectedCoordPaths : [];
+      // 无选中顶点：上游会发一次空的 draw.update（被 handleDrawUpdate 误记为一笔
+      // 编辑并递增 editGeneration），这里只同步按钮可用态后短路
+      if (!selectedCoordPaths.length) {
+        this.fireActionable(state);
+        return;
+      }
+      const geometry = state?.feature?.toGeoJSON?.()?.geometry ?? null;
+      const blockers = vertexDeletionBlockers(geometry, selectedCoordPaths);
+      if (blockers.length) {
+        if (typeof onBlocked === 'function') onBlocked(blockers, geometry);
+        this.fireActionable(state);
+        return;
+      }
+      return baseDirectSelect.onTrash.call(this, state);
+    },
+  };
+}
+
+function coordinatesBounds(coordinateLists) {
+  /* 任意深度坐标数组的 [w, s, e, n] 包围盒；无可识别位置时返回 null */
+  let bounds = null;
+  const visit = (value) => {
+    if (!Array.isArray(value)) return;
+    if (value.length >= 2 && Number.isFinite(value[0]) && Number.isFinite(value[1])) {
+      bounds = bounds
+        ? [
+          Math.min(bounds[0], value[0]),
+          Math.min(bounds[1], value[1]),
+          Math.max(bounds[2], value[0]),
+          Math.max(bounds[3], value[1]),
+        ]
+        : [value[0], value[1], value[0], value[1]];
+      return;
+    }
+    value.forEach(visit);
+  };
+  coordinateLists.forEach(visit);
+  return bounds;
+}
+
+function isValidBounds(value) {
+  if (!Array.isArray(value) || value.length !== 4 || !value.every(Number.isFinite)) return false;
+  const [west, south, east, north] = value;
+  return !(west < -180 || east > 180 || south < -90 || north > 90 || west >= east || south >= north);
+}
+
+/**
+ * 编辑器定位与底图覆盖判定共用的关注范围（E1，2026-11-23），优先级：
+ * 图斑范围 → ROI（矿山边界）范围 → manifest 范围。
+ * ready_empty 成果没有图斑时，此前直接回退到整张底图范围（看到整个云南，
+ * 找不到矿山在哪）；后端详情已返回 roi_geometry，画布上也有 result-roi-outline 图层。
+ *
+ * @param {object} featureCollection result.current_feature_collection
+ * @param {object} roiGeometry GeoJSON Polygon / MultiPolygon 几何
+ * @param {number[]} manifestBounds [w, s, e, n]（非法时忽略）
+ * @returns {number[]|null} [w, s, e, n]，三级都缺失时为 null
+ */
+export function resolveFocusBounds(featureCollection, roiGeometry, manifestBounds) {
+  const featureBounds = coordinatesBounds(
+    (featureCollection?.features || []).map((feature) => feature?.geometry?.coordinates),
+  );
+  if (featureBounds) return featureBounds;
+  const roiBounds = coordinatesBounds([roiGeometry?.coordinates]);
+  if (roiBounds) return roiBounds;
+  return isValidBounds(manifestBounds) ? [...manifestBounds] : null;
+}
+
+/**
+ * 草稿导出文件名（E2-e）：与服务端 classification-result-<id>-revision-<n>.geojson
+ * 同一命名族，draft-v<n>-unsaved 标明"基于 Vn 的未保存草稿"。
+ */
+export function draftExportFilename(resultId, revisionNo) {
+  return `classification-result-${resultId}-draft-v${revisionNo}-unsaved.geojson`;
 }
