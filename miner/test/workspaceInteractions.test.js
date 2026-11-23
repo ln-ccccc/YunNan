@@ -12,6 +12,7 @@ import {
   isExportOutcomeUncertain,
 } from '../src/projectWorkspace/exportRequestFeedback.js';
 import { shouldUseChunkedUpload } from '../src/utils/basemapChunking.js';
+import { saveBlobAsFile } from '../src/utils/blobDownload.js';
 import { sortInterpretationRecords } from '../src/utils/interpretationOrdering.js';
 
 function setupComponent(filename, axios, extras = {}) {
@@ -23,6 +24,7 @@ function setupComponent(filename, axios, extras = {}) {
     axios,
     createProjectWorkspaceApi,
     shouldUseChunkedUpload,
+    saveBlobAsFile,
     // 组件 import 的绑定都要在这里注入：下方 script 会剥掉 import、靠 with (dependencies) 解析
     isExportOutcomeUncertain,
     exportOutcomePendingMessage,
@@ -109,53 +111,97 @@ test('interpretation map button emits the selected project id', () => {
   assert.deepEqual(harness.emissions, [['go-map', 7]]);
 });
 
+// 工作台下载经 saveBlobAsFile 触发。它只认浏览器全局（URL / document / setTimeout），且在
+// 自己的模块作用域里解析，所以替身要装到 globalThis 上，不能走 setupComponent 的 extras；
+// 真实定时器会把测试进程拖满 60 秒，一并替身掉。
+function installDownloadFakes() {
+  const downloads = [];
+  const revoked = [];
+  const timers = [];
+  const originals = {
+    createObjectURL: URL.createObjectURL,
+    revokeObjectURL: URL.revokeObjectURL,
+    document: globalThis.document,
+    setTimeout: globalThis.setTimeout,
+  };
+  URL.createObjectURL = () => 'blob:audit';
+  URL.revokeObjectURL = (url) => revoked.push(url);
+  globalThis.document = {
+    createElement: () => ({ click() { downloads.push(this.download); }, remove() {} }),
+    body: { appendChild() {} },
+  };
+  globalThis.setTimeout = (callback, delay) => {
+    timers.push({ callback, delay });
+    return timers.length;
+  };
+  return {
+    downloads,
+    revoked,
+    timers,
+    restore: () => {
+      URL.createObjectURL = originals.createObjectURL;
+      URL.revokeObjectURL = originals.revokeObjectURL;
+      globalThis.document = originals.document;
+      globalThis.setTimeout = originals.setTimeout;
+    },
+  };
+}
+
 for (const kind of ['export', 'snapshot']) {
   test(`workspace ${kind} download event fetches and saves the project artifact`, async () => {
-    const requests = [];
-    const downloads = [];
-    const axios = { get: async (path, options) => {
-      requests.push({ path, options });
-      return { data: new Blob(['test artifact']) };
-    } };
-    const harness = setupComponent('ProjectWorkspace.vue', axios, {
-      document: {
-        createElement: () => ({ click() { downloads.push(this.download); }, remove() {} }),
-        body: { appendChild() {} },
-      },
-      URL: { createObjectURL: () => 'blob:audit', revokeObjectURL() {} },
-    });
-    harness.bindings.currentProjectId.value = 7;
-    harness.bindings.slices.overview.data = { project_id: 7, summary: { id: 7 }, capabilities: {} };
-    const panel = findNode(harness.render(), (node) => node.type === 'ProjectExportSnapshotPanel');
-    assert.ok(panel);
-    const listener = panel.props[kind === 'export' ? 'onDownloadExport' : 'onDownloadSnapshot'];
-    assert.equal(typeof listener, 'function', '工作台必须处理子组件下载事件');
-    await listener({ id: 4, artifact_name: 'project-export.geojson' });
-    assert.deepEqual(requests, [{
-      path: kind === 'export' ? '/api/projects/7/exports/4/artifact' : '/api/projects/7/backups/4/manifest',
-      options: { responseType: 'blob' },
-    }]);
-    assert.deepEqual(downloads, [kind === 'export' ? 'project-export.geojson' : 'snapshot-4-manifest.json']);
+    const fakes = installDownloadFakes();
+    try {
+      const requests = [];
+      const axios = { get: async (path, options) => {
+        requests.push({ path, options });
+        return { data: new Blob(['test artifact']) };
+      } };
+      const harness = setupComponent('ProjectWorkspace.vue', axios);
+      harness.bindings.currentProjectId.value = 7;
+      harness.bindings.slices.overview.data = { project_id: 7, summary: { id: 7 }, capabilities: {} };
+      const panel = findNode(harness.render(), (node) => node.type === 'ProjectExportSnapshotPanel');
+      assert.ok(panel);
+      const listener = panel.props[kind === 'export' ? 'onDownloadExport' : 'onDownloadSnapshot'];
+      assert.equal(typeof listener, 'function', '工作台必须处理子组件下载事件');
+      await listener({ id: 4, artifact_name: 'project-export.geojson' });
+      assert.deepEqual(requests, [{
+        path: kind === 'export' ? '/api/projects/7/exports/4/artifact' : '/api/projects/7/backups/4/manifest',
+        options: { responseType: 'blob' },
+      }]);
+      assert.deepEqual(fakes.downloads, [kind === 'export' ? 'project-export.geojson' : 'snapshot-4-manifest.json']);
+      // object URL 延迟释放：下载刚发起时不能释放，60 秒后才释放
+      // （同步释放会截断尚未开始的下载，导出成果下载此前就是这么写的）
+      assert.deepEqual(fakes.revoked, [], '下载发起后不得立刻释放 object URL');
+      assert.equal(fakes.timers.length, 1);
+      assert.equal(fakes.timers[0].delay, 60000);
+      fakes.timers[0].callback();
+      assert.deepEqual(fakes.revoked, ['blob:audit'], '到点释放本次下载的 object URL');
+    } finally {
+      fakes.restore();
+    }
   });
 }
 
 test('workspace clears a failed download message when retry succeeds', async () => {
-  let fails = true;
-  const harness = setupComponent('ProjectWorkspace.vue', {
-    get: async () => {
-      if (fails) throw new Error('下载暂不可用');
-      return { data: new Blob(['retry artifact']) };
-    },
-  }, {
-    document: { createElement: () => ({ click() {}, remove() {} }), body: { appendChild() {} } },
-    URL: { createObjectURL: () => 'blob:audit', revokeObjectURL() {} },
-  });
-  harness.bindings.currentProjectId.value = 7;
-  await harness.bindings.downloadExport({ id: 4 });
-  assert.equal(harness.bindings.slices.exports.error, '下载暂不可用');
-  assert.equal(harness.bindings.projectOperationBusy.value, false);
-  fails = false;
-  await harness.bindings.downloadExport({ id: 4 });
-  assert.equal(harness.bindings.slices.exports.error, '');
-  assert.equal(harness.bindings.projectOperationBusy.value, false);
+  const fakes = installDownloadFakes();
+  try {
+    let fails = true;
+    const harness = setupComponent('ProjectWorkspace.vue', {
+      get: async () => {
+        if (fails) throw new Error('下载暂不可用');
+        return { data: new Blob(['retry artifact']) };
+      },
+    });
+    harness.bindings.currentProjectId.value = 7;
+    await harness.bindings.downloadExport({ id: 4 });
+    assert.equal(harness.bindings.slices.exports.error, '下载暂不可用');
+    assert.equal(harness.bindings.projectOperationBusy.value, false);
+    assert.deepEqual(fakes.timers, [], '失败的下载没有创建 object URL，也就没有待释放的定时器');
+    fails = false;
+    await harness.bindings.downloadExport({ id: 4 });
+    assert.equal(harness.bindings.slices.exports.error, '');
+    assert.equal(harness.bindings.projectOperationBusy.value, false);
+  } finally {
+    fakes.restore();
+  }
 });

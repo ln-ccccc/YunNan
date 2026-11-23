@@ -1,6 +1,7 @@
 import { ref, unref } from 'vue';
 import axios from 'axios';
 import { useProjectInference } from './useProjectInference.js';
+import { saveBlobAsFile } from '../utils/blobDownload.js';
 
 const rawMinerApiBase = import.meta.env.VITE_MINER_API_BASE_URL;
 const MINER_API_BASE_URL = rawMinerApiBase ? String(rawMinerApiBase).replace(/\/$/, '') : '';
@@ -269,15 +270,7 @@ export function useMineData(projectId) {
         return;
       }
       const blob = res.data instanceof Blob ? res.data : new Blob([res.data]);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = item.filename || `original_${jobId}.tif`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      // 同步 revoke 在部分浏览器会截断尚未开始的 blob 下载，延迟回收（审查 P3）
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      saveBlobAsFile(blob, item.filename || `original_${jobId}.tif`);
     } catch (e) {
       console.warn('原始影像下载失败:', e);
       // 上游 404/502 经 axios reject 走到这里：error body 是 JSON blob，
@@ -332,12 +325,7 @@ export function useMineData(projectId) {
       ].join(','));
     });
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `trend_report_${Date.now()}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    saveBlobAsFile(blob, `trend_report_${Date.now()}.csv`);
   };
 
   // 推理编排已抽至 useProjectInference（M5.3）：地图工作台与智能解译页共用同一实现

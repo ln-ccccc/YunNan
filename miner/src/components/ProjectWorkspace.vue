@@ -189,6 +189,7 @@ import ProjectSpatialResources from './projectWorkspace/ProjectSpatialResources.
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
 import { exportOutcomePendingMessage, isExportOutcomeUncertain } from '../projectWorkspace/exportRequestFeedback.js';
 import { shouldUseChunkedUpload } from '../utils/basemapChunking.js';
+import { saveBlobAsFile } from '../utils/blobDownload.js';
 import { actionTarget, createSelectionGate, createSlice, INVALIDATION } from '../projectWorkspace/projectWorkspaceViewModel.js';
 import { setSelectedProjectId } from '../services/projectSelectionStore.js';
 
@@ -762,14 +763,7 @@ async function downloadFile(path, filename, sliceName) {
   slices[sliceName].error = '';
   try {
     const response = await axios.get(`${minerApiBase}${path}`, { responseType: 'blob' });
-    const objectUrl = URL.createObjectURL(response.data);
-    const anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(objectUrl);
+    saveBlobAsFile(response.data, filename);
   } catch (error) {
     if (isCurrentProjectOperation(operation)) {
       slices[sliceName].error = messageFrom(error, '下载失败，请稍后重试');

@@ -51,6 +51,7 @@ import { ref } from 'vue';
 import ProjectExportSnapshotPanel from './projectWorkspace/ProjectExportSnapshotPanel.vue';
 import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
 import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
+import { saveBlobAsFile } from '../utils/blobDownload.js';
 import { exportOutcomePendingMessage, isExportOutcomeUncertain } from '../projectWorkspace/exportRequestFeedback.js';
 
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
@@ -180,14 +181,7 @@ const downloadFile = async (path, filename) => {
   operationError.value = '';
   try {
     const res = await axios.get(url(path), { responseType: 'blob' });
-    const objectUrl = URL.createObjectURL(res.data);
-    const anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(objectUrl);
+    saveBlobAsFile(res.data, filename);
   } catch (e) {
     operationError.value = messageFrom(e, '下载失败，请稍后重试');
   } finally {
