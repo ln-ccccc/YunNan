@@ -166,12 +166,17 @@
           <div>
             <strong>底图 v{{ item.version }}</strong>
             <small>status: {{ item.status }} · zoom {{ item.min_zoom }}-{{ item.max_zoom }}</small>
+            <!-- 不可重激活的原因由后端判定（切片任务未成功结束 / 某缩放级别缺瓦片）：
+                 置灰并说明，不让用户点了才知道不行 -->
+            <small v-if="item.reactivatable === false" class="blocked-reason">
+              不可重新激活：{{ item.reactivate_blocked_reason || '瓦片不完整' }}
+            </small>
           </div>
           <button
             class="link-btn"
             type="button"
-            :disabled="busy || !canConfigure"
-            :title="item.tiles_available === false ? '瓦片数据已被清理，无法重激活' : '重新激活此底图'"
+            :disabled="busy || !canConfigure || item.reactivatable === false"
+            :title="item.reactivatable === false ? (item.reactivate_blocked_reason || '瓦片不完整，无法重激活') : '重新激活此底图'"
             @click="$emit('reactivate-basemap', item.id)"
           >重新激活</button>
         </article>
@@ -488,6 +493,10 @@ function formatFileSize(value) {
 .panel-title-row h3,
 .panel-title-row p {
   margin: 0;
+}
+
+.blocked-reason {
+  color: #9a4b1f;
 }
 
 .muted-text {

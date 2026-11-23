@@ -214,6 +214,7 @@ const {
   fetchTrendReport,
   exportTrendReport,
   mapManifest,
+  stopMatrixStateRefresh,
 } = useMineData(() => props.projectId);
 
 const loadInferenceImagery = async () => {
@@ -350,6 +351,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   resizeListener.detach();
+  // 清掉"变化矩阵待重算"的自动刷新定时器，卸载后不再发请求
+  stopMatrixStateRefresh();
 });
 
 defineExpose({

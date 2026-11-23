@@ -10,10 +10,12 @@ test('MapDashboard removes its window resize listener on unmount', () => {
     /onMounted\(async \(\) => \{[\s\S]*?resizeListener\.attach\(\);[\s\S]*?\}\);/,
     'MapDashboard must attach the shared resize listener in onMounted',
   );
+  // 2026-11-24：卸载清理多了一项——清掉"变化矩阵待重算"的自动刷新定时器。
+  // 断言相应收紧为两项都必须在 onUnmounted 里，而不是放宽成"里面有 detach 即可"
   assert.match(
     mapDashboardSource,
-    /onUnmounted\(\(\) => \{\s*resizeListener\.detach\(\);\s*\}\);/,
-    'MapDashboard must detach the resize listener in onUnmounted',
+    /onUnmounted\(\(\) => \{[\s\S]*?resizeListener\.detach\(\);[\s\S]*?stopMatrixStateRefresh\(\);[\s\S]*?\}\);/,
+    'MapDashboard must detach the resize listener and stop the matrix refresh timer in onUnmounted',
   );
   assert.doesNotMatch(
     mapDashboardSource,

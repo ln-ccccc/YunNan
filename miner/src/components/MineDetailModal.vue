@@ -32,6 +32,7 @@
           </div>
 
           <template v-if="selectedTab === 'Change Matrix'">
+            <p v-if="matrixState.note" class="matrix-state-note" :data-state="matrixState.state">{{ matrixState.note }}</p>
             <div v-if="changeMatrixData && changeMatrixData.has_change_matrix" class="matrix-container">
               <table class="confusion-matrix">
                 <thead>
@@ -212,6 +213,7 @@ import {
   buildOriginalImageryItems,
   buildRatioSeriesRows,
   buildTraceabilityYears,
+  changeMatrixStateNote,
   formatRatioClass,
 } from './mineDetailPresentation.js';
 
@@ -284,6 +286,9 @@ const matrixYearLabels = computed(() => buildMatrixYearLabels(props.changeMatrix
 const originalImageryItems = computed(() => buildOriginalImageryItems(props.originalImageryData));
 const traceabilityYears = computed(() => buildTraceabilityYears(props.traceabilityData));
 const ratioSeriesRows = computed(() => buildRatioSeriesRows(props.traceabilityData));
+// 变化矩阵相对当前有效成果的状态（2026-11-24）：重算中 / 有一期为空 / 无法计算时给出说明，
+// 不再"文件里是什么就显示什么"
+const matrixState = computed(() => changeMatrixStateNote(props.traceabilityData, props.changeMatrixData));
 
 const formatLabel = (label) => {
   if (!label) return '';
@@ -403,6 +408,17 @@ watch(() => [props.visible, props.selectedTab, props.indicesData], () => {
   margin-bottom: 10px;
   color: #8da3b6;
   font-size: 12px;
+}
+
+.matrix-state-note {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid rgba(229, 162, 74, 0.4);
+  border-radius: 8px;
+  background: rgba(229, 162, 74, 0.12);
+  color: #e5a24a;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .tabs { display: flex; gap: 10px; margin-bottom: 15px; }

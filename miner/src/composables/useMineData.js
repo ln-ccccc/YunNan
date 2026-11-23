@@ -153,6 +153,7 @@ export function useMineData(projectId) {
   const fetchIndices = async (fid) => {
     // 竞态门控：快速连续点击两座矿山时，后到的旧响应不得覆盖新矿山指标
     const seq = (fetchIndicesSeq = (fetchIndicesSeq || 0) + 1);
+    stopMatrixStateRefresh();
     try {
       const res = await axios.get(apiUrl(projectApiPath(`/mines/indices?fid=${encodeURIComponent(fid)}`)));
       if (seq !== fetchIndicesSeq) return;
@@ -209,7 +210,34 @@ export function useMineData(projectId) {
       if (seq !== fetchIndicesSeq) return;
       mineTraceability.value = { fid: Number(fid), years: [] };
     }
+    if (seq !== fetchIndicesSeq) return;
+    if (mineTraceability.value?.change_matrix_state === 'pending') scheduleMatrixStateRefresh(fid, seq);
   };
+
+  // 审校变化矩阵待重算时的自动刷新（2026-11-24）。保存修订后矩阵在后端后台重算，
+  // 溯源接口以 change_matrix_state=pending 如实报告；这里每 3 秒重取一次矩阵与溯源
+  // （单座矿山最多 8 次），变成现值或到达上限即停。切矿山（fetchIndices）、组件卸载
+  // （stopMatrixStateRefresh）都会清掉定时器，不留悬挂回调。
+  const MATRIX_PENDING_REFRESH_MS = 3000;
+  const MATRIX_PENDING_REFRESH_LIMIT = 8;
+  let matrixRefreshTimer = null;
+  let matrixRefreshAttempts = 0;
+  function stopMatrixStateRefresh() {
+    if (matrixRefreshTimer !== null) {
+      clearTimeout(matrixRefreshTimer);
+      matrixRefreshTimer = null;
+    }
+    matrixRefreshAttempts = 0;
+  }
+  function scheduleMatrixStateRefresh(fid, seq) {
+    if (matrixRefreshTimer !== null || matrixRefreshAttempts >= MATRIX_PENDING_REFRESH_LIMIT) return;
+    matrixRefreshTimer = setTimeout(() => {
+      matrixRefreshTimer = null;
+      if (seq !== fetchIndicesSeq) return;
+      matrixRefreshAttempts += 1;
+      fetchChangeMatrix(fid, seq);
+    }, MATRIX_PENDING_REFRESH_MS);
+  }
 
   // 地物分类原始影像（溯源）：与变化矩阵同竞态门控，列表轻量随详情一并拉取
   const fetchOriginalImagery = async (fid, seq = fetchIndicesSeq) => {
@@ -379,6 +407,7 @@ export function useMineData(projectId) {
     exportTrendReport,
     formatMaybeNumber,
     formatTrend,
-    getTrendClass
+    getTrendClass,
+    stopMatrixStateRefresh
   };
 }
