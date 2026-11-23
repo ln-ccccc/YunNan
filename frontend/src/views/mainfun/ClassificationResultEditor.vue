@@ -114,6 +114,7 @@ import { LngLatBounds, Map, NavigationControl } from 'maplibre-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import union from '@turf/union';
 import simplify from '@turf/simplify';
+import booleanWithin from '@turf/boolean-within';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 
@@ -415,6 +416,38 @@ export default {
           styles: drawStyles(),
         });
         this.map.addControl(this.draw, 'top-right');
+        // direct_select 下未点选顶点时删除按钮是无操作（mapbox-gl-draw 1.5 行为，
+        // 2026-11 验收遗留）：点击无效果且无提示，用户以为删除坏了。捕获点击给引导。
+        // 注意必须挂容器捕获阶段：draw 控件自身的按钮 click 监听会拦截同元素上
+        // 后注册的监听（浏览器实测 click 探针不触发），按钮上 addEventListener 是死代码
+        this.map.getContainer().addEventListener(
+          'click',
+          (e) => {
+            if (!(e.target instanceof Element) || !e.target.closest('.mapbox-gl-draw_trash')) return;
+            if (!this.draw || this.draw.getMode() !== 'direct_select') return;
+            const selectedPoints = this.draw.getSelectedPoints?.();
+            if (selectedPoints && selectedPoints.features && selectedPoints.features.length) return;
+            this.$message.info(
+              '当前处于顶点编辑模式：请先点击选中某个顶点，删除按钮才会移除该顶点；要删除整个面，请按 Esc 退出顶点编辑后单击选中面再删除',
+            );
+          },
+          true,
+        );
+        // ROI 边界叠加（2026-11-13 风险复盘）：此前绘制越界只能等保存 422 才
+        // 暴露，现把矿山边界画在画布上并在绘制/拖顶点时即时提示
+        const roiGeometry = this.result?.roi_geometry;
+        this.map.addSource('result-roi', {
+          type: 'geojson',
+          data: roiGeometry
+            ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: roiGeometry }] }
+            : emptyFeatureCollection(),
+        });
+        this.map.addLayer({
+          id: 'result-roi-outline',
+          type: 'line',
+          source: 'result-roi',
+          paint: { 'line-color': '#f43f5e', 'line-width': 1.5, 'line-dasharray': [3, 2] },
+        });
         this.resetDrawing();
         this.map.on('draw.create', this.handleDrawCreate);
         this.map.on('draw.update', this.handleDrawUpdate);
@@ -523,10 +556,30 @@ export default {
         this.draw.setFeatureProperty(feature.id, 'feature_id', createClientFeatureId());
       });
       this.recordMutation('create');
+      this.warnFeaturesOutsideRoi(event.features);
     },
     handleDrawUpdate() {
       if (this.suppressDrawEvents) return;
       this.recordMutation('vertex');
+      this.warnFeaturesOutsideRoi(event.features, '，请调整顶点位置');
+    },
+    roiContainsGeometry(geometry) {
+      const roi = this.result?.roi_geometry;
+      if (!roi || !geometry) return true;
+      try {
+        return booleanWithin(geometry, roi);
+      } catch (_) {
+        // 提示判定异常时不拦截绘制；保存时后端校验仍是唯一防线
+        return true;
+      }
+    },
+    warnFeaturesOutsideRoi(features, actionHint) {
+      if (!Array.isArray(features) || !features.length) return;
+      const outside = features.filter((feature) => !this.roiContainsGeometry(feature.geometry));
+      if (!outside.length) return;
+      this.$message.warning(
+        `${outside.length} 个面超出成果 ROI（矿山边界），保存时将被拒绝${actionHint || '，请拖回界内或删除'}`,
+      );
     },
     handleDrawDelete() {
       if (this.suppressDrawEvents) return;
