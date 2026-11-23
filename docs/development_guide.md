@@ -149,7 +149,33 @@ Response 至少包含：
 - `class_trends.selected_class`
 - `tables.selected_class_rows`
 
-趋势统计必须来自真实 `class_ratio_percent.json` 等结果文件；无数据时返回空表和覆盖率信息，不伪造全 0 趋势。
+趋势统计必须来自真实 `class_ratio_percent.json` 等结果文件；无数据时返回空表和覆盖率信息，不伪造全 0 趋势。地类面积的口径（2026-11-24）：未修订年份 = 推理占比 × 矿山面积；人工修订过的年份 = 图斑绝对面积（占比的分母是"已绘图斑"，不能拿它乘整矿面积）。
+
+### 分类成果派生统计（2026-11-24 按派生数据性质重构）
+
+- 「同矿山同年哪条成果有效」只有一条规则（`classification_stats.select_effective_result_refs`）：同年取 id 最大者，`vector_failed` 的成果在同一年存在非 failed 兄弟时让位。溯源、变化矩阵、趋势、补算全部共用，不得另写一份。
+- 逐修订的地类占比/面积：保存修订时写出 `projects/{project_id}/outputs/classification-results/{result_id}/revisions/{revision_no}.stats.json`（`percent`、`area_m2`、`feature_count`，带 `result_id`/`revision_no`）。文件不可变、按（成果, 版本号）寻址；缺失时读端按当前矢量现算同一个纯函数。`class_ratio_percent.json` 只属于推理发布，任何保存都不再改写它——旧文件里残留的 `revised` 块不再被任何读端采信。
+- 变化矩阵：`outputs/change_matrix/{fid}.json` 是整矿派生缓存，另有一份重算回执 `.{fid}.rebuild.json`（记录针对哪组有效成果、结果如何、矩阵内容摘要）。重算不在保存请求里同步等待（进程内后台队列，幂等）；重算期间若又有新修订落地，本次结果丢弃重算。
+- `GET /api/projects/{project_id}/mines/{fid}/traceability`：
+  - `years[].class_ratio_percent`：修订年份取自修订统计（`class_ratio_area_source=vector_shoelace`），未修订年份取推理占比（`inference_mask`）；人工清空的年份为全 0。
+  - `ratio_series.area_source`：序列里两种口径混有时为 `mixed`。
+  - `change_matrix_state`：`revised`（已按人工修订重算）/ `inference`（矩阵涉及的年份没有人工修订，推理矩阵即正确口径）/ `revised_empty`（有一期图斑为空，无转移数据）/ `unavailable`（不足两期、缺 label 等）/ `pending`（待重算；本次读取会补一次重算请求，稍后刷新即可）。`change_matrix_note` 是给用户看的说明。
+- 保存一条已被更新成果取代的历史成果，只改变该成果自己的修订与统计，不影响任何按矿山聚合的视图（溯源、矩阵、趋势只认有效成果）。
+- 历史数据补齐：`python backfill_class_ratio_revised.py`（幂等；只补 sidecar 与重算矩阵，不改业务数据）。新保存会自动完成这两件事，平时不需要跑。
+
+### 底图重新激活（2026-11-24）
+
+- 切片被取消的资源落 `failed`（原因写明"瓦片不完整，可重新提交断点续切"），不再标成 `retained`，因此不会出现在历史底图列表里。
+- `GET /api/projects/{project_id}/spatial/basemaps/retained` 每条附 `reactivable` 与 `reactivate_blocked_reason`。
+- `POST /api/projects/{project_id}/spatial/basemaps/{resource_id}/reactivate` 只接受同时满足三条件的底图：状态为 `retained`、最近一次切片任务 `succeeded`、声明的每个缩放级别都有瓦片；否则 `400` 并说明原因。归档项目 `400`。
+- `.active` 标记切换顺序与切片 worker 一致：写新标记 → 提交数据库 → 成功后才删旧标记（提交失败时旧标记不动）。
+
+### 导出（2026-11-24）
+
+- 同项目同格式已有一条仍在生成的 `pending` 导出时，`POST /api/projects/{project_id}/exports` 返回 `422`（"…导出正在生成中，请稍后在导出列表查看并下载，不要重复提交"）。
+- 后端单次台账生成的时间预算为 4 分钟（`EXPORT_TIME_BUDGET_SECONDS`），超时把记录落 `failed` 并清理目录；Miner BFF 对创建导出的出站超时为 10 分钟。后端一定先于链路上任何一跳给出明确结果。
+- `manifest.json`：`xlsx` 台账附 `classification_results`（台账实际读取的每条成果的 `result_id`、`revision_no`、`vector_status`、`mine_resource_version`）；`geojson/shp/dxf` 附 `mine_vector`（构成几何的矿山边界资源版本）。
+- Miner BFF：路由参数校验失败一律 `400`（此前兜成 `502`），且不向上游发请求。
 
 ### 项目工作台存储迁移
 

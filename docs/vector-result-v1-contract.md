@@ -207,6 +207,8 @@ API 测试必须分别覆盖：超过 10 MiB、超过 2,000 个要素、单要�
 - 不把成果编辑器放入 Miner；本轮由 GeoView 消费受鉴权成果与地图接口。
 - 不新增 KML/Shapefile 批量导出、任意底图文件直链或公开瓦片访问契约；v1 仅保证服务端生成当前 GeoJSON 及受控 PNG 瓦片读取。
 - 不把现有 Miner `/tiles/projects/...` 旧路由改造成受控瓦片接口；本轮 GeoView 仅使用新 `api_tile_url`，旧 `tile_url` 不构成安全或兼容承诺。
+- 编辑器的「导出草稿 GeoJSON」（2026-11-24）是纯客户端行为，不是服务端契约：存在未保存修改时，把当前画布下载为 `classification-result-{result_id}-draft-v{revision_no}-unsaved.geojson`，不经过服务端、不落库，要素可能带 `client-` 临时 ID。任何入库、导出或统计流程不得以草稿文件为输入；服务端导出仍只针对已保存的当前版本。
+- 保存返回 `422` 时，`details.feature_index`（提交 FeatureCollection 的 0 起下标）供编辑器在地图上选中并定位出错的要素；该下标只对当次提交有效。
 
 ## 9. 任务 0 开发环境记录
 
