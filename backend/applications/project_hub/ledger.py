@@ -3,9 +3,12 @@
 import datetime
 import io
 import json
+import os
+import time
 
 from openpyxl import Workbook
 from sqlalchemy import bindparam, text
+from sqlalchemy.orm import load_only
 
 from applications.extensions import db
 from applications.models.classification_result import ClassificationResult
@@ -93,12 +96,117 @@ def _iter_class_counts(feature_collection_json):
         yield properties.get("class_code"), properties.get("class_name")
 
 
-def build_project_ledger_workbook(project):
-    results = (
+# 台账单次生成的时间预算（秒）。后端必须在链路上任何一跳放弃之前给出明确结果并清理
+# 半成品，才不会出现"前端已看到失败、后端仍在生成并最终落一条 completed 记录、用户
+# 重试又建一份"（2026-11-24 审计 D1）。取 4 分钟：短于 Node 默认的请求超时
+# （requestTimeout 5 分钟，BFF 与静态站代理都没显式改）与 BFF 的 10 分钟；
+# 服务端抽取类别码后项目 10 的台账是秒级，正常永远碰不到它
+LEDGER_TIME_BUDGET_SECONDS = int(os.getenv("EXPORT_TIME_BUDGET_SECONDS", "240"))
+
+
+class LedgerBudgetExceeded(RuntimeError):
+    """台账生成超出时间预算——调用方据此把导出记录落为 failed 并清理目录。"""
+
+
+def collect_project_results(project):
+    """台账数据快照：工作簿内容与导出 manifest 来源共用同一次查询，避免内容与
+    清单分别读取后口径漂移（2026-11-14 审查问题31，自 main 移植）。
+
+    只取台账与 manifest 用得上的九个标量列（load_only）。矢量 JSON 不在这里取：
+    项目 10 的 2979 条成果 current+auto 矢量合计 1.43GB，台账只需要每个图斑的
+    类别码——由 _prefetch_class_counts 在数据库侧抽取。台账与 _ledger_result_sources
+    访问的列必须都在此列表内，否则 deferred 列会退化成逐行查询。
+    """
+    return (
         ClassificationResult.query.filter_by(project_id=project.id)
+        .options(
+            load_only(
+                ClassificationResult.id,
+                ClassificationResult.mine_fid,
+                ClassificationResult.year,
+                ClassificationResult.vector_status,
+                ClassificationResult.model_id,
+                ClassificationResult.inference_job_id,
+                ClassificationResult.create_time,
+                ClassificationResult.current_revision_no,
+                ClassificationResult.mine_resource_version,
+            )
+        )
         .order_by(ClassificationResult.mine_fid.asc(), ClassificationResult.year.asc())
         .all()
     )
+
+
+def _tally(counts, result_id, pairs):
+    tally = counts.setdefault(result_id, {})
+    for key in pairs:
+        tally[key] = tally.get(key, 0) + 1
+
+
+def _pairs_from_arrays(codes_json, names_json):
+    """把 JSON_EXTRACT 取回的两个数组配对成 (class_code, class_name)；对不齐返回 None。"""
+    try:
+        codes = json.loads(codes_json) if isinstance(codes_json, (str, bytes)) else codes_json
+        names = json.loads(names_json) if isinstance(names_json, (str, bytes)) else names_json
+    except (TypeError, ValueError):
+        return None
+    if codes is None and names is None:
+        return []
+    if not isinstance(codes, list) or not isinstance(names, list) or len(codes) != len(names):
+        return None
+    return list(zip(codes, names))
+
+
+def _prefetch_class_counts(project_id):
+    """逐成果的地类图斑计数：{result_id: {(class_code, class_name): count}}（按首次出现排序）。
+
+    这是台账 55 秒的真正来源：逐成果地类计数只需要每个图斑的类别码/名称，此前却把
+    成果整行（含三个 MEDIUMTEXT 矢量大字段）全部拉回应用侧再解析——项目 10 实测
+    2979 条成果共 1.43GB，而数据库侧抽取后的全部结果只有几 MB。
+    MySQL 走服务端 JSON_EXTRACT（通配路径返回数组；单要素也是数组、空数组为 NULL）；
+    个别行两个数组长度不一致（要素缺 class_name）时只对这一行回退到应用侧解析。
+    SQLite（测试环境）不支持该通配路径，整体回退为只取所需列后在应用侧解析。
+    """
+    counts = {}
+    fallback_ids = []
+    if db.engine.dialect.name == "mysql":
+        stmt = text(
+            "SELECT id, "
+            "JSON_EXTRACT(current_feature_collection_json, '$.features[*].properties.class_code') AS codes, "
+            "JSON_EXTRACT(current_feature_collection_json, '$.features[*].properties.class_name') AS names "
+            "FROM classification_results "
+            "WHERE project_id = :project_id AND JSON_VALID(current_feature_collection_json)"
+        ).bindparams(bindparam("project_id"))
+        for result_id, codes_json, names_json in db.session.execute(stmt, {"project_id": project_id}).fetchall():
+            pairs = _pairs_from_arrays(codes_json, names_json)
+            if pairs is None:
+                fallback_ids.append(result_id)
+                continue
+            _tally(counts, result_id, pairs)
+        if not fallback_ids:
+            return counts
+    else:
+        fallback_ids = [
+            row_id for (row_id,) in db.session.query(ClassificationResult.id).filter_by(
+                project_id=project_id
+            ).all()
+        ]
+    rows = (
+        db.session.query(ClassificationResult.id, ClassificationResult.current_feature_collection_json)
+        .filter(ClassificationResult.id.in_(fallback_ids))
+        .all()
+        if fallback_ids
+        else []
+    )
+    for result_id, collection_json in rows:
+        _tally(counts, result_id, _iter_class_counts(collection_json))
+    return counts
+
+
+def build_project_ledger_workbook(project, results=None, class_counts=None):
+    if results is None:
+        results = collect_project_results(project)
+    started = time.monotonic()
 
     workbook = Workbook()
     sheet = workbook.active
@@ -109,7 +217,13 @@ def build_project_ledger_workbook(project):
     class_sheet.append(["成果ID", "矿山FID", "年份", "类别代码", "类别名称", "图斑数量"])
 
     timings_cache = _prefetch_job_timings([result.inference_job_id for result in results])
-    for result in results:
+    if class_counts is None:
+        class_counts = _prefetch_class_counts(project.id)
+    for index, result in enumerate(results):
+        if index % 200 == 0 and time.monotonic() - started > LEDGER_TIME_BUDGET_SECONDS:
+            raise LedgerBudgetExceeded(
+                f"台账生成超过 {LEDGER_TIME_BUDGET_SECONDS}s 时间预算（已处理 {index}/{len(results)} 条成果）"
+            )
         inference_seconds, total_seconds = _job_timings(result.inference_job_id, timings_cache)
         sheet.append([
             result.id,
@@ -122,17 +236,8 @@ def build_project_ledger_workbook(project):
             inference_seconds,
             total_seconds,
         ])
-        counts = {}
-        order = []
-        for class_code, class_name in _iter_class_counts(result.current_feature_collection_json):
-            key = (class_code, class_name)
-            if key not in counts:
-                counts[key] = 0
-                order.append(key)
-            counts[key] += 1
-        for key in order:
-            class_code, class_name = key
-            class_sheet.append([result.id, result.mine_fid, result.year, class_code, class_name, counts[key]])
+        for (class_code, class_name), count in class_counts.get(result.id, {}).items():
+            class_sheet.append([result.id, result.mine_fid, result.year, class_code, class_name, count])
 
     stream = io.BytesIO()
     workbook.save(stream)

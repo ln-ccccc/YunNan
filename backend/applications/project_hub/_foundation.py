@@ -129,10 +129,10 @@ def _validate_incoming_tiff_storage_key(value):
         raise ProjectStorageValidationError("storage_key 指向的文件不存在")
     return source_path.relative_to(storage_root).as_posix(), source_format
 
-def _write_xlsx(path, project, project_id=None, record_id=None):
+def _write_xlsx(path, project, results=None, project_id=None, record_id=None):
     from applications.project_hub.ledger import build_project_ledger_workbook
 
-    path.write_bytes(build_project_ledger_workbook(project).read())
+    path.write_bytes(build_project_ledger_workbook(project, results).read())
 
 def _storage_key(*parts):
     return Path(*parts).as_posix()
@@ -165,6 +165,17 @@ def _get_project_or_404(project_id):
     if not project:
         raise ProjectNotFoundError(f"项目不存在: {project_id}")
     return project
+
+def _lock_project_row(project_id):
+    """SELECT ... FOR UPDATE 锁定项目行，删除、任务创建与统计发布共享同一行锁序列化
+    （MySQL InnoDB 真互斥；SQLite 忽略 FOR UPDATE，由测试接缝覆盖逻辑）。
+    项目不存在时返回 None——调用方自行决定 404 或拒绝。"""
+    return (
+        db.session.query(Project.id)
+        .filter_by(id=project_id, deleted_at=None)
+        .with_for_update()
+        .first()
+    )
 
 def record_inference_failure(project_id, payload=None, actor="system"):
     """推理任务失败的审计事件（推理 worker 失败路径经此公共服务函数写入，
