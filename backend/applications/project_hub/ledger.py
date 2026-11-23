@@ -26,10 +26,28 @@ VECTOR_STATUS_LABELS = {
 LEDGER_EXTRACT_WORKERS = max(1, int(os.getenv("LEDGER_EXTRACT_WORKERS", "4")))
 # MySQL "Invalid JSON text"：快路径不预先做全文校验，真遇到非法文本再退回带校验的慢路径
 _MYSQL_INVALID_JSON_ERROR = 3141
+# MySQL "Query execution was interrupted, maximum statement execution time exceeded"
+_MYSQL_STATEMENT_TIMEOUT_ERROR = 3024
+
+
+def _mysql_budget_hint(deadline):
+    """把剩余时间预算变成 MySQL 优化器提示 MAX_EXECUTION_TIME(ms)，由数据库自己中断超时的抽取。
+
+    没有它，时间预算只能在写表循环里检查——而台账的耗时几乎全在两条大 JSON 抽取上，
+    数据库一旦极慢，后端会超过 BFF 出站请求的实际上限(undici 默认 5 分钟)，
+    变成"前端已放弃、后端还在跑"。返回的提示串必须紧跟 SELECT 关键字。"""
+    remaining_ms = int((deadline - time.monotonic()) * 1000)
+    if remaining_ms <= 0:
+        raise LedgerBudgetExceeded("台账生成时间预算已用尽，导出已中止")
+    return f"/*+ MAX_EXECUTION_TIME({max(1, remaining_ms)}) */"
+
+
+def _error_code(error):
+    return getattr(getattr(error, "orig", None), "args", (None,))[0]
 
 
 def _is_invalid_json_error(error):
-    return getattr(getattr(error, "orig", None), "args", (None,))[0] == _MYSQL_INVALID_JSON_ERROR
+    return _error_code(error) == _MYSQL_INVALID_JSON_ERROR
 
 
 def _fetch_rows(engine, statement, params):
@@ -80,10 +98,15 @@ def _query_in_shards(engine, build_query, ids):
 def _extract_with_json_fallback(engine, build_query, ids):
     """快路径抽取；只有 MySQL 报"非法 JSON 文本"(3141)时才退回带 JSON_VALID 的慢路径。
 
-    build_query(shard, guarded) 返回 (statement, params)。其余异常原样抛出。"""
+    build_query(shard, guarded) 返回 (statement, params)。语句超出时间预算被数据库中断
+    (3024)时转成 LedgerBudgetExceeded；其余异常原样抛出。"""
     try:
         return _query_in_shards(engine, lambda shard: build_query(shard, False), ids)
-    except Exception as error:  # noqa: BLE001 - 仅非法 JSON 文本回退，其余照常抛出
+    except Exception as error:  # noqa: BLE001 - 仅两类可识别错误转换，其余照常抛出
+        if _error_code(error) == _MYSQL_STATEMENT_TIMEOUT_ERROR:
+            raise LedgerBudgetExceeded(
+                "台账生成超过时间预算，数据库查询已被中止，本次导出未生成"
+            ) from error
         if not _is_invalid_json_error(error):
             raise
         return _query_in_shards(engine, lambda shard: build_query(shard, True), ids)
@@ -124,8 +147,11 @@ def _timings_from_extracted(extracted):
     return inference, total
 
 
-def _prefetch_job_timings(job_ids):
+def _prefetch_job_timings(job_ids, deadline=None):
     """批量预取推理计时：{job_id: (推理秒数, 总秒数)}，缺失为 None。
+
+    deadline(time.monotonic 口径)给出时，MySQL 语句带剩余预算的执行时限，超时抛
+    LedgerBudgetExceeded(见 _mysql_budget_hint)。
 
     result_json 单条均值 2.4MB、项目 10 关联 585 个任务共 1.42GB——逐任务 Query.get 是
     GB 级传输（曾实测 389 秒）。此前改成服务端抽取后仍要 38 秒：WHERE 里的 JSON_VALID
@@ -156,8 +182,9 @@ def _prefetch_job_timings(job_ids):
 
     def build_query(shard, guarded):
         guard = "AND JSON_VALID(result_json)" if guarded else ""
+        hint = _mysql_budget_hint(deadline) if deadline is not None else ""
         statement = text(
-            "SELECT id, JSON_EXTRACT(result_json, '$.stage_durations', '$.total_seconds') "
+            f"SELECT {hint} id, JSON_EXTRACT(result_json, '$.stage_durations', '$.total_seconds') "
             "FROM inference_jobs WHERE id IN :ids AND result_json IS NOT NULL " + guard
         ).bindparams(bindparam("ids", expanding=True))
         return statement, {"ids": shard}
@@ -282,8 +309,10 @@ def _pairs_from_codes(codes):
     return [(code, _class_name_of(code)) for code in values]
 
 
-def _prefetch_class_counts(project_id):
+def _prefetch_class_counts(project_id, deadline=None):
     """逐成果的地类图斑计数：{result_id: {(class_code, class_name): count}}（按首次出现排序）。
+
+    deadline 语义同 _prefetch_job_timings。
 
     台账慢的真正来源：逐成果计数只需要每个图斑的类别码，此前却把成果整行（含矢量
     MEDIUMTEXT）拉回应用侧解析；改成数据库侧抽取后仍要 14 秒，因为校验加两次抽取把
@@ -310,8 +339,10 @@ def _prefetch_class_counts(project_id):
 
     def build_query(shard, guarded):
         guard = "AND JSON_VALID(current_feature_collection_json)" if guarded else ""
+        hint = _mysql_budget_hint(deadline) if deadline is not None else ""
         statement = text(
-            "SELECT id, JSON_EXTRACT(current_feature_collection_json, '$.features[*].properties.class_code') "
+            f"SELECT {hint} id, "
+            "JSON_EXTRACT(current_feature_collection_json, '$.features[*].properties.class_code') "
             "FROM classification_results WHERE id IN :ids " + guard
         ).bindparams(bindparam("ids", expanding=True))
         return statement, {"ids": shard}
@@ -336,11 +367,13 @@ def build_project_ledger_workbook(project, results=None, class_counts=None):
     class_sheet = workbook.create_sheet("地类图斑统计")
     class_sheet.append(["成果ID", "矿山FID", "年份", "类别代码", "类别名称", "图斑数量"])
 
-    timings_cache = _prefetch_job_timings([result.inference_job_id for result in results])
+    # 时间预算对两个阶段都生效：两条大 JSON 抽取由数据库按剩余时限自行中断，写表循环逐段检查
+    deadline = started + LEDGER_TIME_BUDGET_SECONDS
+    timings_cache = _prefetch_job_timings([result.inference_job_id for result in results], deadline=deadline)
     if class_counts is None:
-        class_counts = _prefetch_class_counts(project.id)
+        class_counts = _prefetch_class_counts(project.id, deadline=deadline)
     for index, result in enumerate(results):
-        if index % 200 == 0 and time.monotonic() - started > LEDGER_TIME_BUDGET_SECONDS:
+        if index % 200 == 0 and time.monotonic() > deadline:
             raise LedgerBudgetExceeded(
                 f"台账生成超过 {LEDGER_TIME_BUDGET_SECONDS}s 时间预算（已处理 {index}/{len(results)} 条成果）"
             )

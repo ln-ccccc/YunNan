@@ -10,8 +10,10 @@ MySQL 侧的并行抽取无法在 SQLite 测试环境里执行，生产库上的
 """
 import json
 import os
+import re
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -93,6 +95,38 @@ class QueryInShardsTests(unittest.TestCase):
             self.assertEqual(ledger._query_in_shards(object(), lambda shard: ("sql", {"ids": shard}), ["a"]), [("a",)])
             self.assertEqual(ledger._query_in_shards(object(), lambda shard: ("sql", {"ids": shard}), []), [])
         self.assertEqual(calls, [["a"]])
+
+
+class BudgetHintTests(unittest.TestCase):
+    def test_hint_carries_the_remaining_budget_right_after_select(self):
+        hint = ledger._mysql_budget_hint(time.monotonic() + 30)
+        self.assertRegex(hint, r"^/\*\+ MAX_EXECUTION_TIME\(\d+\) \*/$")
+        milliseconds = int(re.search(r"\((\d+)\)", hint).group(1))
+        self.assertTrue(25000 <= milliseconds <= 30000)
+
+    def test_expired_budget_raises_instead_of_querying(self):
+        with self.assertRaises(ledger.LedgerBudgetExceeded):
+            ledger._mysql_budget_hint(time.monotonic() - 1)
+
+
+class StatementTimeoutTests(unittest.TestCase):
+    @staticmethod
+    def _error(code):
+        error = RuntimeError("statement failed")
+        error.orig = type("Orig", (), {"args": (code, "...")})()
+        return error
+
+    def test_database_statement_timeout_becomes_budget_exceeded_without_retry(self):
+        attempts = []
+
+        def fake_shards(engine, build_query, ids):
+            attempts.append(1)
+            raise StatementTimeoutTests._error(3024)
+
+        with patch.object(ledger, "_query_in_shards", fake_shards):
+            with self.assertRaises(ledger.LedgerBudgetExceeded):
+                ledger._extract_with_json_fallback(object(), lambda shard, guarded: ("sql", {}), ["x"])
+        self.assertEqual(len(attempts), 1, "超时不应再退回更慢的带校验路径")
 
 
 class InvalidJsonFallbackTests(unittest.TestCase):
@@ -193,6 +227,33 @@ class SqliteFallbackPathTests(unittest.TestCase):
         self.assertNotIn(broken.id, timings)
         self.assertEqual(ledger._job_timings(broken.id, timings), (None, None))
         self.assertEqual(len(timings), 2)  # 重复传入的 id 只算一次
+
+    def test_mysql_statements_carry_the_budget_hint(self):
+        """MySQL 路径的语句必须把剩余预算下推给数据库(SQLite 路径不带提示)。"""
+        project = Project(name="预算提示", region="昆明")
+        db.session.add(project)
+        db.session.flush()
+        db.session.add(ClassificationResult(
+            project_id=project.id, mine_fid=1, year=2024, inference_job_id="j1", model_id="m",
+            mine_resource_id=1, current_feature_collection_json=_fc(0, 1), auto_feature_collection_json=_fc(0),
+            current_revision_no=0, feature_count=2, vector_status="ready",
+        ))
+        db.session.commit()
+        with self.app.app_context():
+            captured = []
+
+            def fake_shards(engine, build_query, ids):
+                captured.append(build_query(["x"]))  # 回退封装后只收切片参数
+                return [(ClassificationResult.query.one().id, "[0, 1]")]  # MySQL 驱动回传整数主键
+
+            dialect = db.engine.dialect  # name 是方言实例上的属性, 补丁要打在实例上
+            with patch.object(ledger, "_query_in_shards", fake_shards), patch.object(dialect, "name", "mysql"):
+                counts = ledger._prefetch_class_counts(project.id, deadline=time.monotonic() + 60)
+            self.assertEqual(captured and captured[0][0] is not None, True)
+            sql = str(captured[0][0])
+            self.assertTrue(sql.startswith("SELECT /*+ MAX_EXECUTION_TIME("), sql[:60])
+            result_id = ClassificationResult.query.one().id
+            self.assertEqual(counts, {result_id: {(0, "grassland"): 1, (1, "forest"): 1}})
 
 
 if __name__ == "__main__":
