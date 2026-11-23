@@ -352,7 +352,12 @@ def create_export(project_id, payload, actor="system"):
     # 同项目同格式去重（2026-11-24 审计 D1）：导出在请求内同步生成，上一份还没
     # 生成完就再提交，会建出两条内容相同的记录（用户看到超时提示后重试即触发）。
     # 锁项目行把"查重 + 写 pending 记录"串行化；只认预算窗口内的 pending——更早的
-    # pending 是后端中途崩溃留下的孤儿，不该永久堵住该项目该格式的导出
+    # pending 是后端中途崩溃留下的孤儿，不该永久堵住该项目该格式的导出。
+    #
+    # 查重必须是锁定读（with_for_update）：MySQL 可重复读下，本请求在鉴权、取项目等
+    # 首批普通查询时就建立了一致性快照；等到项目行锁再执行普通 SELECT，读到的仍是
+    # 加锁前的旧快照，看不见对方刚提交的 pending 记录——生产实测两个并发导出都返回
+    # 200、多建一条。锁定读总是返回最新已提交版本。SQLite 忽略 FOR UPDATE（无快照隔离）
     _lock_project_row(project.id)
     running = (
         ProjectExportRecord.query.filter_by(
@@ -361,6 +366,7 @@ def create_export(project_id, payload, actor="system"):
             status="pending",
         )
         .order_by(ProjectExportRecord.id.desc())
+        .with_for_update()
         .first()
     )
     if running is not None and _within_export_budget_window(running.create_time):
