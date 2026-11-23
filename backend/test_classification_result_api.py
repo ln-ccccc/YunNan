@@ -258,6 +258,10 @@ class TestClassificationResultAPI(unittest.TestCase):
         self.assertEqual([item["class_code"] for item in data["classes"]], [0, 1, 2, 3, 4, 5])
         self.assertEqual(data["current_revision_no"], 0)
         self.assertEqual(len(data["auto_feature_collection"]["features"]), 1)
+        # 编辑器绘制时越 ROI 即时提示依赖此字段（2026-11-13）：只读几何下发
+        roi = data["roi_geometry"]
+        self.assertIn(roi["type"], ("Polygon", "MultiPolygon"))
+        self.assertTrue(roi["coordinates"])
         self.assertEqual(
             data["map_manifest"]["api_tile_url"],
             f"/api/projects/{self.project_id}/map-resources/{self.basemap_resource.id}/tiles/{{z}}/{{x}}/{{y}}.png",

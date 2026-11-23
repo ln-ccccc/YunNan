@@ -68,6 +68,7 @@ from applications.project_hub._foundation import (
     _storage_key,
     _utc_timestamp,
     _validate_incoming_tiff_storage_key,
+    dataset_ids_referenced_by_inference_jobs,
     _write_artifact_atomic,
     _write_xlsx,
     record_inference_failure,
@@ -254,15 +255,35 @@ def create_dataset(project_id, payload, actor="system"):
     if not display_name:
         raise ValueError("数据集名称不能为空")
     storage_key, source_format = _validate_incoming_tiff_storage_key(payload.get("storage_key"))
+    mine_fid = payload.get("mine_fid")
+    year_start = payload.get("year_start")
+    year_end = payload.get("year_end")
+    # 登记幂等（2026-11-13 风险复盘）：验收实测脚本重跑同一 storage_key 会重复
+    # 建记录且无删除接口。同键（含矿山/年份维度）重复登记直接返回既有记录。
+    existing = ProjectDataset.query.filter_by(
+        project_id=project.id,
+        dataset_kind=dataset_kind,
+        file_path=storage_key,
+        mine_fid=mine_fid,
+        year_start=year_start,
+        year_end=year_end,
+    ).first()
+    if existing is not None:
+        return {
+            "id": existing.id,
+            "asset_id": f"imagery:{existing.id}",
+            "status": "registered",
+            "already_registered": True,
+        }
     dataset = ProjectDataset(
         project_id=project.id,
         dataset_kind=dataset_kind,
         display_name=display_name,
         file_path=storage_key,
         source_format=source_format,
-        mine_fid=payload.get("mine_fid"),
-        year_start=payload.get("year_start"),
-        year_end=payload.get("year_end"),
+        mine_fid=mine_fid,
+        year_start=year_start,
+        year_end=year_end,
         slice_config_json=_json_dump(payload.get("slice_config_json")),
     )
     db.session.add(dataset)
@@ -286,6 +307,51 @@ def create_dataset(project_id, payload, actor="system"):
         "asset_id": f"imagery:{dataset.id}",
         "status": "registered",
     }
+
+
+class DatasetDeleteNotAllowed(ValueError):
+    """数据集被引用或非影像登记，不可经此接口删除——携带 409 语义。"""
+
+
+def delete_dataset(project_id, dataset_id, actor="system"):
+    """删除影像登记（2026-11 验收遗留：重复/误登记此前无删除通道）。
+
+    - 仅 imagery 登记可删：classification_dir 行是推理成果的注册形态，
+      生命周期归成果/版本模块管，不经数据集通道删；
+    - 被 InferenceJob 引用（任意状态）的影像拒绝删除——任务复现与重试
+      依赖原始输入；
+    - 只删登记，不动物理文件：incoming 原始影像可能被多条登记（不同
+      年份/矿山维度）共享，登记行不拥有文件所有权，文件清理归存储
+      生命周期统一处理。
+    """
+    project = _get_project_or_404(project_id)
+    dataset = ProjectDataset.query.filter_by(
+        id=dataset_id, project_id=project.id
+    ).first()
+    if dataset is None:
+        raise ValueError("数据集不存在或不属于该项目")
+    if dataset.dataset_kind != "imagery":
+        raise DatasetDeleteNotAllowed(
+            "仅支持删除影像登记记录；分类成果目录请在成果模块中处理"
+        )
+    # 引用判定只取任务载荷两列（勿退回整实体加载，原因见 helper 注释）
+    if dataset.id in dataset_ids_referenced_by_inference_jobs():
+        raise DatasetDeleteNotAllowed(
+            "该影像已被推理任务引用，不能删除（任务复现与重试依赖原始输入）"
+        )
+    db.session.delete(dataset)
+    _append_activity(
+        project.id,
+        "dataset_deleted",
+        {
+            "dataset_id": dataset.id,
+            "display_name": dataset.display_name,
+        },
+        actor=actor,
+        target={"type": "dataset", "id": str(dataset.id)},
+    )
+    db.session.commit()
+    return {"id": dataset.id, "deleted": True}
 
 
 def get_project_detail(project_id):
@@ -454,6 +520,65 @@ def delete_project(project_id, actor="system"):
         "deleted": True,
         "trash_target": trash_target.name if trash_target else None,
     }
+
+
+class ProjectUndeleteNotAllowed(ValueError):
+    """已删项目不可恢复（未删除/目录冲突/回收站无目录）——携带 409 语义。"""
+
+
+def undelete_project(project_id, actor="system"):
+    """恢复已删除项目（delete_project 的受控逆操作，2026-11 验收遗留：
+    此前 trash 恢复只能人工移目录+改库）。
+
+    - 仅软删（deleted_at 置位）项目可恢复；
+    - 目录从 trash/<id>_<时间戳>_<hex>/ 最新一次移回 projects/<id>/；
+    - 先移目录再提交 DB；提交失败把目录移回 trash，保持删除态一致
+      （与 delete_project 的回滚方向对称）；
+    - 恢复后生命周期仍为 archived（删除前置条件），需再归档恢复/激活由上层决定。
+    - 与 restore_project（归档→active）是两条不同生命周期通道，勿混用。
+    """
+    project = Project.query.filter_by(id=project_id).first()
+    if project is None:
+        raise ValueError("项目不存在")
+    if project.deleted_at is None:
+        raise ProjectUndeleteNotAllowed("项目未处于删除状态，无需恢复")
+
+    from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+
+    storage_root = get_storage_root()
+    project_root = resolve_storage_path(storage_root, Path("projects") / str(project.id))
+    if project_root.exists():
+        raise ProjectUndeleteNotAllowed(
+            "项目目录已存在，请先排查同名残留目录后再恢复"
+        )
+    trash_root = resolve_storage_path(storage_root, Path("trash"))
+    candidates = (
+        sorted(p for p in trash_root.glob(f"{project.id}_*") if p.is_dir())
+        if trash_root.exists()
+        else []
+    )
+    if not candidates:
+        raise ProjectUndeleteNotAllowed("回收站中未找到该项目目录，无法恢复")
+    trash_target = candidates[-1]
+
+    projects_root = resolve_storage_path(storage_root, Path("projects"))
+    projects_root.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(trash_target), str(project_root))
+    project.deleted_at = None
+    _append_activity(
+        project.id,
+        "project_undeleted",
+        {"trash_source": trash_target.name},
+        actor=actor,
+        target={"type": "project", "id": str(project.id)},
+    )
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        shutil.move(str(project_root), str(trash_target))
+        raise
+    return {"id": project.id, "name": project.name, "restored": True}
 
 
 def batch_archive_projects(project_ids, actor="system"):

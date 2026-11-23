@@ -22,9 +22,12 @@ from applications.project_hub.classification_results import (
     save_classification_revision,
 )
 from applications.project_hub.assets import ProjectAssetFilterError
+from applications.project_hub._foundation import ProjectNotFoundError
 from applications.project_hub.project_storage import ProjectStorageValidationError
 from applications.project_hub.service import (
+    DatasetDeleteNotAllowed,
     ProjectDeleteNotAllowed,
+    ProjectUndeleteNotAllowed,
     archive_project,
     batch_archive_projects,
     batch_delete_projects,
@@ -34,6 +37,7 @@ from applications.project_hub.service import (
     resolve_project_export_artifact,
     create_export,
     create_project,
+    delete_dataset,
     delete_project,
     get_project_assets,
     get_project_detail,
@@ -46,6 +50,7 @@ from applications.project_hub.service import (
     replace_project_mines,
     restore_backup,
     restore_project,
+    undelete_project,
     update_project,
 )
 from applications.project_hub.spatial_service import (
@@ -90,8 +95,10 @@ def _request_actor():
 
 
 def _spatial_failure_response(error, message, project_id):
+    if isinstance(error, ProjectNotFoundError):
+        return fail_api(str(error), status=404)
     if isinstance(error, ValueError):
-        return fail_api(str(error))
+        return fail_api(str(error), status=400)
     if isinstance(error, HTTPException):
         # 客户端请求体问题（非法 JSON 400 / Content-Type 415）按原状态码收口，
         # 不吞成 500 + 服务端堆栈日志
@@ -101,8 +108,10 @@ def _spatial_failure_response(error, message, project_id):
 
 
 def _project_hub_failure_response(error, message, project_id=None):
+    if isinstance(error, ProjectNotFoundError):
+        return fail_api(str(error), status=404)
     if isinstance(error, ValueError):
-        return fail_api(str(error))
+        return fail_api(str(error), status=400)
     if isinstance(error, HTTPException):
         return fail_api(msg="请求数据不合法，请提交正确的 JSON", status=error.code or 400)
     if project_id is None:
@@ -837,10 +846,45 @@ def project_dataset_create_api(project_id):
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
+    except ProjectNotFoundError as exc:
+        return fail_api(str(exc), status=404)
     except ValueError as exc:
-        return fail_api(str(exc))
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         return _project_hub_failure_response(exc, "影像登记失败", project_id)
+
+
+@project_api.delete("/<int:project_id>/datasets/<int:dataset_id>")
+@login_required
+def project_dataset_delete_api(project_id, dataset_id):
+    """删除影像登记（2026-11 验收遗留项）：被推理任务引用或成果目录 409。"""
+    try:
+        return success_api(
+            data=delete_dataset(project_id, dataset_id, actor=_request_actor())
+        )
+    except DatasetDeleteNotAllowed as exc:
+        return fail_api(str(exc), status=409)
+    except ValueError as exc:
+        return fail_api(str(exc), status=404)
+    except Exception as exc:
+        return business_or_server_failure(exc, "数据集删除失败", logger=LOGGER)
+
+
+@project_api.post("/<int:project_id>/undelete")
+@login_required
+def project_undelete_api(project_id):
+    """从回收站恢复已删除项目（trash 目录移回 + 软删位清除）。
+
+    与 POST /restore（归档→active）是不同通道：undelete 只回到 archived。
+    """
+    try:
+        return success_api(data=undelete_project(project_id, actor=_request_actor()))
+    except ProjectUndeleteNotAllowed as exc:
+        return fail_api(str(exc), status=409)
+    except ValueError as exc:
+        return fail_api(str(exc), status=404)
+    except Exception as exc:
+        return business_or_server_failure(exc, "项目恢复失败", logger=LOGGER)
 
 
 @project_api.get("/<int:project_id>/timeline")
@@ -924,8 +968,10 @@ def project_export_create_api(project_id):
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
+    except ProjectNotFoundError as exc:
+        return fail_api(str(exc), status=404)
     except ValueError as exc:
-        return fail_api(str(exc))
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         # 保持既有 500 响应文案"项目导出失败，请检查服务日志"不变
         return _project_hub_failure_response(exc, "项目导出失败", project_id)
@@ -952,8 +998,10 @@ def project_backup_create_api(project_id):
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
+    except ProjectNotFoundError as exc:
+        return fail_api(str(exc), status=404)
     except ValueError as exc:
-        return fail_api(str(exc))
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         return _project_hub_failure_response(exc, "项目配置快照创建失败", project_id)
 
@@ -1027,8 +1075,10 @@ def project_backup_restore_api(project_id, backup_id):
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
+    except ProjectNotFoundError as exc:
+        return fail_api(str(exc), status=404)
     except ValueError as exc:
-        return fail_api(str(exc))
+        return fail_api(str(exc), status=400)
     except Exception:
         LOGGER.exception(
             "项目配置快照恢复失败 project_id=%s backup_id=%s", project_id, backup_id

@@ -210,6 +210,10 @@ services:
     <<: *runtime-base
     container_name: yunnan-spatial-worker
     mem_limit: 2048m
+    # 僵尸回收（2026-11-13 风险复盘）：_terminate killpg 整组杀 gdal2tiles 的
+    # multiprocessing 池后，被杀子进程重挂到 PID 1；入口是 exec python，不
+    # reap 孤儿，反复取消任务会积累 Z 状态进程。init 让 tini 任 PID 1 收尸。
+    init: true
     entrypoint: ["/bin/bash", "/app/docker/start-spatial-worker.sh"]
     environment:
       <<: *app-env

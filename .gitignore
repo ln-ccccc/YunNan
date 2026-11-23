@@ -8,6 +8,7 @@ volume_backups_before_restore_*/
 logs/
 
 # Large runtime data
+/backups/
 maps/
 project_storage/
 backend/static/upload/

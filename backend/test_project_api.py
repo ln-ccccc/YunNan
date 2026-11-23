@@ -209,6 +209,189 @@ class TestProjectAPI(unittest.TestCase):
         self.assertIn(item["lifecycle_status"], ("draft", "active", "completed", "archived"))
         self.assertEqual(item["lifecycle_status"], item["status"])
 
+    def test_dataset_registration_is_idempotent_for_same_storage_key(self):
+        # 2026-11-13 风险复盘：验收实测脚本重跑同键登记产生重复记录且无删除接口，
+        # 同键（含矿山/年份维度）重复登记必须返回既有记录而非新增
+        self.login_as_admin()
+        project_id = self._json(
+            self.client.post(
+                "/api/projects",
+                json={"name": "登记幂等项目", "monitor_start_year": 2024, "monitor_end_year": 2025},
+            )
+        )["data"]["id"]
+        storage_key = self._create_incoming_tif("idempotent.tif")
+        payload = {"dataset_kind": "imagery", "display_name": "首次登记", "storage_key": storage_key}
+
+        first = self._json(
+            self.client.post(f"/api/projects/{project_id}/datasets", json=payload)
+        )["data"]
+        self.assertNotIn("already_registered", first)
+
+        second = self._json(
+            self.client.post(
+                f"/api/projects/{project_id}/datasets",
+                json={**payload, "display_name": "脚本重跑登记"},
+            )
+        )["data"]
+        self.assertEqual(second["id"], first["id"])
+        self.assertTrue(second["already_registered"])
+
+        other_year = self._json(
+            self.client.post(
+                f"/api/projects/{project_id}/datasets",
+                json={**payload, "year_start": 2023, "year_end": 2023},
+            )
+        )["data"]
+        self.assertNotEqual(other_year["id"], first["id"])
+        self.assertNotIn("already_registered", other_year)
+
+    def test_dataset_delete_contract(self):
+        """数据集删除契约四态（2026-11 验收遗留项）：
+        成功（登记清除+物理文件保留+活动留痕）/ 无数据（404）/
+        参数边界（成果目录 409、被推理任务引用 409、跨项目 404）。"""
+        self.login_as_admin()
+        project_id = self._create_project("数据集删除项目")
+        storage_key = self._create_incoming_tif("deletable.tif")
+        dataset_id = self._json(
+            self.client.post(
+                f"/api/projects/{project_id}/datasets",
+                json={"dataset_kind": "imagery", "display_name": "待删影像", "storage_key": storage_key},
+            )
+        )["data"]["id"]
+        # 同一物理文件的第二条登记（不同年份维度）：登记行不拥有文件，
+        # 删除任意一条都不得影响另一条与物理文件本身
+        shared_id = self._json(
+            self.client.post(
+                f"/api/projects/{project_id}/datasets",
+                json={
+                    "dataset_kind": "imagery",
+                    "display_name": "共享同一物理文件",
+                    "storage_key": storage_key,
+                    "year_start": 2023,
+                    "year_end": 2023,
+                },
+            )
+        )["data"]["id"]
+
+        # 成功：登记清除、物理文件保留、共享登记不受影响、活动可审计
+        response = self.client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        body = self._json(response)["data"]
+        self.assertTrue(body["deleted"])
+        self.assertNotIn("file_removed", body)
+        self.assertTrue((self.storage_root / storage_key).exists())
+        detail = self._json(self.client.get(f"/api/projects/{project_id}"))["data"]
+        dataset_ids = [item["id"] for item in detail["datasets"]]
+        self.assertNotIn(dataset_id, dataset_ids)
+        self.assertIn(shared_id, dataset_ids)
+        item = self._timeline_item(project_id, "dataset_deleted")
+        self.assertEqual(item["target"]["type"], "dataset")
+
+        # 最后一条登记删除后文件仍保留：登记不等于文件所有权
+        response = self.client.delete(f"/api/projects/{project_id}/datasets/{shared_id}")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertTrue((self.storage_root / storage_key).exists())
+
+        # 无数据：重复删除 404
+        response = self.client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
+        self.assertEqual(response.status_code, 404)
+
+        # 参数边界：classification_dir 是推理成果注册形态，409 拒绝
+        result_dataset = ProjectDataset(
+            project_id=project_id,
+            dataset_kind="classification_dir",
+            display_name="成果目录",
+            file_path="projects/1/outputs/demo",
+            source_format="classification_dir",
+            slice_config_json="{}",
+        )
+        db.session.add(result_dataset)
+        db.session.commit()
+        response = self.client.delete(
+            f"/api/projects/{project_id}/datasets/{result_dataset.id}"
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("成果", self._json(response)["msg"])
+
+        # 参数边界：被推理任务引用的影像 409（保留复现与重试输入）
+        storage_key2 = self._create_incoming_tif("referenced.tif")
+        referenced_id = self._json(
+            self.client.post(
+                f"/api/projects/{project_id}/datasets",
+                json={"dataset_kind": "imagery", "display_name": "被引用影像", "storage_key": storage_key2},
+            )
+        )["data"]["id"]
+        db.session.add(
+            InferenceJob(
+                id="job-ref-1",
+                project_id=project_id,
+                request_payload_json=json.dumps({"project_id": project_id, "dataset_id": referenced_id}),
+            )
+        )
+        db.session.commit()
+        response = self.client.delete(f"/api/projects/{project_id}/datasets/{referenced_id}")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("推理任务", self._json(response)["msg"])
+
+        # 参数边界：不属于该项目的数据集 404
+        other_project_id = self._create_project("另一个项目")
+        response = self.client.delete(f"/api/projects/{other_project_id}/datasets/{referenced_id}")
+        self.assertEqual(response.status_code, 404)
+
+    def test_project_undelete_contract(self):
+        """项目恢复契约四态（2026-11 验收遗留：trash 恢复此前只能人工移目录+改库）：
+        成功（目录移回+软删位清除+状态保持 archived）/ 无数据（404）/
+        参数边界（未删除 409、回收站无目录 409）。"""
+        self.login_as_admin()
+        project_id = self._create_project("恢复删除项目")
+        project_dir = self.storage_root / "projects" / str(project_id)
+        project_dir.mkdir(parents=True)
+        (project_dir / "datasets").mkdir()
+        self.assertEqual(
+            self.client.post(f"/api/projects/{project_id}/archive", json={}).status_code, 200
+        )
+        response = self.client.delete(f"/api/projects/{project_id}")
+        self.assertEqual(response.status_code, 200)
+        trash_name = self._json(response)["data"]["trash_target"]
+        self.assertIsNotNone(trash_name)
+        trash_dir = self.storage_root / "trash" / trash_name
+        self.assertTrue(trash_dir.exists())
+        # 软删后详情 404（deleted_at 过滤）
+        self.assertEqual(self.client.get(f"/api/projects/{project_id}").status_code, 404)
+
+        # 成功：undelete 后目录移回、详情可见、生命周期保持 archived
+        response = self.client.post(f"/api/projects/{project_id}/undelete", json={})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertTrue(self._json(response)["data"]["restored"])
+        self.assertTrue(project_dir.exists())
+        self.assertFalse(trash_dir.exists())
+        detail = self._json(self.client.get(f"/api/projects/{project_id}"))["data"]
+        self.assertEqual(detail["summary"]["status"], "archived")
+        self._timeline_item(project_id, "project_undeleted")
+
+        # 参数边界：未删除的项目 undelete 409
+        response = self.client.post(f"/api/projects/{project_id}/undelete", json={})
+        self.assertEqual(response.status_code, 409)
+
+        # 无数据：不存在的项目 404
+        response = self.client.post("/api/projects/999999/undelete", json={})
+        self.assertEqual(response.status_code, 404)
+
+        # 参数边界：软删但回收站目录丢失 409（不能只翻 DB 造成半恢复态）
+        self.assertEqual(
+            self.client.post(f"/api/projects/{project_id}/archive", json={}).status_code, 200
+        )
+        response = self.client.delete(f"/api/projects/{project_id}")
+        self.assertEqual(response.status_code, 200)
+        trash_name2 = self._json(response)["data"]["trash_target"]
+        (self.storage_root / "trash" / trash_name2).rename(self.storage_root / "trash_moved_aside")
+        try:
+            response = self.client.post(f"/api/projects/{project_id}/undelete", json={})
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("回收站", self._json(response)["msg"])
+        finally:
+            (self.storage_root / "trash_moved_aside").rename(self.storage_root / "trash" / trash_name2)
+
     def test_dataset_registration_requires_safe_incoming_tiff_storage_key(self):
         self.login_as_admin()
         response = self.client.post(
@@ -1810,7 +1993,8 @@ class TestProjectAPI(unittest.TestCase):
             f"/api/projects/{project_id}/spatial/basemap-tileset-register",
             json={"candidate": "incoming/not-a-tileset"},
         )
-        self.assertEqual(response.status_code, 200)
+        # 业务校验失败按 P2-2 契约返回 400（不再 HTTP 200 + msg）
+        self.assertEqual(response.status_code, 400)
         self.assertIn("不是可识别的 XYZ 瓦片集", self._json(response)["msg"])
 
     def test_basemap_chunked_upload_owner_and_rename_guards(self):
@@ -1988,7 +2172,8 @@ class TestProjectAPI(unittest.TestCase):
             f"/api/projects/{project_id}/spatial/basemap-tileset-register",
             json={"candidate": make_tileset("tiles-c")},
         )
-        self.assertEqual(response.status_code, 200)
+        # 归档项目拒绝直挂登记：业务拒绝按 P2-2 契约返回 400
+        self.assertEqual(response.status_code, 400)
         self.assertIn("归档项目", self._json(response)["msg"])
 
     def test_original_imagery_hd_preview_from_incoming(self):
@@ -2036,7 +2221,6 @@ class TestProjectAPI(unittest.TestCase):
         self.assertIn("png_base64", body)
         self.assertGreater(len(body["png_base64"]), 100)
         self.assertEqual(body["source_width"], 64)
-
 
     def test_replace_mines_rejects_malformed_payload_with_400(self):
         """矿山绑定入参形状校验（2026-11-22 回归 P3-1）。

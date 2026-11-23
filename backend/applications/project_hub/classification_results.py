@@ -93,6 +93,9 @@ def get_classification_result(project_id, result_id):
     payload = serialize_classification_result(result)
     payload["classes"] = _class_table()
     payload["map_manifest"] = get_project_map_manifest(int(project_id))
+    # 编辑器绘制时越 ROI 即时提示（2026-11-13 风险复盘）需要前端拿到 ROI；
+    # 后端保存校验仍是唯一防线，此字段只读、仅供展示与提示
+    payload["roi_geometry"] = _serialize_feature_collection(result.roi_geometry_json)
     return payload
 
 
