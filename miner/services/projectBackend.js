@@ -1,3 +1,5 @@
+import { fetchBackend } from './backendFetch.js';
+
 const backendBaseUrl = (process.env.GEOVIEW_BACKEND_URL || 'http://localhost:5008').replace(/\/$/, '');
 
 async function requestJson(method, path, { query, body, cookie, timeoutMs = 15000 } = {}) {
@@ -8,7 +10,7 @@ async function requestJson(method, path, { query, body, cookie, timeoutMs = 1500
     }
   });
 
-  const response = await fetch(url, {
+  const response = await fetchBackend(url, {
     method,
     headers: {
       ...(body ? { 'content-type': 'application/json' } : {}),
@@ -52,7 +54,7 @@ function positiveRouteId(value, fieldName) {
 
 async function requestBinary(method, path, { cookie, timeoutMs = 30000 } = {}) {
   const url = new URL(`${backendBaseUrl}${path}`);
-  const response = await fetch(url, {
+  const response = await fetchBackend(url, {
     method,
     headers: cookie ? { cookie } : {},
     signal: AbortSignal.timeout(timeoutMs),
@@ -79,7 +81,7 @@ async function requestBinaryStream(method, path, { cookie, connectTimeoutMs = 30
   const connectTimer = setTimeout(() => controller.abort(), connectTimeoutMs);
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetchBackend(url, {
       method,
       headers: cookie ? { cookie } : {},
       signal: controller.signal,

@@ -23,7 +23,7 @@ test('project backend proxies a validated inference image as binary', async () =
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'http://localhost:5008/api/projects/7/outputs/inference/101/101%2B2022.png');
     assert.equal(calls[0].options.method, 'GET');
-    assert.deepEqual(calls[0].options.headers, { cookie: 'session=x' });
+    assert.deepEqual(calls[0].options.headers, { cookie: 'session=x', connection: 'close' });   // connection: close 由 fetchBackend 统一追加
     // BFF 出站请求必须带超时，避免上游挂起时无限占用请求线程
     assert.ok(calls[0].options.signal instanceof AbortSignal);
   } finally {
@@ -56,7 +56,7 @@ test('deleteProjectDataset sends DELETE to the dataset endpoint with cookie and 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'http://localhost:5008/api/projects/7/datasets/9');
     assert.equal(calls[0].options.method, 'DELETE');
-    assert.deepEqual(calls[0].options.headers, { cookie: 'session=x' });
+    assert.deepEqual(calls[0].options.headers, { cookie: 'session=x', connection: 'close' });   // connection: close 由 fetchBackend 统一追加
     // BFF 出站请求必须带超时，避免上游挂起时无限占用请求线程
     assert.ok(calls[0].options.signal instanceof AbortSignal);
   } finally {
@@ -136,7 +136,8 @@ test('createProjectExport 出站超时放宽到 10 分钟，且只放宽创建�
     assert.equal(calls[0].url, 'http://localhost:5008/api/projects/10/exports');
     assert.equal(calls[0].options.method, 'POST');
     assert.deepEqual(JSON.parse(calls[0].options.body), { format: 'xlsx' });
-    assert.deepEqual(calls[0].options.headers, { cookie: 'session=x', 'content-type': 'application/json' });
+    // connection: close 由 fetchBackend 统一追加（出站请求不复用连接，见 services/backendFetch.js）
+    assert.deepEqual(calls[0].options.headers, { cookie: 'session=x', 'content-type': 'application/json', connection: 'close' });
     assert.ok(calls[0].options.signal instanceof AbortSignal);
     // 后端同步生成（项目 10 的 xlsx 台账实测约 55s）：默认 15s 会让 BFF 先回 502 而后端仍
     // 生成成功，用户重试即重复建档；须与 clip/slice 长请求先例对齐为 10 分钟

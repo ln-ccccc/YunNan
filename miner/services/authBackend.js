@@ -1,8 +1,13 @@
+import { fetchBackend } from './backendFetch.js';
+
 const backendBaseUrl = (process.env.GEOVIEW_BACKEND_URL || 'http://localhost:5008').replace(/\/$/, '');
 
 // backend 重启窗口（等 MySQL+初始化约 40s）内连接被拒/重置是瞬态：单次短重试
 // 消化绝大多数窗口，剩余才以 502 暴露给前端（2026-10-27 重启时序实测）
-const TRANSIENT_CONNECTION_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE']);
+// UND_ERR_SOCKET(other side closed)：收到响应前连接被对端关闭。出站请求不复用连接后
+// （见 backendFetch.js），keep-alive 竞态不再发生；后端进程被回收/重启的瞬间仍可能出现，
+// 同样按瞬态处理——此前不认这个代码，它直接变成 502（2026-11-24，线上 9 次）
+const TRANSIENT_CONNECTION_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET']);
 
 function isTransientConnectionError(error) {
   if (!(error instanceof TypeError)) return false;
@@ -16,7 +21,7 @@ function delay(ms) {
 
 export async function requestBackendAuth(method, path, { body, cookie, timeoutMs = 15000 } = {}) {
   const attempt = () =>
-    fetch(`${backendBaseUrl}${path}`, {
+    fetchBackend(`${backendBaseUrl}${path}`, {
       method,
       headers: {
         ...(body ? { 'content-type': 'application/json' } : {}),
