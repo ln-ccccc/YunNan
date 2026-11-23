@@ -51,6 +51,7 @@ import { ref } from 'vue';
 import ProjectExportSnapshotPanel from './projectWorkspace/ProjectExportSnapshotPanel.vue';
 import { getSelectedProjectId, setSelectedProjectId } from '../services/projectSelectionStore.js';
 import { formatLifecycleStatus } from '../utils/projectStatusLabels.js';
+import { exportOutcomePendingMessage, isExportOutcomeUncertain } from '../projectWorkspace/exportRequestFeedback.js';
 
 const MINER_API_BASE_URL = import.meta.env.VITE_MINER_API_BASE_URL || '';
 const apiBase = MINER_API_BASE_URL ? String(MINER_API_BASE_URL).replace(/\/$/, '') : '';
@@ -94,10 +95,12 @@ const loadProjects = async () => {
   }
 };
 
+// 返回本次读取是否生效：被更新的请求取代或读取失败时为 false（createExport 失败分支据此
+// 决定提示文案是否可以说「已刷新导出列表」）
 const loadProjectData = async () => {
   const seq = (requestSeq += 1);
   const projectId = selectedProjectId.value;
-  if (!projectId) return;
+  if (!projectId) return false;
   loading.value = true;
   pageError.value = '';
   operationError.value = '';
@@ -107,16 +110,18 @@ const loadProjectData = async () => {
       unwrap(axios.get(url(`/api/projects/${projectId}/exports`))),
       unwrap(axios.get(url(`/api/projects/${projectId}/backups`))),
     ]);
-    if (seq !== requestSeq) return;
+    if (seq !== requestSeq) return false;
     capabilities.value = overviewRes?.capabilities || {};
     // 两个列表端点的信封形态不同（数组或 {items}），统一归一
     exports.value = Array.isArray(exportsRes) ? exportsRes : (exportsRes?.items || []);
     snapshots.value = Array.isArray(snapshotsRes) ? snapshotsRes : (snapshotsRes?.items || []);
+    return true;
   } catch (e) {
-    if (seq !== requestSeq) return;
+    if (seq !== requestSeq) return false;
     exports.value = [];
     snapshots.value = [];
     pageError.value = messageFrom(e, '项目数据读取失败，请稍后重试');
+    return false;
   } finally {
     if (seq === requestSeq) loading.value = false;
   }
@@ -132,13 +137,25 @@ const resetAndLoad = () => {
 
 const createExport = async (format) => {
   if (!selectedProjectId.value || busy.value) return;
+  const projectId = selectedProjectId.value;
   busy.value = true;
   operationError.value = '';
   try {
-    await unwrap(axios.post(url(`/api/projects/${selectedProjectId.value}/exports`), { format }));
+    await unwrap(axios.post(url(`/api/projects/${projectId}/exports`), { format }));
     await loadProjectData();
   } catch (e) {
-    operationError.value = messageFrom(e, '导出创建失败');
+    let message = messageFrom(e, '导出创建失败');
+    // 导出由后端同步生成：502/超时/网络错误时后端可能已建档（2026-11-23 D1，与项目工作台
+    // createExport 同口径）。先刷新列表让已生成的记录现身，再给不诱导重复提交的提示；
+    // loadProjectData 会清空 operationError，提示须在其之后写入。刷新的是「当前项目」，
+    // 所以请求期间或刷新期间切了项目，旧项目的回调一律不刷新、不写入。
+    if (isExportOutcomeUncertain(e)) {
+      if (selectedProjectId.value !== projectId) return;
+      const refreshed = await loadProjectData();
+      if (selectedProjectId.value !== projectId) return;
+      message = exportOutcomePendingMessage(refreshed);
+    }
+    operationError.value = message;
   } finally {
     busy.value = false;
   }

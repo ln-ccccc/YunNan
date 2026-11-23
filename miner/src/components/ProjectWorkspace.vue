@@ -2,7 +2,7 @@
   <div class="workspace-page">
     <header class="workspace-header">
       <div>
-        <p class="workspace-kicker">矿山项目化监测平台</p>
+        <p class="workspace-kicker">废弃矿山生态自然恢复过程管理系统V1.0</p>
         <h1>项目工作台</h1>
         <p class="workspace-subtitle">项目建档、空间资源、成果审阅和配置快照均在受控项目上下文中完成。</p>
       </div>
@@ -187,6 +187,7 @@ import ProjectOverviewPanel from './projectWorkspace/ProjectOverviewPanel.vue';
 import ProjectSelector from './projectWorkspace/ProjectSelector.vue';
 import ProjectSpatialResources from './projectWorkspace/ProjectSpatialResources.vue';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
+import { exportOutcomePendingMessage, isExportOutcomeUncertain } from '../projectWorkspace/exportRequestFeedback.js';
 import { shouldUseChunkedUpload } from '../utils/basemapChunking.js';
 import { actionTarget, createSelectionGate, createSlice, INVALIDATION } from '../projectWorkspace/projectWorkspaceViewModel.js';
 import { setSelectedProjectId } from '../services/projectSelectionStore.js';
@@ -723,9 +724,17 @@ async function createExport(format) {
     if (!isCurrentProjectOperation(operation)) return;
     await refreshCurrent(INVALIDATION.export);
   } catch (error) {
-    if (isCurrentProjectOperation(operation)) {
+    if (!isCurrentProjectOperation(operation)) return;
+    if (!isExportOutcomeUncertain(error)) {
       slices.exports.error = messageFrom(error, '导出创建失败');
+      return;
     }
+    // 导出由后端同步生成：502/超时/网络错误时后端可能已建档（2026-11-23 D1）。先刷新
+    // 列表让已生成的记录现身，再给不诱导重复提交的提示。loadSlice 开始时会清空
+    // exports.error，所以提示必须在刷新完成之后写入；刷新期间切了项目同样不写入。
+    await refreshCurrent(INVALIDATION.export);
+    if (!isCurrentProjectOperation(operation)) return;
+    slices.exports.error = exportOutcomePendingMessage(!slices.exports.error);
   } finally {
     if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
   }

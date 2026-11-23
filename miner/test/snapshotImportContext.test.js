@@ -5,6 +5,10 @@ import { compileScript, parse } from '@vue/compiler-sfc';
 import * as Vue from 'vue';
 import { createProjectWorkspaceApi as createRealWorkspaceApi } from '../src/projectWorkspace/projectWorkspaceApi.js';
 import * as viewModel from '../src/projectWorkspace/projectWorkspaceViewModel.js';
+import {
+  exportOutcomePendingMessage,
+  isExportOutcomeUncertain,
+} from '../src/projectWorkspace/exportRequestFeedback.js';
 import { shouldUseChunkedUpload } from '../src/utils/basemapChunking.js';
 import { sortInterpretationRecords } from '../src/utils/interpretationOrdering.js';
 
@@ -51,6 +55,9 @@ function mountWorkspace({ axiosMock, alerts }) {
     axios: axiosMock,
     createProjectWorkspaceApi: (options = {}) => createRealWorkspaceApi({ ...options, http: axiosMock }),
     shouldUseChunkedUpload,
+    // 组件 import 的绑定都要在这里注入：下方 script 会剥掉 import、靠 with (dependencies) 解析
+    isExportOutcomeUncertain,
+    exportOutcomePendingMessage,
     sortInterpretationRecords,
     getSelectedProjectId: () => null,
     setSelectedProjectId: () => {},

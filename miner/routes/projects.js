@@ -62,6 +62,23 @@ function requestCookie(req) {
   return req.headers.cookie || '';
 }
 
+/**
+ * 项目路由 catch 的统一出口（2026-11-23 D2）：
+ * - 参数校验错误：service 在发请求前抛出、带 4xx status（见 projectBackend.RouteParamError）。
+ *   此时并未触达上游，按其状态码回 BFF 自己生成的校验文案（不含上游细节，可回显）；
+ *   此前被兜成 502「上游服务不可用，请稍后重试」，把客户端传错参数误报成上游故障。
+ * - 其余异常：口径不变——502 + 固定文案，异常细节只进服务端日志，不回显给浏览器。
+ */
+function sendRouteError(res, error) {
+  const status = Number.isInteger(error?.status) ? error.status : null;
+  if (status !== null && status >= 400 && status < 500) {
+    return res.status(status).json({ success: false, code: 1, msg: error.message });
+  }
+  // 上游异常细节只进服务端日志，不回显给浏览器
+  console.error('projects route upstream error:', error);
+  return res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+}
+
 function validatePositiveRouteParam(req, res, next, value) {
   if (!/^[1-9]\d*$/.test(String(value || ''))) {
     return res.status(400).json({
@@ -111,9 +128,7 @@ export function createProjectRoutes({
         await projectApi.getProjectInferenceOutput(projectId, fid, filename, requestCookie(req)),
       );
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -127,9 +142,7 @@ export function createProjectRoutes({
       }, requestCookie(req));
       relayJson(res, upstream);
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -137,9 +150,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.createProject(req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -152,9 +163,7 @@ export function createProjectRoutes({
         cookie: requestCookie(req),
       }));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   };
 
@@ -201,8 +210,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.listImageryCandidates(req.params.projectId, requestCookie(req)));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
   // 影像上手绘底图（2026-10-24 审查 P1-8）：降采样 PNG + 4326 bounds，浏览器据此做地理绑定绘制
@@ -214,24 +222,21 @@ export function createProjectRoutes({
         requestCookie(req),
       ));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
   router.post('/:projectId/imagery/clip', async (req, res) => {
     try {
       relayJson(res, await projectApi.clipImagery(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
   router.post('/:projectId/imagery/slice', async (req, res) => {
     try {
       relayJson(res, await projectApi.sliceImagery(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
   router.get('/:projectId/classification-results', relay('GET', () => '/classification-results'));
@@ -255,8 +260,7 @@ export function createProjectRoutes({
       }
       relayBinary(res, upstream);
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
   router.get('/:projectId/mines/trend-report', relay('GET', () => '/mines/trend-report', { query: true }));
@@ -265,9 +269,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.getProjectOverview(req.params.projectId, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -275,9 +277,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.listProjectAssets(req.params.projectId, req.query, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -285,9 +285,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.getProjectDetail(req.params.projectId, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -295,9 +293,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.updateProject(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -305,9 +301,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.replaceProjectMines(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -322,9 +316,7 @@ export function createProjectRoutes({
       }
       relayJson(res, await projectApi.createProjectDataset(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -337,9 +329,7 @@ export function createProjectRoutes({
         requestCookie(req),
       ));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -347,9 +337,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.getProjectTimeline(req.params.projectId, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -358,8 +346,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.deleteProject(req.params.projectId, requestCookie(req)));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -367,8 +354,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.batchArchiveProjects(req.body || {}, requestCookie(req)));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -376,8 +362,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.batchDeleteProjects(req.body || {}, requestCookie(req)));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -385,8 +370,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.importBackupManifest(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -394,9 +378,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.archiveProject(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -404,9 +386,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.restoreProject(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -422,9 +402,7 @@ export function createProjectRoutes({
       const projectId = Number(req.params.projectId);
       relayJson(res, await projectApi.createProjectExport(projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -432,9 +410,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.listProjectExports(req.params.projectId, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -442,9 +418,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.createProjectBackup(req.params.projectId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -452,9 +426,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.listProjectBackups(req.params.projectId, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -472,8 +444,7 @@ export function createProjectRoutes({
       }
       relayBinary(res, upstream);
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -491,8 +462,7 @@ export function createProjectRoutes({
       }
       relayBinary(res, upstream);
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -512,8 +482,7 @@ export function createProjectRoutes({
         requestCookie(req),
       ));
     } catch (error) {
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
@@ -521,9 +490,7 @@ export function createProjectRoutes({
     try {
       relayJson(res, await projectApi.restoreProjectBackup(req.params.projectId, req.params.backupId, req.body || {}, requestCookie(req)));
     } catch (error) {
-      // 上游异常细节只进服务端日志，不回显给浏览器
-      console.error('projects route upstream error:', error);
-      res.status(502).json({ success: false, code: 1, msg: '上游服务不可用，请稍后重试' });
+      sendRouteError(res, error);
     }
   });
 
