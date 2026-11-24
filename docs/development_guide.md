@@ -175,8 +175,16 @@ Response 至少包含：
 
 - 同项目同格式已有一条仍在生成的 `pending` 导出时，`POST /api/projects/{project_id}/exports` 返回 `422`（"…导出正在生成中，请稍后在导出列表查看并下载，不要重复提交"）。
 - 后端单次台账生成的时间预算为 4 分钟（`EXPORT_TIME_BUDGET_SECONDS`），超时把记录落 `failed` 并清理目录；Miner BFF 对创建导出的出站超时为 10 分钟。后端一定先于链路上任何一跳给出明确结果。预算对两条大 JSON 抽取同样生效：MySQL 语句带 `MAX_EXECUTION_TIME`（剩余毫秒数），语句被数据库中断（错误码 3024）时按预算超时处理，不重试——此前只在写表循环里检查，而耗时几乎全在抽取上。
+- 台账的两项抽取（逐任务的推理计时、逐成果的类别计数）走项目派生缓存：只抽取新增或有变化的任务与成果。项目 10 实测整本工作簿由约 13 秒降到约 1.4 秒，两种方式的结果逐格相等。
 - `manifest.json`：`xlsx` 台账附 `classification_results`（台账实际读取的每条成果的 `result_id`、`revision_no`、`vector_status`、`mine_resource_version`）；`geojson/shp/dxf` 附 `mine_vector`（构成几何的矿山边界资源版本）。
 - Miner BFF：路由参数校验失败一律 `400`（此前兜成 `502`），且不向上游发请求。
+
+### 项目派生缓存（2026-11-24）
+
+- 约定与签名在 `backend/applications/project_hub/derived_cache.py`。从大 JSON 派生、源数据几乎不变的值，按"源是否变过"记在 `projects/{project_id}/outputs/stats/` 下，一个缓存一个文件：概览的 `class_area_by_result.json`，台账的 `ledger_job_timings.json` 与 `ledger_class_counts.json`。签名没变直接取用，变了的只重算那几条。
+- 签名只决定要不要重算：成果 = 修订号 + 图斑数 + 矢量状态 + 行更新时间；任务 = 状态 + 完成时间 + 行更新时间。新增这类缓存时，参与签名的列必须是源数据所有写入路径都会改动的列。
+- 缓存是派生数据：读不回来、格式不对、版本不同一律当空，删掉任何文件下一次读取只是慢一次；写入原子替换，写失败只记告警。文件只保留当前仍然有效的条目。
+- 测试环境（`TESTING`）下与概览的 TTL 缓存同样旁路，用例之间不共享；需要验证缓存逻辑的测试显式打开（`build_stats_overview(..., use_area_memo=True)`、`build_project_ledger_workbook(..., use_cache=True)`）。
 
 ### Miner BFF 出站请求（2026-11-24）
 
@@ -227,7 +235,7 @@ python -m unittest test_project_api test_project_read_models test_project_spatia
 - 地图首次加载可自动缩放到全量边界；筛选刷新不应反复打断用户视角，搜索命中时只定位目标矿山。
 - 把 blob 存成本地文件统一经 `saveBlobAsFile`（Miner `src/utils/blobDownload.js`，GeoView `src/utils/blobDownload.mjs`）：下载发起 60 秒后才释放 object URL，同步释放会截断尚未开始的下载。下载入口不得自己 `createObjectURL`/`revokeObjectURL`（守护：两侧的 `test/blobDownload.test.*`）；预览图等非下载用途除外。
 - 盖在地图上的纯文字提示不拦截鼠标（`pointer-events: none`）：被它盖住的那块地图上点击画不出顶点、选不中图斑，且没有任何反馈。
-- 同一接口的请求在途时不发第二个；首屏不要两个组件各拉一次同一接口。`/api/stats/overview` 在 120 秒缓存过期后要重算约 9 秒（实测墙钟 8.75 秒，其中进程 CPU 时间 6.28 秒，其余是数据库与文件读取），重算期间同一 worker 上的其它接口会被拖慢（2026-11-24 实测：重复请求去掉后，重算期间其它接口由最慢约 670ms 降到约 46ms）。该接口冷缓存约 9 秒的问题本身尚未解决。
+- 同一接口的请求在途时不发第二个；首屏不要两个组件各拉一次同一接口。`/api/stats/overview` 在 120 秒缓存过期后要重算（重算走项目派生缓存，见下文"项目派生缓存"，2026-11-24 实测约 0.5 秒；此前约 9 秒），重算期间同一 worker 上的其它接口会被拖慢。
 
 ## 6. 编码边界
 

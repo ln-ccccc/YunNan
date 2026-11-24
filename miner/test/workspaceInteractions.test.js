@@ -209,10 +209,10 @@ test('workspace clears a failed download message when retry succeeds', async () 
 });
 
 // ---- 看板概览：同一时刻只发一个请求（2026-11-24）----
-// 后端概览在缓存过期时是约 9 秒的纯计算，计算期间同一 worker 上的其它接口会被拖慢。工作台
-// 首屏此前同一刻发两个相同请求（看板组件 onMounted + 工作台 loadProjects 各一次），等于让
-// 两个 worker 同时重算。真实浏览器实测：同一毫秒发出两个请求各约 8.8 秒，其间其它接口最慢
-// 约 670ms（平时约 27ms）。
+// 后端概览在缓存过期时要重算（2026-11-24 修复时约 9 秒，随后后端降到约 0.5 秒），重算期间
+// 同一 worker 上的其它接口会被拖慢。工作台首屏此前同一刻发两个相同请求（看板组件 onMounted +
+// 工作台 loadProjects 各一次），等于让两个 worker 同时重算。真实浏览器实测：同一毫秒发出两个
+// 请求各约 8.8 秒，其间其它接口最慢约 670ms（平时约 27ms）。
 test('stats panel keeps a single overview request in flight and refetches once for calls that arrived meanwhile', async () => {
   const pending = [];
   const harness = setupComponent('StatsOverviewPanel.vue', {
