@@ -170,6 +170,12 @@ def _snapshot_paths(project_id, result_id):
 
 
 def _write_json_temporary(path, payload):
+    # payload 是待序列化的对象。传已经序列化好的 JSON 文本会被再编码一层：文件顶层变成
+    # 一个字符串而不是 GeoJSON 对象——库里是对的、运行时也没有代码读这些快照，功能不受影响，
+    # 但文件本身打不开。2026-11-24 的 48e3c64 把保存路径错传成了 feature_collection_json，
+    # 当天真实编辑测试后的存储核对才发现；这里明确拒绝，不让同类错误再悄悄通过
+    if isinstance(payload, str):
+        raise TypeError("写入 JSON 文件的必须是待序列化的对象，不能是已经序列化好的文本")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{uuid.uuid4().hex}.geojson.tmp"
     temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -574,7 +580,7 @@ def save_classification_revision(project_id, result_id, payload, *, actor, body_
     temporary_snapshot_path = None
     revision_stats_path = _revision_stats_path(result.project_id, result.id, revision_no)
     try:
-        temporary_snapshot_path = _write_json_temporary(snapshot_path, feature_collection_json)
+        temporary_snapshot_path = _write_json_temporary(snapshot_path, feature_collection)
         if _claim_current_revision(
             result,
             base_revision_no,

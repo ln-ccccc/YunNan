@@ -299,6 +299,38 @@ class TestClassificationResultAPI(unittest.TestCase):
             "current_revision_no": 1,
         })
 
+    def test_saved_revision_snapshot_is_a_geojson_object_on_disk(self):
+        """修订快照文件本身必须是 GeoJSON 对象。
+
+        2026-11-24 的回归（48e3c64）：保存路径把 JSON 文本交给了写盘函数，文件被再编码一层，
+        顶层成了字符串。库里是对的、运行时也没有代码读这些快照，功能不受影响，直到真实编辑
+        测试后逐个核对存储才发现——此前的测试没有一处读回磁盘上的快照。
+        """
+        from applications.project_hub.classification_results import _write_json_temporary
+
+        feature_collection = self._editable_feature_collection()
+        response = self.client.post(
+            self._result_url("/revisions"),
+            json={"base_revision_no": 0, "feature_collection": feature_collection},
+        )
+        self.assertEqual(response.status_code, 200)
+        snapshot_path = self._revision_snapshot_path(1)
+        raw = snapshot_path.read_text(encoding="utf-8")
+        self.assertTrue(raw.lstrip().startswith("{"), "快照文件顶层必须是 JSON 对象，不能是被引号包住的字符串")
+        snapshot = json.loads(raw)
+        self.assertEqual(snapshot["type"], "FeatureCollection")
+        self.assertEqual(snapshot, response.get_json()["data"]["feature_collection"])
+        revision = ClassificationRevision.query.filter_by(result_id=self.result.id, revision_no=1).first()
+        self.assertEqual(raw, revision.feature_collection_json, "磁盘快照必须与库里存的修订快照逐字节相同")
+
+        # 自动基线同样必须是对象（发布路径一直是对的，这里只是守护）
+        auto_raw = (Path(os.environ["PROJECT_STORAGE_ROOT"]) / self.result.auto_geojson_path).read_text(encoding="utf-8")
+        self.assertEqual(json.loads(auto_raw)["type"], "FeatureCollection")
+
+        # 把 JSON 文本交给写盘函数会被明确拒绝，而不是悄悄多编码一层
+        with self.assertRaises(TypeError):
+            _write_json_temporary(self.root / "x.geojson", json.dumps({"type": "FeatureCollection", "features": []}))
+
     def test_revision_list_returns_only_summary_fields(self):
         response = self.client.get(self._result_url("/revisions"))
 
