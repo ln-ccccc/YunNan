@@ -3,13 +3,17 @@ import assert from 'node:assert/strict';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
 
 import {
+  DRAW_POINT_STYLES,
   basemapCoverageNotice,
   buildAssignedFeatureIdMap,
   buildEditableFeatureCollection,
   createGuardedDirectSelect,
+  createGuardedSimpleSelect,
+  createStepBackDrawPolygon,
   describeVertexDeletionBlockers,
   draftExportFilename,
   isEditableVectorStatus,
+  pickNearestPointTarget,
   resolveFocusBounds,
   resolveSecureTileTemplate,
   resolveTileZoomRange,
@@ -555,9 +559,11 @@ test('createGuardedDirectSelect keeps every other upstream method and never muta
   const base = { ...MapboxDraw.modes.direct_select };
   const before = { ...base };
   const mode = createGuardedDirectSelect(base, () => {});
+  // onTrash（顶点删除防护）、onMouseDown / onClick / onTap（命中规则修正）、onMidpoint（选中坐标同步）
+  const takenOver = new Set(['onTrash', 'onMouseDown', 'onClick', 'onTap', 'onMidpoint']);
   for (const key of Object.keys(before)) {
-    if (key === 'onTrash') {
-      assert.notEqual(mode[key], before[key], 'onTrash 必须被接管');
+    if (takenOver.has(key)) {
+      assert.notEqual(mode[key], before[key], `${key} 必须被接管`);
     } else {
       assert.equal(mode[key], before[key], `${key} 应原样保留`);
     }
@@ -672,4 +678,406 @@ test('guarded direct_select stops the whole-face deletion that the real upstream
   const protectedMulti = runTrash(guarded, multi, ['0.0.1']);
   assert.deepEqual(protectedMulti.calls.deleted, []);
   assert.deepEqual(protectedMulti.geometry, multi);
+});
+
+// ─── 就近命中（2026-11-24）──────────────────────────────────────────────────
+// 库的 featuresAt 按 properties.id 去重，而顶点与中点要素都没有 id：同一像素只留
+// "渲染在最上面的那一个"（中点图层在顶点图层之上）。onMidpoint 又是在鼠标按下那刻
+// 就加顶点，于是相邻顶点靠得近时，点顶点会多出一个顶点；几个顶点圆重叠时选中的
+// 是绘制顺序靠后的那个。这里断言择近规则本身，以及它被接到了真实的 onMouseDown 上。
+
+test('pickNearestPointTarget takes the nearest target in its own radius, vertex first on ties', () => {
+  const radius = (kind) => (kind === 'vertex' ? 9 : 5);
+  const at = (x, y = 100) => ({ x, y });
+  const clearance = 7;
+
+  // 点在顶点上，4px 外是中点：顶点（库的原规则会取"最上层"的中点）
+  assert.equal(pickNearestPointTarget(
+    [{ kind: 'midpoint', ...at(104) }, { kind: 'vertex', ...at(100) }], at(100), radius, { midpointClearance: clearance },
+  ).kind, 'vertex');
+
+  // 三个顶点圆重叠：取离点击最近的，而不是列表里（渲染顺序）靠前的
+  assert.equal(pickNearestPointTarget(
+    [{ kind: 'vertex', ...at(106) }, { kind: 'vertex', ...at(100) }, { kind: 'vertex', ...at(94) }], at(101), radius,
+  ).x, 100);
+
+  // 两侧顶点各在 12px 外：点在中间的小圆点上，新增顶点
+  assert.equal(pickNearestPointTarget(
+    [{ kind: 'vertex', ...at(112) }, { kind: 'vertex', ...at(88) }, { kind: 'midpoint', ...at(100) }], at(100), radius, { midpointClearance: clearance },
+  ).kind, 'midpoint');
+
+  // 两侧顶点各在 5px 外：小圆点的中心被顶点圆盖住，不参与——怎么点都不会多出顶点；
+  // 两个顶点距离并列，取到的是顶点
+  const covered = pickNearestPointTarget(
+    [{ kind: 'vertex', ...at(105) }, { kind: 'vertex', ...at(95) }, { kind: 'midpoint', ...at(100) }], at(100), radius, { midpointClearance: clearance },
+  );
+  assert.equal(covered.kind, 'vertex');
+  assert.equal(covered.x, 105);
+
+  // 不传 clearance 时中点照常参与（纯择近）
+  assert.equal(pickNearestPointTarget(
+    [{ kind: 'vertex', ...at(105) }, { kind: 'vertex', ...at(95) }, { kind: 'midpoint', ...at(100) }], at(100), radius,
+  ).kind, 'midpoint');
+
+  // 距离只差亚像素：顶点优先
+  assert.equal(pickNearestPointTarget(
+    [{ kind: 'midpoint', ...at(104) }, { kind: 'vertex', ...at(104.3) }], at(100), radius,
+  ).kind, 'vertex');
+
+  // 超出各自命中半径的不参与；都不在半径内、或没有顶点/中点类目标时返回 null
+  assert.equal(pickNearestPointTarget([{ kind: 'midpoint', ...at(105.5) }], at(100), radius), null);
+  assert.equal(pickNearestPointTarget([{ kind: 'vertex', ...at(109.5) }], at(100), radius), null);
+  assert.equal(pickNearestPointTarget([{ kind: 'feature', ...at(100) }], at(100), radius), null);
+  assert.equal(pickNearestPointTarget([], at(100), radius), null);
+  assert.equal(pickNearestPointTarget(undefined, at(100), radius), null);
+});
+
+test('createGuardedDirectSelect hands the pressed button the nearest vertex instead of the topmost midpoint', () => {
+  const upstream = MapboxDraw.modes.direct_select;
+  const pointFeature = (meta, lng, extra = {}) => ({
+    properties: { meta, ...extra },
+    geometry: { type: 'Point', coordinates: [lng, 0] },
+  });
+  // 两个顶点相距 gapPx，中点在正中；map.project 把经度换成横坐标（像素）
+  const build = (gapPx) => {
+    const vertexA = pointFeature('vertex', 1, { coord_path: '0.3' });
+    const vertexB = pointFeature('vertex', 2, { coord_path: '0.4' });
+    const midpoint = pointFeature('midpoint', 1.5, { coord_path: '0.4', lng: 1.5, lat: 0 });
+    const pixels = new Map([[1, { x: 100, y: 100 }], [2, { x: 100 + gapPx, y: 100 }], [1.5, { x: 100 + gapPx / 2, y: 100 }]]);
+    const queries = [];
+    const map = {
+      // 渲染顺序（库查询结果的顺序）：中点图层在最上
+      queryRenderedFeatures(box, options) {
+        queries.push({ box, layers: [...options.layers].sort() });   // 只记录缓冲盒查询（点查询在面重叠时才有）
+        return [midpoint, vertexB, vertexA];
+      },
+      project: (coordinates) => pixels.get(coordinates[0]),
+    };
+    return { vertexA, vertexB, midpoint, queries, map };
+  };
+  const run = (gapPx, x) => {
+    const { queries, map } = build(gapPx);
+    const seen = [];
+    const base = {
+      ...upstream,
+      onVertex(state, event) {
+        seen.push(`vertex ${event.featureTarget.properties.coord_path}`);
+        return 'vertex-result';
+      },
+      onMidpoint(state, event) {
+        seen.push(`midpoint ${event.featureTarget.properties.coord_path}`);
+        return 'midpoint-result';
+      },
+    };
+    // 与上游 object_to_mode 的装配一致：模式对象的方法被复制到模式处理器上
+    const handler = Object.assign({
+      map,
+      drawConfig: {
+        styles: [{ id: 'gl-draw-polygon-fill.cold' }, { id: 'gl-draw-vertex-outer.hot' }, { id: 'gl-draw-midpoint.cold' }],
+        clickBuffer: 2,
+      },
+    }, base);
+    const mode = createGuardedDirectSelect(base, () => assert.fail('按下不该触发删除拦截'));
+    const event = { point: { x, y: 100 }, featureTarget: build(gapPx).midpoint };
+    const result = mode.onMouseDown.call(handler, {}, event);
+    return { result, seen, queries };
+  };
+
+  // 点在顶点上（间距 8px，中点就在 4px 外的点击缓冲范围里）：选中顶点，不会多出顶点
+  const onVertex = run(8, 100);
+  assert.deepEqual(onVertex.result, 'vertex-result');
+  assert.deepEqual(onVertex.seen, ['vertex 0.3']);
+  // 同一个点击缓冲盒、同一组绘图图层；附近没有面重叠时不再做第二次查询
+  assert.deepEqual(onVertex.queries, [{ box: [[98, 98], [102, 102]], layers: ['gl-draw-midpoint.cold', 'gl-draw-polygon-fill.cold', 'gl-draw-vertex-outer.hot'] }], '与库用同一个点击缓冲盒和同一组绘图图层');
+
+  // 间距 8px 时点在中间的小圆点上：小圆点被顶点圆盖住，仍然选中顶点（两侧顶点距离并列，
+  // 取到哪一个都行——关键是不会新增顶点）
+  const coveredMidpoint = run(8, 104);
+  assert.equal(coveredMidpoint.result, 'vertex-result');
+  assert.match(coveredMidpoint.seen[0], /^vertex 0\.[34]$/);
+
+  // 间距 24px 时点在中间的小圆点上：新增顶点
+  assert.deepEqual(run(24, 112).seen, ['midpoint 0.4']);
+
+  // 附近没有点目标、而点击处叠着两个面：目标换成应当选中的那个面，再交给上游
+  const onSmallerPolygon = (() => {
+    const polygon = (id, x, size, active) => ({
+      properties: { meta: 'feature', id, active },
+      geometry: { type: 'Polygon', coordinates: [[[x, 0], [x + size, 0], [x + size, size], [x, size], [x, 0]]] },
+    });
+    const big = polygon('big', 0, 100, 'true');
+    const small = polygon('small', 40, 20, 'false');
+    const seen = [];
+    const base = {
+      ...upstream,
+      onFeature(state, event) {
+        seen.push(`feature ${event.featureTarget.properties.id}`);
+        return 'feature-result';
+      },
+    };
+    const handler = Object.assign({
+      map: {
+        queryRenderedFeatures: (geometry) => (Array.isArray(geometry[0]) ? [big, small] : [small]),
+        project: ([lng, lat]) => ({ x: lng, y: lat }),
+      },
+      drawConfig: { styles: [{ id: 'gl-draw-polygon-fill.cold' }], clickBuffer: 2 },
+    }, base);
+    const event = { point: { x: 50, y: 10 }, featureTarget: big };
+    const result = createGuardedDirectSelect(base, () => {}).onMouseDown.call(handler, {}, event);
+    return { result, seen, target: event.featureTarget.properties.id };
+  })();
+  // 库选中的是当前面（大面，处于顶点模式）；点击点其实落在更小的面里 → 换成小面，
+  // 上游据此不再启动拖动（小面不是当前面），抬起时退回普通选择
+  assert.deepEqual(onSmallerPolygon, { result: undefined, seen: [], target: 'small' });
+
+  // 库自身的命中已经是对的（附近没有更近的点）时，原样交给上游
+  const passthrough = (() => {
+    const seen = [];
+    const base = {
+      ...upstream,
+      onFeature() {
+        seen.push('feature');
+        return 'feature-result';
+      },
+    };
+    const handler = Object.assign({ map: { queryRenderedFeatures: () => [] }, drawConfig: { styles: [{ id: 'gl-draw-vertex-outer.hot' }], clickBuffer: 2 } }, base);
+    const event = { point: { x: 100, y: 100 }, featureTarget: { properties: { meta: 'feature', active: 'true' } } };
+    const result = createGuardedDirectSelect(base, () => {}).onMouseDown.call(handler, {}, event);
+    return { result, seen, target: event.featureTarget };
+  })();
+  assert.deepEqual(passthrough, {
+    result: 'feature-result',
+    seen: ['feature'],
+    target: { properties: { meta: 'feature', active: 'true' } },
+  });
+
+  // 查询抛错、或样式里没有点图层：退回库的命中，不让一次点击失效
+  for (const handler of [
+    { map: { queryRenderedFeatures() { throw new Error('style not loaded'); } }, drawConfig: { styles: [{ id: 'gl-draw-midpoint.cold' }], clickBuffer: 2 } },
+    { map: { queryRenderedFeatures: () => assert.fail('没有点图层时不该查询') }, drawConfig: { styles: [{ id: 'gl-draw-polygon-fill.cold' }], clickBuffer: 2 } },
+    { map: {}, drawConfig: {} },
+  ]) {
+    const base = { ...upstream, onMidpoint: () => 'midpoint-result' };
+    const event = { point: { x: 100, y: 100 }, featureTarget: { properties: { meta: 'midpoint' } } };
+    assert.equal(createGuardedDirectSelect(base, () => {}).onMouseDown.call(Object.assign({}, handler, base), {}, event), 'midpoint-result');
+  }
+});
+
+test('createStepBackDrawPolygon backs up one placed vertex and only discards an empty sketch', () => {
+  const upstream = MapboxDraw.modes.draw_polygon;
+  const mode = createStepBackDrawPolygon(upstream);
+
+  // mapbox-gl-draw 1.5.1 绘制草稿的最小复刻（src/feature_types/polygon.js）：内部环不含闭合点
+  const changes = [];
+  const sketch = {
+    id: 'sketch-1',
+    coordinates: [[]],
+    changed() {
+      changes.push(JSON.stringify(this.coordinates));
+    },
+    updateCoordinate(path, lng, lat) {
+      const [ringIndex, coordIndex] = path.split('.').map(Number);
+      if (this.coordinates[ringIndex] === undefined) this.coordinates[ringIndex] = [];
+      this.coordinates[ringIndex][coordIndex] = [lng, lat];
+      this.changed();
+    },
+  };
+  const deleted = [];
+  const modeChanges = [];
+  const handler = {
+    updateUIClasses() {},
+    deleteFeature: (ids) => deleted.push(ids),
+    changeMode: (name, options) => modeChanges.push({ name, options }),
+  };
+  const state = { polygon: sketch, currentVertexPosition: 0 };
+  // 用上游真实的 clickAnywhere / onMouseMove 推进草稿：第 k 次点击后已放置 k 个点，
+  // 外环是 [p0 … p(k-1), 跟随鼠标的点]
+  const click = (x, y) => upstream.clickAnywhere.call(handler, state, { lngLat: { lng: x, lat: y } });
+  const move = (x, y) => upstream.onMouseMove.call(handler, state, { lngLat: { lng: x, lat: y } });
+  const ring = () => sketch.coordinates[0].map(([x, y]) => [x, y]);
+
+  click(0, 0);
+  click(10, 0);
+  click(10, 10);
+  click(0, 10);
+  move(4, 4);
+  assert.equal(state.currentVertexPosition, 4);
+  assert.deepEqual(ring(), [[0, 0], [10, 0], [10, 10], [0, 10], [4, 4]]);
+
+  // 退回一个点：最后一个已放置的点被摘掉，跟随鼠标的点顺位补上
+  const changesBefore = changes.length;
+  mode.onTrash.call(handler, state);
+  assert.equal(state.currentVertexPosition, 3);
+  assert.deepEqual(ring(), [[0, 0], [10, 0], [10, 10], [4, 4]]);
+  assert.equal(changes.length, changesBefore + 1, '草稿被标记为已变更，库才会重绘');
+  assert.deepEqual(deleted, [], '有点可退时不得丢弃草稿');
+  assert.deepEqual(modeChanges, []);
+
+  // 状态自洽：鼠标移动写的仍是"跟随点"那一格，再点一次就接回原来的形状
+  move(6, 6);
+  assert.deepEqual(ring(), [[0, 0], [10, 0], [10, 10], [6, 6]]);
+  click(0, 10);
+  assert.equal(state.currentVertexPosition, 4);
+  assert.deepEqual(ring(), [[0, 0], [10, 0], [10, 10], [0, 10], [0, 10]]);
+
+  // 退到只剩一个点：不会像 polygon.removeCoordinate 那样把不足 3 个点的环整个删掉，
+  // 而是停在"还没放置任何点"的初始形态
+  for (let step = 0; step < 4; step += 1) mode.onTrash.call(handler, state);
+  assert.equal(state.currentVertexPosition, 0);
+  assert.deepEqual(ring(), [[0, 10]], '跟随鼠标的那个点留在第 0 格，下一次移动/点击会覆盖它');
+  assert.deepEqual(deleted, []);
+  move(3, 3);
+  click(5, 5);
+  assert.equal(state.currentVertexPosition, 1);
+  assert.deepEqual(ring(), [[5, 5], [5, 5]], '重新开始绘制后与第一次点击的形态一致');
+  mode.onTrash.call(handler, state);
+  assert.equal(state.currentVertexPosition, 0);
+  assert.deepEqual(ring(), [[5, 5]]);
+
+  // 一个点都没放时沿用上游：丢弃草稿，回到选择模式
+  mode.onTrash.call(handler, state);
+  assert.equal(state.currentVertexPosition, 0);
+  assert.deepEqual(deleted, [['sketch-1']]);
+  assert.deepEqual(modeChanges, [{ name: 'simple_select', options: undefined }]);
+  assert.equal(mode.onSetup, upstream.onSetup);
+  assert.equal(mode.onStop, upstream.onStop);
+});
+
+test('createGuardedSimpleSelect picks the polygon that should be selected, not the first one in tile order', () => {
+  // 库的"面按面积从小到大命中"从未生效：sort_features 给面积函数传的是 Feature，
+  // @mapbox/geojson-area 0.2.2 对它返回 undefined，比较结果恒为 NaN。于是命中的永远是
+  // 瓦片里排在前面的那个面——新画的小面叠在大面上，点小面选中的是大面。
+  const upstream = MapboxDraw.modes.simple_select;
+  const polygon = (id, x, size) => ({
+    properties: { meta: 'feature', id, active: 'false' },
+    geometry: { type: 'Polygon', coordinates: [[[x, 0], [x + size, 0], [x + size, size], [x, size], [x, 0]]] },
+  });
+  const big = polygon('big', 0, 100);
+  const bigLineCopy = { ...big, layer: 'gl-draw-lines.cold' };            // 同一个面也出现在描边层
+  const smallInside = polygon('small', 40, 20);                           // 完全落在大面里
+  const smallBeside = polygon('beside', 101, 20);                         // 贴着大面的右边
+  const vertex = { properties: { meta: 'vertex', parent: 'big', coord_path: '0.1' }, geometry: { type: 'Point', coordinates: [100, 0] } };
+
+  const run = ({ point, boxHits, pointHits, target, throwOnQuery = false, fillOnly = true }) => {
+    const queries = [];
+    const map = {
+      queryRenderedFeatures(geometry, options) {
+        if (throwOnQuery) throw new Error('style not loaded');
+        queries.push({ box: Array.isArray(geometry[0]), layers: options.layers });
+        // 只认填充图层：描边图层的命中带容差，不能拿来判断"点击点在哪个面里"
+        if (!Array.isArray(geometry[0])) return fillOnly && options.layers.some((id) => !id.includes('polygon-fill')) ? [] : pointHits;
+        return boxHits;
+      },
+      // 经度、纬度与像素 1:1：面积就是边长平方
+      project: ([lng, lat]) => ({ x: lng, y: lat }),
+    };
+    const seen = [];
+    // 顶点 / 中点要素没有 id，只有 meta：统一记 id，没有就记 meta
+    const targetName = (event) => event.featureTarget.properties.id || event.featureTarget.properties.meta;
+    const base = {
+      ...upstream,
+      onMouseDown(state, event) {
+        seen.push(`down ${targetName(event)}`);
+        return 'down';
+      },
+      onClick(state, event) {
+        seen.push(`click ${targetName(event)}`);
+        return 'click';
+      },
+    };
+    base.onTap = base.onClick;   // 上游 SimpleSelect.onTap 与 onClick 是同一个函数
+    const handler = Object.assign({
+      map,
+      // 与编辑器 drawStyles() 经库加 .cold / .hot 后缀后的形态一致：带图层类型
+      drawConfig: { styles: [{ id: 'gl-draw-polygon-fill.cold', type: 'fill' }, { id: 'gl-draw-lines.cold', type: 'line' }], clickBuffer: 2 },
+    }, base);
+    const mode = createGuardedSimpleSelect(base);
+    const event = { point, featureTarget: target };
+    const results = [
+      mode.onMouseDown.call(handler, {}, event),
+      mode.onClick.call(handler, {}, event),
+      mode.onTap.call(handler, {}, event),
+    ];
+    const pointQueries = queries.filter((query) => !query.box);
+    // 判断"点击点在哪个面里"的查询只带填充图层
+    if (pointQueries.length) assert.deepEqual(pointQueries[0].layers, ['gl-draw-polygon-fill.cold'], '包含判定只能查填充图层');
+    return { results, seen, boxQueries: queries.filter((query) => query.box).length, pointQueries: pointQueries.length };
+  };
+
+  // 点击点同时落在两个面里（小面完全叠在大面里）：取面积最小的
+  assert.deepEqual(
+    run({ point: { x: 50, y: 10 }, boxHits: [big, bigLineCopy, smallInside], pointHits: [big, smallInside], target: big }),
+    { results: ['down', 'click', 'click'], seen: ['down small', 'click small', 'click small'], boxQueries: 3, pointQueries: 3 },
+    '重叠时选最小的面；同一个面的填充层与描边层副本不重复计入',
+  );
+  // 点击点只落在大面里，小面只是被 2px 点击缓冲擦到：选大面（贴边的小图斑不抢点击）
+  assert.deepEqual(
+    run({ point: { x: 100.5, y: 10 }, boxHits: [big, bigLineCopy, smallBeside], pointHits: [big], target: big }),
+    { results: ['down', 'click', 'click'], seen: ['down big', 'click big', 'click big'], boxQueries: 3, pointQueries: 3 },
+    '点击点只在一个面里就选它',
+  );
+  // 只命中一个面：库选的就是它，不做第二次查询
+  assert.deepEqual(
+    run({ point: { x: 20, y: 50 }, boxHits: [big, bigLineCopy], pointHits: [big], target: big }),
+    { results: ['down', 'click', 'click'], seen: ['down big', 'click big', 'click big'], boxQueries: 3, pointQueries: 0 },
+  );
+  // 库已经选中点目标（已选中面的顶点标记）：点优先，不查询
+  assert.deepEqual(
+    run({ point: { x: 100, y: 0 }, boxHits: [vertex, big, smallInside], pointHits: [big, smallInside], target: vertex }),
+    { results: ['down', 'click', 'click'], seen: ['down vertex', 'click vertex', 'click vertex'], boxQueries: 0, pointQueries: 0 },
+    '点目标（顶点）优先于面',
+  );
+  // 查询抛错：退回库的命中结果，不让点击失效
+  assert.deepEqual(
+    run({ point: { x: 50, y: 10 }, boxHits: [big, smallInside], pointHits: [], target: big, throwOnQuery: true }),
+    { results: ['down', 'click', 'click'], seen: ['down big', 'click big', 'click big'], boxQueries: 0, pointQueries: 0 },
+  );
+
+  const mode = createGuardedSimpleSelect({ ...upstream });
+  const before = { ...upstream };
+  assert.equal(mode.onSetup, before.onSetup);
+  assert.equal(mode.onMouseUp, before.onMouseUp);
+  assert.equal(mode.clickOnFeature, before.clickOnFeature);
+});
+
+test('createGuardedDirectSelect syncs the selected coordinates after a midpoint adds a vertex', () => {
+  // 上游 onMidpoint 加完顶点只改 state.selectedCoordPaths，库里的选中坐标（getSelectedPoints）
+  // 仍是空的：新顶点显示为选中，此刻按 Delete 却先弹"请先点击选中某个顶点"，随后又把它删掉
+  const upstream = MapboxDraw.modes.direct_select;
+  const run = (base, guarded) => {
+    const coordinates = [[[0, 0], [10, 0], [10, 10], [0, 10]]];      // 内部环不含闭合点（库的面模型）
+    const feature = {
+      id: 'f1',
+      addCoordinate(path, lng, lat) {
+        coordinates[0].splice(Number(path.split('.')[1]), 0, [lng, lat]);
+      },
+      toGeoJSON: () => ({ id: 'f1', type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [coordinates[0].concat([coordinates[0][0]])] } }),
+    };
+    const state = { featureId: 'f1', feature, selectedCoordPaths: [], canDragMove: false, initialDragPanState: null, dragMoveLocation: null };
+    const synced = [];
+    const events = [];
+    const handler = Object.assign({
+      map: { dragPan: { isEnabled: () => true, disable() {}, enable() {} } },
+      fire: (name) => events.push(name),
+      getSelected: () => [feature],
+      setSelectedCoordinates(coords) {
+        synced.push(coords.map((coordinate) => coordinate.coord_path));
+      },
+    }, base);
+    const event = { lngLat: { lng: 5, lat: 0 }, // Polygon 的坐标路径形如 '环.顶点'
+      featureTarget: { properties: { meta: 'midpoint', coord_path: '0.1', lng: 5, lat: 0 } } };
+    const mode = guarded ? createGuardedDirectSelect(base, () => assert.fail('加顶点不该触发删除拦截')) : base;
+    mode.onMidpoint.call(handler, state, event);
+    return { ring: coordinates[0], selectedPaths: state.selectedCoordPaths, synced, events };
+  };
+
+  const unguarded = run({ ...upstream }, false);
+  assert.deepEqual(unguarded.ring, [[0, 0], [5, 0], [10, 0], [10, 10], [0, 10]], '上游确实在 "1" 号位置插入了顶点');
+  assert.deepEqual(unguarded.selectedPaths, ['0.1']);
+  assert.deepEqual(unguarded.synced, [], '上游不同步库里的选中坐标——这就是缺陷');
+
+  const guarded = run({ ...upstream }, true);
+  assert.deepEqual(guarded.ring, unguarded.ring, '几何行为与上游一致');
+  assert.deepEqual(guarded.events, unguarded.events, '事件与上游一致');
+  assert.deepEqual(guarded.synced, [['0.1']], '加顶点后把新顶点同步为库里的选中坐标');
 });

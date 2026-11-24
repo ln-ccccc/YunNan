@@ -40,6 +40,19 @@
         show-icon
       />
 
+      <!-- 被取代提示（2026-11-24）：概览、台账、变化矩阵、溯源只认"同矿山同年 id 最大的
+           那条"成果。生产 3036 条可编辑成果里 2387 条已被更新的推理成果取代，此前编辑它们
+           没有任何提示，保存成功却哪里都不体现。与上面的覆盖提示一样独立成链 -->
+      <el-alert
+        v-if="result.effective === false"
+        class="editor-alert"
+        type="warning"
+        :closable="false"
+        title="该成果已被同矿山同年更新的成果取代"
+        description="这里保存的修订只保留在本成果自己的版本记录里，不会体现在概览、台账、变化矩阵与溯源中。要修正统计口径，请编辑同一矿山同年里没有“已被取代”标记的那一条成果。"
+        show-icon
+      />
+
       <el-alert
         v-if="result.vector_status === 'vector_failed'"
         class="editor-alert"
@@ -57,7 +70,7 @@
           <span v-if="selectedDrawIds.length" class="selection-count">已选择 {{ selectedDrawIds.length }} 个面</span>
         </div>
         <div class="toolbar-actions">
-          <el-button :disabled="!canUndo || saving" plain title="Ctrl+Z" @click="undoLastEdit">撤销</el-button>
+          <el-button :disabled="(!canUndo && !sketching) || saving" plain title="Ctrl+Z" @click="undoLastEdit">撤销</el-button>
           <el-button :disabled="!canRedo || saving" plain title="Ctrl+Y" @click="redoLastEdit">重做</el-button>
           <el-button :disabled="!isDirty || saving" plain @click="discardAllEdits">放弃全部修改</el-button>
           <el-button
@@ -130,6 +143,17 @@
               <small>{{ revision.feature_count }} 个面 · {{ formatTime(revision.created_at) }}</small>
             </li>
           </ol>
+          <!-- 键盘操作说明（2026-11-24）：此前的说明一个键都没提。放在版本记录下方——
+               那里有整块空白；放进左侧地类面板会被面板高度裁掉、要在面板里滚动才看得到 -->
+          <details class="key-hints">
+            <summary>键盘操作</summary>
+            <ul>
+              <li><kbd>回车</kbd> / <kbd>双击</kbd> / 单击起点：完成绘制；<kbd>Esc</kbd>：取消绘制、退出顶点编辑或取消选中</li>
+              <li>绘制中 <kbd>Backspace</kbd> / <kbd>Delete</kbd> / <kbd>Ctrl</kbd>+<kbd>Z</kbd>：退回上一个点</li>
+              <li>顶点模式下：单击顶点后拖动，<kbd>Delete</kbd> 删除该顶点；点边上的小圆点可加顶点</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>：撤销 / 重做</li>
+            </ul>
+          </details>
         </aside>
       </div>
     </template>
@@ -153,10 +177,14 @@ import {
 } from '@/api/classificationResults';
 import global from '@/global';
 import {
+  DRAW_POINT_STYLES,
+  SKETCH_MODE,
   basemapCoverageNotice,
   buildAssignedFeatureIdMap,
   buildEditableFeatureCollection,
   createGuardedDirectSelect,
+  createGuardedSimpleSelect,
+  createStepBackDrawPolygon,
   describeVertexDeletionBlockers,
   draftExportFilename,
   isEditableVectorStatus,
@@ -220,10 +248,10 @@ function drawStyles() {
       paint: { 'circle-radius': 4, 'circle-color': classColorExpression() },
     },
     {
-      id: 'gl-draw-vertex-outer',
+      id: DRAW_POINT_STYLES.vertex.id,
       type: 'circle',
       filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'vertex'], ['!=', 'mode', 'simple_select']],
-      paint: { 'circle-radius': 7, 'circle-color': '#ffffff' },
+      paint: { 'circle-radius': DRAW_POINT_STYLES.vertex.radius, 'circle-color': '#ffffff' },
     },
     {
       id: 'gl-draw-vertex-inner',
@@ -232,10 +260,10 @@ function drawStyles() {
       paint: { 'circle-radius': 5, 'circle-color': '#f59e0b' },
     },
     {
-      id: 'gl-draw-midpoint',
+      id: DRAW_POINT_STYLES.midpoint.id,
       type: 'circle',
       filter: ['all', ['==', 'meta', 'midpoint']],
-      paint: { 'circle-radius': 3, 'circle-color': '#f59e0b' },
+      paint: { 'circle-radius': DRAW_POINT_STYLES.midpoint.radius, 'circle-color': '#f59e0b' },
     },
   ];
 }
@@ -280,6 +308,9 @@ export default {
       // 选中面的地类集合（合并按钮置灰依据，E2-b）：与 selectedDrawIds 同步维护，
       // 只经 setSelectedDrawIds 写入
       selectedClassCodes: [],
+      // 绘制库当前模式（draw.modechange 同步）：为 draw_polygon 时表示"有画到一半的草稿"。
+      // 撤销按钮据此保持可用（绘制中撤销=退回上一个顶点），保存/导出据此拦截
+      drawMode: 'simple_select',
       // 撤销/重做历史（纯逻辑在 utils/classificationEditorHistory.mjs），
       // canUndo/canRedo 以 data 字段同步供模板响应
       history: null,
@@ -302,6 +333,10 @@ export default {
     // 不再等用户点了才报"仅支持合并同地类的面"
     mixedClassSelection() {
       return this.selectedClassCodes.length > 1;
+    },
+    // 绘制进行中（响应式，供模板用；判定口径同 isSketching）
+    sketching() {
+      return this.drawMode === SKETCH_MODE;
     },
   },
   watch: {
@@ -435,6 +470,10 @@ export default {
           tiles: [this.tileTemplate],
           tileSize: 256,
           ...resolveTileZoomRange(mapManifest),
+          // 底图的覆盖范围（清单 bounds = 底图资源登记的范围）同样交给 source：视野里超出覆盖
+          // 的那部分不再逐格请求不存在的瓦片。地图渲染本来正常，但浏览器控制台每次打开都刷
+          // 几十条 404（真实编辑测试一轮 192 条，2026-11-24 记录），范围里的瓦片照常请求
+          ...(bounds ? { bounds } : {}),
         };
         layers.push({ id: 'project-basemap', type: 'raster', source: 'project_basemap', paint: { 'raster-opacity': 0.92 } });
       }
@@ -478,6 +517,11 @@ export default {
                 });
               },
             ),
+            // 命中规则修正（2026-11-24）：库的"小面优先命中"从未生效，叠在一起或贴着边的
+            // 图斑里点小图斑选中的常常是大图斑；真实成果默认视野下 57 个图斑只有 31 个能单独点中
+            simple_select: createGuardedSimpleSelect(MapboxDraw.modes.simple_select),
+            // 绘制中的删除按钮 / Delete / Backspace / Ctrl+Z 退回上一个顶点，而不是丢弃整个草稿
+            draw_polygon: createStepBackDrawPolygon(MapboxDraw.modes.draw_polygon),
           },
         });
         this.map.addControl(this.draw, 'top-right');
@@ -520,6 +564,16 @@ export default {
               this.draw.changeMode('simple_select', selectedId != null ? { featureIds: [selectedId] } : {});
               return;
             }
+            // 普通选择下 Esc 清除选中（库自带的键盘处理同样到不了这里）。必须传空对象：
+            // 上游 onSetup 直接读 opts.featureIds，不传会抛 TypeError。
+            // 已处于 simple_select 时库只静默改选中、不发 draw.selectionchange
+            // （api.changeMode 的就近分支），本地选中态必须自己同步——否则地图上的高亮
+            // 已经消失，工具栏仍显示"已选择"，点地类会改到一个不再选中的面
+            if (e.key === 'Escape' && this.draw.getMode() === 'simple_select' && this.selectedDrawIds.length) {
+              this.draw.changeMode('simple_select', {});
+              this.setSelectedDrawIds(this.draw.getSelectedIds());
+              return;
+            }
             if (!TRASH_KEYS.has(e.key) || !(e.target instanceof HTMLCanvasElement)) return;
             e.preventDefault();
             guideTrashWithoutVertex();
@@ -542,6 +596,8 @@ export default {
           paint: { 'line-color': '#f43f5e', 'line-width': 1.5, 'line-dasharray': [3, 2] },
         });
         this.resetDrawing();
+        this.drawMode = this.draw.getMode();
+        this.map.on('draw.modechange', (event) => { this.drawMode = event.mode; });
         this.map.on('draw.create', this.handleDrawCreate);
         this.map.on('draw.update', this.handleDrawUpdate);
         this.map.on('draw.delete', this.handleDrawDelete);
@@ -556,6 +612,7 @@ export default {
       this.map = null;
       this.draw = null;
       this.tileTemplate = null;
+      this.drawMode = 'simple_select';
     },
     fitToCurrentFeatures(manifestBounds = null) {
       if (!this.map) return;
@@ -574,9 +631,29 @@ export default {
     },
     resetDrawing() {
       if (!this.draw || !this.result) return;
+      // 画到一半的草稿也在重置之列。必须先结束绘制模式再 draw.set：直接 set 会把草稿
+      // 从库里删掉，而绘制模式仍在引用它——之后点击没有反应、回车时草稿凭空消失
+      // （2026-11-24 通读绘制库发现）。结束时够三个点的草稿会先成为新面，随即被下面的
+      // 重置清掉；suppressDrawEvents 让这一步不弹提示、不记历史
+      if (this.draw.getMode() === SKETCH_MODE) {
+        this.suppressDrawEvents = true;
+        try {
+          this.draw.changeMode('simple_select', {});
+        } finally {
+          this.suppressDrawEvents = false;
+        }
+      }
       this.draw.set(this.result.current_feature_collection || emptyFeatureCollection());
       this.resetEditHistory();
       this.setSelectedDrawIds([]);
+    },
+    // 是否有画到一半的草稿（绘制模式进行中）
+    isSketching() {
+      return Boolean(this.draw) && this.draw.getMode() === SKETCH_MODE;
+    },
+    // 草稿没有地类、环也不闭合：读整幅画布（保存、导出草稿）之前必须先完成或取消绘制
+    warnSketchInProgress() {
+      this.$message.warning('有正在绘制、还没完成的面：按回车或双击完成绘制，按 Esc 取消，然后再保存或导出');
     },
     setSelectedDrawIds(drawIds) {
       /* selectedDrawIds 的唯一写入口：同步刷新选中面的地类集合（合并按钮置灰依据） */
@@ -636,7 +713,14 @@ export default {
       this.syncHistoryState();
     },
     undoLastEdit() {
-      if (!this.draw || !this.history?.canUndo) return;
+      if (!this.draw) return;
+      // 绘制进行中：撤销 = 退回刚放置的顶点（GIS 惯例），草稿已空则退出绘制。
+      // 这里绝不能 draw.set()：草稿会被删出库而绘制模式仍在引用它（见 resetDrawing）
+      if (this.draw.getMode() === SKETCH_MODE) {
+        this.draw.trash();
+        return;
+      }
+      if (!this.history?.canUndo) return;
       const previous = this.history.undo(this.currentDrawJson());
       if (!previous) return;
       this.draw.set(JSON.parse(previous));
@@ -644,7 +728,8 @@ export default {
       this.syncHistoryState();
     },
     redoLastEdit() {
-      if (!this.draw || !this.history?.canRedo) return;
+      // 绘制进行中重做没有意义，也不能 draw.set()（同撤销）
+      if (!this.draw || this.draw.getMode() === SKETCH_MODE || !this.history?.canRedo) return;
       const next = this.history.redo(this.currentDrawJson());
       if (!next) return;
       this.draw.set(JSON.parse(next));
@@ -836,6 +921,10 @@ export default {
     },
     async saveDrawing() {
       if (!this.context || !this.result || !this.draw) return;
+      if (this.isSketching()) {
+        this.warnSketchInProgress();
+        return;
+      }
       let featureCollection;
       try {
         featureCollection = buildEditableFeatureCollection(this.draw.getAll());
@@ -995,7 +1084,9 @@ export default {
         // 保存期间该面已被删除：无法定位
         target = null;
       }
-      if (target) {
+      // 保存期间用户可能又开始画面：此时切换模式会把草稿结束或丢弃，只提示、不定位
+      const sketching = this.isSketching();
+      if (target && !sketching) {
         this.draw.changeMode('simple_select', { featureIds: [targetId] });
         // 已处于 simple_select 时 changeMode 静默改选、不发 selectionchange，同步本地选中态
         this.setSelectedDrawIds([targetId]);
@@ -1007,7 +1098,7 @@ export default {
           );
         }
       }
-      const located = target ? '，已在地图上选中并定位' : '';
+      const located = target && !sketching ? '，已在地图上选中并定位' : '';
       this.$message.error(`无法保存：第 ${featureIndex + 1} 个面（共 ${total} 个）${reason}${located}`);
     },
     async downloadCurrent() {
@@ -1042,6 +1133,10 @@ export default {
     // 导出的不是用户看到的内容。改为在客户端导出当前画布（与保存提交同一套规范化：
     // 只保留 class_code / feature_id），文件名标明"基于 Vn 的未保存草稿"
     exportDraft(resultId) {
+      if (this.isSketching()) {
+        this.warnSketchInProgress();
+        return;
+      }
       let draft;
       try {
         draft = buildEditableFeatureCollection(this.draw.getAll());
@@ -1258,6 +1353,44 @@ h1 {
   border-top: 1px solid var(--border-light);
 }
 
+/* 键盘操作说明（2026-11-24）：默认收起，只占一行；展开后用版本记录下方的空白 */
+.key-hints {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.key-hints summary {
+  color: var(--text-secondary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.key-hints ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.key-hints li + li {
+  margin-top: 4px;
+}
+
+.key-hints kbd {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+}
+
 .map-card {
   position: relative;
   min-height: 650px;
@@ -1364,7 +1497,7 @@ h1 {
 
   .class-panel .panel-heading,
   .class-panel .panel-note {
-    grid-column: 1 / -1;
+    grid-column: 1 - / -1;
   }
 
   .map-card,

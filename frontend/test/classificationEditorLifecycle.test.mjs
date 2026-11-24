@@ -200,6 +200,10 @@ test('raster source applies the manifest zoom range via resolveTileZoomRange', (
   );
   const sourceBuild = source.slice(source.indexOf('sources.project_basemap'), source.indexOf("layers.push({ id: 'project-basemap'"));
   assert.match(sourceBuild, /\.\.\.resolveTileZoomRange\(mapManifest\)/, 'raster source 必须展开 resolveTileZoomRange(mapManifest)');
+  // 底图覆盖范围同样交给 source（2026-11-24）：视野超出覆盖的部分不再逐格请求不存在的瓦片
+  // （一轮真实编辑测试 192 条 404）。bounds 必须先过 validBounds；清单没有范围时不加限制
+  assert.match(sourceBuild, /\.\.\.\(bounds \? \{ bounds \} : \{\}\)/, 'raster source 必须带上底图覆盖范围');
+  assert.match(source, /const bounds = validBounds\(mapManifest\.bounds\);\s*const center = bounds/, '传给 source 的 bounds 必须是校验过的清单范围');
 });
 
 // ─── 2026-11-23 缺陷修复的源码形状守护 ────────────────────────────────────────
@@ -511,4 +515,117 @@ test('draft export downloads the unsaved canvas instead of the saved revision (E
   assert.match(draft, /new Blob\(\[JSON\.stringify\(draft\)\], \{ type: 'application\/geo\+json' \}\)/);
   assert.match(draft, /draftExportFilename\(resultId, this\.result\?\.current_revision_no\)/);
   assert.doesNotMatch(draft, /exportClassificationResult/, '草稿导出不请求服务端');
+});
+
+// ─── 2026-11-24：绘制进行中不得与"整幅画布"操作冲突 ───────────────────────────
+// 画到一半的草稿是一个没有地类、环也不闭合的要素，而且只在绘制模式的状态里被引用。
+// 通读 mapbox-gl-draw 1.5.1 的实现后确认了三处冲突（真实成果上均未被发现，因为
+// 以前的测试都是画完才操作）：未完成就点保存 → 报"class_code 必须为 0 到 5 的整数"；
+// Ctrl+Z / 重做 / 放弃全部修改 → draw.set() 把草稿删出库而绘制模式仍在引用它，之后
+// 点击没有反应、回车时草稿凭空消失；Delete/Backspace（12b79de 让它生效后）直接丢整个草稿。
+
+test('a sketch in progress never meets whole-canvas operations (2026-11-24)', () => {
+  // 绘制模式的"删除"改为退回上一个顶点；模式变化同步到响应式状态
+  assert.match(
+    sliceBetween('modes: {', 'this.map.addControl(this.draw'),
+    /draw_polygon: createStepBackDrawPolygon\(MapboxDraw\.modes\.draw_polygon\)/,
+    '绘制模式必须换成"退回上一个顶点"的工厂',
+  );
+  assert.match(
+    source,
+    /this\.map\.on\('draw\.modechange', \(event\) => \{ this\.drawMode = event\.mode; \}\);/,
+    '模式变化要同步到 drawMode',
+  );
+  assert.match(source, /:disabled="\(!canUndo && !sketching\) \|\| saving"/, '绘制中撤销按钮保持可用（退回顶点）');
+
+  // 撤销：绘制中只经 draw.trash() 退回顶点，绝不 draw.set()
+  const undo = withoutComments(sliceBetween('undoLastEdit() {', 'redoLastEdit() {'));
+  assert.match(
+    undo,
+    /if \(!this\.draw\) return;\s*if \(this\.draw\.getMode\(\) === SKETCH_MODE\) \{\s*this\.draw\.trash\(\);\s*return;\s*\}\s*if \(!this\.history\?\.canUndo\) return;[\s\S]*this\.draw\.set\(JSON\.parse\(previous\)\);/,
+    '绘制中的撤销不得走到 draw.set',
+  );
+  const redo = withoutComments(sliceBetween('redoLastEdit() {', 'handleKeydown(event) {'));
+  assert.match(redo, /if \(!this\.draw \|\| this\.draw\.getMode\(\) === SKETCH_MODE \|\| !this\.history\?\.canRedo\) return;/, '绘制中的重做不动作');
+
+  // 保存与导出草稿：读整幅画布之前先拦截
+  const save = withoutComments(sliceBetween('async saveDrawing() {', 'async loadRevisions'));
+  assert.ok(
+    /if \(!this\.context \|\| !this\.result \|\| !this\.draw\) return;\s*if \(this\.isSketching\(\)\) \{\s*this\.warnSketchInProgress\(\);\s*return;\s*\}\s*let featureCollection;\s*try \{\s*featureCollection = buildEditableFeatureCollection\(this\.draw\.getAll\(\)\)/.test(save),
+    '保存必须在读画布之前拦截未完成的绘制',
+  );
+  const draft = withoutComments(sliceBetween('exportDraft(resultId) {', 'classColor(definition) {'));
+  assert.ok(
+    /exportDraft\(resultId\) \{\s*if \(this\.isSketching\(\)\) \{\s*this\.warnSketchInProgress\(\);\s*return;\s*\}/.test(draft),
+    '导出草稿必须在读画布之前拦截未完成的绘制',
+  );
+  const warning = sliceBetween('warnSketchInProgress() {', 'setSelectedDrawIds(drawIds) {');
+  assert.match(warning, /回车或双击完成绘制，按 Esc 取消/, '拦截提示要说清怎么完成、怎么取消');
+  assert.match(
+    sliceBetween('isSketching() {', 'warnSketchInProgress() {'),
+    /return Boolean\(this\.draw\) && this\.draw\.getMode\(\) === SKETCH_MODE;/,
+    '绘制中的判定以库的当前模式为准',
+  );
+
+  // 放弃全部修改 / 重置画布：先结束绘制模式再 draw.set
+  const reset = withoutComments(sliceBetween('resetDrawing() {', 'setSelectedDrawIds(drawIds) {'));
+  const exitSketch = reset.indexOf('if (this.draw.getMode() === SKETCH_MODE) {');
+  const set = reset.indexOf('this.draw.set(');
+  assert.ok(exitSketch > 0 && exitSketch < set, '重置画布前必须先结束绘制模式');
+  assert.match(
+    reset,
+    /this\.suppressDrawEvents = true;\s*try \{\s*this\.draw\.changeMode\('simple_select', \{\}\);\s*\} finally \{\s*this\.suppressDrawEvents = false;\s*\}/,
+    '结束草稿不得弹提示、不得记历史',
+  );
+  assert.match(source, /destroyMap\(\) \{[\s\S]*?this\.drawMode = 'simple_select';/, '地图销毁时复位模式');
+
+  // 保存 422 的定位：保存期间用户可能又开始画面，此时切换模式会结束或丢弃草稿
+  const locate = withoutComments(sliceBetween('locateSaveValidationFailure(error, submittedDrawIds) {', 'async downloadCurrent() {'));
+  assert.match(
+    locate,
+    /const sketching = this\.isSketching\(\);\s*if \(target && !sketching\) \{\s*this\.draw\.changeMode\('simple_select'/,
+    '绘制中不切换模式',
+  );
+  assert.match(locate, /target && !sketching \? '，已在地图上选中并定位' : ''/, '没有定位就不能说"已定位"');
+
+  // Esc：普通选择下清除选中（上游 onSetup 直接读 opts.featureIds，必须传空对象）。
+  // 已处于 simple_select 时 api.changeMode 只静默改选中、不发 draw.selectionchange，
+  // 所以必须显式同步本地选中态——否则高亮已消失、工具栏仍显示"已选择"（夹具回归抓到）
+  const keyGuard = source.slice(source.indexOf("const TRASH_KEYS"), source.indexOf("this.map.addSource('result-roi'"));
+  assert.match(
+    withoutComments(keyGuard),
+    /if \(e\.key === 'Escape' && this\.draw\.getMode\(\) === 'simple_select' && this\.selectedDrawIds\.length\) \{\s*this\.draw\.changeMode\('simple_select', \{\}\);\s*this\.setSelectedDrawIds\(this\.draw\.getSelectedIds\(\)\);\s*return;\s*\}/,
+    'Esc 清除选中后必须用库的当前选中同步本地状态',
+  );
+
+  // 面板里要写明键盘操作（此前的说明一个键都没提）
+  const hints = sliceBetween('class="key-hints"', '</ul>');
+  for (const key of ['回车', 'Esc', 'Backspace', 'Delete', 'Ctrl']) assert.ok(hints.includes(`<kbd>${key}</kbd>`), `键盘说明应包含 ${key}`);
+});
+
+test('superseded results are called out without breaking the vector_failed v-if chain (2026-11-24)', () => {
+  const coverage = source.indexOf('v-if="coverageNotice"');
+  const superseded = source.indexOf('v-if="result.effective === false"');
+  const failed = source.indexOf("v-if=\"result.vector_status === 'vector_failed'\"");
+  const toolbar = source.indexOf('v-else class="editor-toolbar"');
+  assert.ok(coverage > 0 && coverage < superseded, '被取代提示排在覆盖提示之后');
+  assert.ok(superseded < failed && failed < toolbar, '被取代提示自带 v-if，必须排在 vector_failed 的 v-if 之前，否则工具栏的 v-else 会改绑');
+  const alert = sliceBetween('v-if="result.effective === false"', "v-if=\"result.vector_status === 'vector_failed'\"");
+  assert.match(alert, /title="该成果已被同矿山同年更新的成果取代"/);
+  assert.match(alert, /不会体现在概览、台账、变化矩阵与溯源中/, '要说清修订会去哪里、不会去哪里');
+  // 只提示、不禁用：契约允许保存任意 ready / ready_empty 成果；旧后端没有该字段时不提示
+  assert.doesNotMatch(source, /effective[\s\S]{0,80}:disabled/);
+});
+
+test('click targets are resolved by the corrected rule in both selection modes (2026-11-24)', () => {
+  // mapbox-gl-draw 1.5.1 的"面按面积从小到大命中"从未生效：sort_features 给面积函数传的是
+  // Feature，@mapbox/geojson-area 0.2.2 返回 undefined，比较结果恒为 NaN。实测新画的小面叠在
+  // 大面上，点小面选中的是大面；真实成果默认视野下 57 个图斑只有 31 个能单独点中。
+  const modes = sliceBetween('modes: {', 'this.map.addControl(this.draw');
+  assert.match(modes, /simple_select: createGuardedSimpleSelect\(MapboxDraw\.modes\.simple_select\)/, '普通选择模式必须换成命中规则修正后的工厂');
+  assert.match(
+    modes,
+    /\.\.\.MapboxDraw\.modes,\s*direct_select: createGuardedDirectSelect\(\s*MapboxDraw\.modes\.direct_select,/,
+    '其余模式仍原样保留，顶点模式用带防护的工厂',
+  );
 });
