@@ -22,12 +22,14 @@ rm -rf "$SRC" "$OUT"
 mkdir -p "$SRC" "$OUT"
 git -C "$REPO" archive "$COMMIT" backend | tar -x -C "$SRC"
 ENGINE="$SRC/backend/applications/project_hub"
-SCRIPT="$SRC/backend/tools/geometry_engine_experiments/adaptive_regression.py"
+SCRIPT_REL="tools/geometry_engine_experiments/adaptive_regression.py"
+SCRIPT="$SRC/backend/$SCRIPT_REL"     # 宿主路径：算哈希用；容器内的路径是 /app/backend/$SCRIPT_REL
+RUNNER="$REPO/backend/tools/geometry_engine_experiments/run_adaptive_regression.sh"
 {
   echo "commit $COMMIT"
   git -C "$REPO" log -1 --format='commit-date %cI%nsubject %s' "$COMMIT"
   sha256sum "$ENGINE/geometry_engine.py" "$ENGINE/geometry_metric.py" \
-    "$ENGINE/classification_results.py" "$SRC/backend/applications/api/project.py" "$SCRIPT" \
+    "$ENGINE/classification_results.py" "$SRC/backend/applications/api/project.py" "$SCRIPT" "$RUNNER" \
     "$PREV/production-results.ndjson" "$WORK/out/label-meta.ndjson"
   wc -l "$PREV/production-results.ndjson" "$WORK/out/label-meta.ndjson"
   [ "$SELECTION" = "all" ] || sha256sum "$WORK/$SELECTION"
@@ -41,7 +43,7 @@ MSYS_NO_PATHCONV=1 docker run --rm --network none --cpus "$WORKERS" --memory 2g 
   -e PROJ_DATA=/opt/conda/envs/MMSeg310/share/proj -e PROJECT_STORAGE_ROOT=/project_storage \
   -v "$SRC/backend:/app/backend:ro" -v "$STORAGE:/project_storage:ro" -v "$WORK:/work" \
   -v "$PREV/production-results.ndjson:/prev/production-results.ndjson:ro" \
-  yunnan-runtime:current "$SCRIPT" /prev/production-results.ndjson /work/out/label-meta.ndjson \
+  yunnan-runtime:current "/app/backend/$SCRIPT_REL" /prev/production-results.ndjson /work/out/label-meta.ndjson \
   "/work/out/$NAME" "$SELECTION" "$WORKERS" $REPEAT > "$OUT/stdout.log" 2> "$OUT/run.log"
 MSYS_NO_PATHCONV=1 docker run --rm --network none --entrypoint /opt/conda/envs/MMSeg310/bin/python yunnan-runtime:current \
   -c "import sys, shapely, shapely.geos, rasterio, rasterio.warp, numpy; print('python', sys.version.split()[0], 'shapely', shapely.__version__, 'geos', shapely.geos.geos_version_string, 'rasterio', rasterio.__version__, 'gdal', rasterio.__gdal_version__, 'proj', rasterio.__proj_version__, 'numpy', numpy.__version__)" >> "$OUT/binding.txt"

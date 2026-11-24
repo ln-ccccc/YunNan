@@ -31,6 +31,7 @@ from multiprocessing import Pool
 from types import SimpleNamespace
 
 from rasterio.warp import transform_geom
+from shapely.errors import ShapelyError
 from shapely.geometry import shape
 from shapely.ops import unary_union
 from shapely.prepared import prep
@@ -70,17 +71,35 @@ def literal_save_rule(roi, tolerant_roi, geometry):
 
 
 def equal_area_drift(original, candidate, longitude, latitude):
-    """PROJ 等积投影（以图斑中心为原点）下，逐部件的面积相对变化与对称差占比的最大值。"""
+    """PROJ 等积投影（以图斑中心为原点）下，逐部件的面积相对变化与对称差占比的最大值。
+
+    个别图斑在 EPSG:4326 里合法，变换到等积投影后却因为浮点误差自相交（全量回归里出现过），
+    那就量不了：返回 (None, None)，由汇总单独计数。这是交叉验证手段自身的局限，
+    与引擎的判定无关——引擎只在 EPSG:4326 里对已通过有效性判定的几何做叠加。
+    """
     target = f"+proj=laea +lat_0={latitude:.10f} +lon_0={longitude:.10f} +datum=WGS84 +units=m +no_defs"
-    left = shape(transform_geom("EPSG:4326", target, engine.to_geojson(original), precision=-1))
-    right = shape(transform_geom("EPSG:4326", target, engine.to_geojson(candidate), precision=-1))
-    return (
-        max(abs(new.area - old.area) / old.area for old, new in zip(parts_of(left), parts_of(right))),
-        part_shape_change(left, right),
-    )
+    try:
+        left = shape(transform_geom("EPSG:4326", target, engine.to_geojson(original), precision=-1))
+        right = shape(transform_geom("EPSG:4326", target, engine.to_geojson(candidate), precision=-1))
+        return (
+            max(abs(new.area - old.area) / old.area for old, new in zip(parts_of(left), parts_of(right))),
+            part_shape_change(left, right),
+        )
+    except ShapelyError:
+        return None, None
+
+
+def guarded(measure, fallback=None):
+    """GEOS 的叠加运算对个别合法输入也会失败（数值鲁棒性）。交叉验证里量不了的项记 fallback，
+    由汇总单独计数——既不让回归中断，也不把它悄悄当成 0。"""
+    try:
+        return measure()
+    except ShapelyError:
+        return fallback
 
 
 def distribution(values):
+    values = [value for value in values if value is not None]
     if not values:
         return {"p50": None, "p90": None, "p95": None, "p99": None, "max": None}
     ordered = sorted(values)
@@ -146,10 +165,12 @@ def process(line):
             row.update({
                 "n2": engine.position_count(candidate), "tol": outcome["tolerance"], "t0": initial,
                 "lvl": int(round(math.log2(initial / outcome["tolerance"]))) if outcome["tolerance"] < initial else 0,
-                "ae": (candidate.area - parsed.area) / parsed.area, "se": part_shape_change(parsed, candidate),
+                # 正式指标：引擎这一次返回的数值（它就是从这个候选几何上量出来的）
+                "ae": outcome["area_change"], "se": outcome["shape_change"],
                 # ---- 交叉验证（都不走引擎的判定代码）----
+                "x_ae": (candidate.area - parsed.area) / parsed.area, "x_se": part_shape_change(parsed, candidate),
                 "x_literal": int(literal_save_rule(roi, tolerant_roi, candidate)),
-                "x_out": candidate.difference(roi).area * square_metres,
+                "x_out": guarded(lambda: candidate.difference(roi).area * square_metres),
                 "x_topo": int(structure(candidate) == (part_count, hole_count) and candidate.geom_type == parsed.geom_type),
                 "x_vertices": int({
                     (x, y) for part in parts_of(candidate) for ring in [part.exterior, *part.interiors] for x, y in ring.coords
@@ -160,9 +181,9 @@ def process(line):
             point = parsed.representative_point()
             row["x_area"], row["x_shape"] = equal_area_drift(parsed, candidate, point.x, point.y)
             if touching:
-                row["c0"] = parsed.boundary.intersection(boundary_band).length
-                row["c1"] = candidate.boundary.intersection(boundary_band).length
-                row["hd"] = parsed.boundary.hausdorff_distance(candidate.boundary) * scale.metres_per_degree_lat
+                row["c0"] = guarded(lambda: parsed.boundary.intersection(boundary_band).length)
+                row["c1"] = guarded(lambda: candidate.boundary.intersection(boundary_band).length)
+                row["hd"] = guarded(lambda: parsed.boundary.hausdorff_distance(candidate.boundary) * scale.metres_per_degree_lat)
             # ---- 重复简化：第 2 ~ 5 次 ----
             current = outcome["geometry"]
             area_after = candidate.area
@@ -175,9 +196,12 @@ def process(line):
                 again = shape(current)
                 area_after = again.area
                 row["rp"] += 1
+                try:
+                    cumulative_shape = round(part_shape_change(parsed, again), 6)
+                except ShapelyError:
+                    continue  # 原始几何与第二次的结果做不了叠加：这一次记不上，不影响其它
                 row.setdefault("repeat", []).append([
-                    round(abs(again.area - parsed.area) / parsed.area, 6), round(part_shape_change(parsed, again), 6),
-                    engine.position_count(again),
+                    round(abs(again.area - parsed.area) / parsed.area, 6), cumulative_shape, engine.position_count(again),
                 ])
             replaced.append(candidate)
             candidates.append((index, candidate.wkb_hex))
@@ -191,15 +215,19 @@ def process(line):
         rows.append(row)
     # 图斑之间的重叠、被图斑覆盖的面积：整条成果的图斑并集，简化前后各算一次
     started = time.perf_counter()
-    union_before = unary_union(originals) if originals else None
-    union_after = unary_union(replaced) if replaced else None
+    union_before = guarded(lambda: unary_union(originals)) if originals else None
+    union_after = guarded(lambda: unary_union(replaced)) if replaced else None
+    # 并集算不出来（或原来是空的）时四项都记 None，汇总里单独计数
+    overlap_before = overlap_after = covered_before = covered_after = None
+    if union_before is not None and not union_before.is_empty and union_after is not None and not union_after.is_empty:
+        overlap_before = (sum(item.area for item in originals) - union_before.area) * square_metres
+        overlap_after = (sum(item.area for item in replaced) - union_after.area) * square_metres
+        covered_before, covered_after = union_before.area * square_metres, union_after.area * square_metres
     summary = {
         "r": result_id, "project": result["project_id"], "features": len(rows), "pixel": pixel,
         "ms_union": round((time.perf_counter() - started) * 1000, 3),
-        "overlap_before_m2": (sum(item.area for item in originals) - union_before.area) * square_metres if originals else None,
-        "overlap_after_m2": (sum(item.area for item in replaced) - union_after.area) * square_metres if replaced else None,
-        "covered_before_m2": union_before.area * square_metres if union_before is not None and not union_before.is_empty else 0.0,
-        "covered_after_m2": union_after.area * square_metres if union_after is not None and not union_after.is_empty else 0.0,
+        "overlap_before_m2": overlap_before, "overlap_after_m2": overlap_after,
+        "covered_before_m2": covered_before, "covered_after_m2": covered_after,
         "classes": {str(key): {"a0": value["a0"] * square_metres, "a1": value["a1"] * square_metres,
                                "abs": value["abs"] * square_metres, "features": value["features"]}
                     for key, value in sorted(class_totals.items())},
@@ -276,20 +304,31 @@ def summarize(summaries, rows, nondeterministic):
             "changed": len(changed),
             "literal_rule_accepts": sum(1 for row in changed if row["x_literal"] == 1),
             "overlay_outside_zero": sum(1 for row in changed if row["x_out"] == 0),
-            "overlay_outside_m2_max": round(max((row["x_out"] for row in changed), default=0), 6),
+            "overlay_outside_nonzero": sum(1 for row in changed if row["x_out"] is not None and row["x_out"] != 0),
+            "overlay_outside_unavailable": sum(1 for row in changed if row["x_out"] is None),
+            "overlay_outside_m2_max": round(max((row["x_out"] for row in changed if row["x_out"] is not None), default=0), 6),
             "structure_preserved": sum(1 for row in changed if row["x_topo"] == 1),
             "vertices_subset": sum(1 for row in changed if row["x_vertices"] == 1),
-            "exact_area_change": distribution([row["x_area"] for row in changed]),
-            "exact_shape_change": distribution([row["x_shape"] for row in changed]),
-            "over_threshold": sum(1 for row in changed if row["x_area"] > engine.MAX_SIMPLIFY_AREA_CHANGE + 1e-9
-                                  or row["x_shape"] > engine.MAX_SIMPLIFY_SHAPE_CHANGE + 1e-9),
+            # 独立复算（度空间直接量）与引擎报告的数值一致
+            "recomputed_area_change": distribution([abs(row["x_ae"]) for row in changed]),
+            "recomputed_vs_reported_max_abs_diff": max(
+                (max(abs(abs(row["x_ae"]) - abs(row["ae"])), abs(row["x_se"] - row["se"])) for row in changed), default=None),
+            # PROJ 等积投影下的精确值；个别图斑投影后无效、量不了，单独计数
+            "exact_area_change": distribution([row["x_area"] for row in changed if row["x_area"] is not None]),
+            "exact_shape_change": distribution([row["x_shape"] for row in changed if row["x_shape"] is not None]),
+            "exact_check_unavailable": sum(1 for row in changed if row["x_area"] is None),
+            "over_threshold": sum(1 for row in changed if row["x_area"] is not None
+                                  and (row["x_area"] > engine.MAX_SIMPLIFY_AREA_CHANGE + 1e-9
+                                       or row["x_shape"] > engine.MAX_SIMPLIFY_SHAPE_CHANGE + 1e-9)),
         },
         "boundary_contact": {
             "changed_touching": len(touching),
-            "contact_length_kept": (round(sum(row["c1"] for row in touching) / sum(row["c0"] for row in touching), 4)
-                                    if touching and sum(row["c0"] for row in touching) else None),
+            "contact_length_kept": (round(sum(row["c1"] for row in touching if row["c1"] is not None)
+                                           / sum(row["c0"] for row in touching if row["c0"] is not None), 4)
+                                    if any(row["c0"] is not None for row in touching) else None),
+            "contact_measure_unavailable": sum(1 for row in touching if row["c0"] is None or row["c1"] is None),
             "detachment_m": distribution([row["hd"] for row in touching]),
-            "features_detached_over_10cm": sum(1 for row in touching if row["hd"] > 0.1),
+            "features_detached_over_10cm": sum(1 for row in touching if row["hd"] is not None and row["hd"] > 0.1),
         },
         "overlap_and_coverage": {
             "overlap_before_m2": round(sum(item["overlap_before_m2"] or 0 for item in summaries), 3),
@@ -297,7 +336,9 @@ def summarize(summaries, rows, nondeterministic):
             "covered_before_m2": round(sum(item["covered_before_m2"] for item in summaries), 3),
             "covered_after_m2": round(sum(item["covered_after_m2"] for item in summaries), 3),
             "coverage_change_by_result_m2": distribution([
-                item["covered_after_m2"] - item["covered_before_m2"] for item in summaries]),
+                item["covered_after_m2"] - item["covered_before_m2"]
+                for item in summaries if item["covered_after_m2"] is not None and item["covered_before_m2"] is not None]),
+            "results_without_union_metrics": sum(1 for item in summaries if item["covered_before_m2"] is None),
         },
         "classes": {key: {"features": value["features"], "before_m2": round(value["a0"], 3),
                           "net_change": round((value["a1"] - value["a0"]) / value["a0"], 6) if value["a0"] else None,
