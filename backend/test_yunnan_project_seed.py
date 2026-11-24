@@ -141,6 +141,9 @@ class TestYunnanProjectSeed(unittest.TestCase):
 
     def test_seeds_project_from_repository_yunnan_kml(self):
         real_kml_path = Path(__file__).resolve().parents[1] / "miner" / "yunnan.kml"
+        if not real_kml_path.is_file():
+            # 这个文件被 .gitignore 忽略，只在开发主树里；干净检出、发布目录里没有它
+            self.skipTest("本检出里没有 miner/yunnan.kml")
 
         result = seed_yunnan_project(real_kml_path)
 

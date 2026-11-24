@@ -439,6 +439,13 @@ class TestInitDbFailureReporting(unittest.TestCase):
         self.init_db_module = importlib.import_module(
             "applications.common.scripts.init_db"
         )
+        # init_db 在读不到 MYSQL_PASSWORD 时直接跳过、不回退默认口令；这个值是模块加载时就固定下来的常量
+        # PASSWORD，不是调用时才读环境变量。此前下面两条用例只有在开发主树里才能通过——靠的是本机那份
+        # 被 .gitignore 忽略、含库口令的 backend/.flaskenv，干净检出里必然失败（2026-11-25 在独立
+        # 工作树上跑全量回归时发现）。用例自己把常量换成一个哑口令；连接已被替换成假对象，这个值不会被用到
+        password = patch.object(self.init_db_module, "PASSWORD", "test-only-password")
+        password.start()
+        self.addCleanup(password.stop)
         self.tmp = tempfile.mkdtemp()
         self.sql_path = os.path.join(self.tmp, "init_fixture.sql")
 
