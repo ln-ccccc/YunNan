@@ -165,6 +165,24 @@ class TestClassificationGeometryAPI(unittest.TestCase):
                 if field == "geometry":
                     self.assertEqual(details["feature_index"], 1)
 
+    def test_unsupported_geometry_gets_its_own_reason(self):
+        """不是面结构的几何：拒绝理由说的是它自己的问题，不能说成「坐标位置总数超过上限」（2026-11-25 接口冒烟）。"""
+        point = {"type": "Point", "coordinates": [1, 2]}
+        response = self.post("/geometry/validate", {"geometries": [INSIDE, point]})
+        self.assertEqual(response.status_code, 200, response.data)
+        items = response.get_json()["data"]["items"]
+        self.assertEqual(items[0], {"ok": True})
+        self.assertEqual(
+            (items[1]["ok"], items[1]["code"], items[1]["reason"]),
+            (False, "INVALID_GEOMETRY", "仅支持 Polygon 或 MultiPolygon"),
+        )
+        for suffix in ("/geometry/simplify", "/geometry/union"):
+            with self.subTest(suffix=suffix):
+                response = self.post(suffix, {"geometries": [INSIDE, point]})
+                # 简化是逐面给结论，合并是整个请求被拒：都不许把点几何说成坐标数量超限
+                self.assertNotIn("200000", response.get_data(as_text=True))
+                self.assertIn("仅支持 Polygon 或 MultiPolygon", response.get_data(as_text=True))
+
     def test_requires_login_and_result_in_project(self):
         unauthenticated = self.app.test_client().post(self._result_url("/geometry/validate"), json={"geometries": [INSIDE]})
         self.assertEqual(unauthenticated.status_code, 401)

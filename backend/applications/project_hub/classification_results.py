@@ -503,7 +503,10 @@ def _geometry_request(result, payload, body_size, *, keys, minimum, maximum):
         try:
             positions += _position_count(geometry)
         except TypeError:
-            positions += MAX_GEOMETRY_REQUEST_POSITIONS + 1
+            # 数不了坐标（不是面结构，例如 Point）：这里不下结论，交给后面的解析给出准确的原因。
+            # 此前把它记成「超过上限」，拒绝理由就成了「坐标位置总数不能超过 200000」，与输入对不上
+            # （2026-11-25 接口冒烟发现）。请求体有 10 MiB 的上限，解析这类几何的开销是有界的
+            continue
     # 只数坐标、不校验结构：先挡住超量请求，再逐个解析
     if positions > MAX_GEOMETRY_REQUEST_POSITIONS:
         _validation_error("geometries", f"请求内坐标位置总数不能超过 {MAX_GEOMETRY_REQUEST_POSITIONS}", message=message)
