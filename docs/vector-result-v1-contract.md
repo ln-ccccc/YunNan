@@ -121,6 +121,9 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 | `GET /api/projects/{project_id}/classification-results/{result_id}/revisions` | 读取修订摘要。 | 只返回版本列表与作者/时间摘要，不返回历史版本回滚能力。 |
 | `POST /api/projects/{project_id}/classification-results/{result_id}/revisions` | 保存编辑成果。 | 只使用绑定 URL 成果的受限 FeatureCollection 与 `base_revision_no`；通过后创建一个新修订和审计记录。它不是通用 GeoJSON 文件导入、外部 URL 导入或服务器路径导入接口。 |
 | `POST /api/projects/{project_id}/classification-results/{result_id}/export` | 下载当前成果。 | 服务端根据当前版本生成 GeoJSON；不得接受或导出客户端上传的 `features`。 |
+| `POST /api/projects/{project_id}/classification-results/{result_id}/geometry/validate` | 编辑完成后校验改动的面。 | 只读。请求体 `{ "geometries": [GeoJSON Polygon / MultiPolygon, ...] }`（1–2000 个）；逐个给出与保存完全相同的结论。 |
+| `POST /api/projects/{project_id}/classification-results/{result_id}/geometry/simplify` | 消除锯齿。 | 只读。请求体同上（可选 `tolerance`，不传用默认 1e-5 度）；只返回通过了保存同款校验的几何。 |
+| `POST /api/projects/{project_id}/classification-results/{result_id}/geometry/union` | 合并面。 | 只读。请求体 `{ "geometries": [...] }`（2–50 个）；合并结果不被保存规则接受时 `422`。 |
 | `GET /api/projects/{project_id}/map-resources/{resource_id}/tiles/{z}/{x}/{y}.png` | GeoView 受控读取底图瓦片。 | 必须验证会话和资源归属；编辑器只能消费地图 manifest 中提供的 `api_tile_url`。 |
 | 既有分类历史接口的扩展 | 分类历史卡片跳转。 | 项目关联记录只增补 `result_id`、`vector_status`、`vector_error`；没有矢量成果的旧记录保持可读且这些字段为空。 |
 
@@ -181,6 +184,58 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 
 示例中的 `coordinates` 仅省略具体合法环以突出字段白名单；实际保存必须满足第 7 节的几何校验。`base_revision_no` 必须是非负安全整数。一个请求内所有非空 `feature_id` 必须统一唯一；既有 ID 仅可指向同一 `{result_id}` 的 `base_revision_no` 中既有逻辑要素，正式人工 ID 由服务端生成、在该成果所有历史和当前修订中唯一且永不复用；临时 `client-` ID 只用于本次请求且不得持久化。服务端不得自动修补自交、未闭合环、ROI 外或其他无效几何，而是全量拒绝。该 body 只能代表 URL 已绑定的单一 `{result_id}`；不得上传通用 GeoJSON 文件、`multipart/form-data` 文件、外部 URL、对象存储 URL 或服务器路径。保存成功的 `data` 至少返回 `result_id`、新 `revision_no`、新的 `current_revision_no` 和服务器规范化后的当前 `feature_collection`。导出请求没有 `features` 业务输入，返回的下载内容只能是服务器当前修订生成的 GeoJSON。
 
+### 6.2 编辑期几何接口（2026-11-24）
+
+三个 `geometry/*` 接口都**只读**：不写库、不写文件、不产生修订。入参里的每个几何必须恰为 `{ "type", "coordinates" }`（多一个键即 `422`）；请求体不超过 10 MiB，请求内坐标位置总数不超过 200,000。成果不属于该项目返回 `404`，未登录 `401`。
+
+`validate` 响应的 `data`：
+
+```json
+{
+  "items": [
+    { "ok": true },
+    { "ok": false, "code": "OUTSIDE_ROI", "field": "geometry", "reason": "几何必须完全位于成果 ROI 内",
+      "outside_area_m2": 27.423, "outside_distance_m": 5.4011 }
+  ]
+}
+```
+
+`items` 与入参同序；`code` 为 `INVALID_GEOMETRY` 或 `OUTSIDE_ROI`。面积与距离只用于提示量级（度按 111,320 米/度近似换算，最远距离取伸出部分不超过 200 个顶点的近似值），不参与判定。
+
+`simplify` 响应的 `data`：
+
+```json
+{
+  "tolerance": 0.00001,
+  "items": [
+    { "outcome": "changed", "geometry": { "type": "Polygon", "coordinates": [] } },
+    { "outcome": "unchanged" },
+    { "outcome": "rejected", "reason": { "ok": false, "code": "OUTSIDE_ROI", "field": "geometry", "reason": "…", "outside_area_m2": 0.0, "outside_distance_m": 0.0 } }
+  ]
+}
+```
+
+- `changed` 一定带 `geometry`，且一定通过 `evaluate`；`unchanged` 表示没有可去掉的顶点；`rejected` 表示三级容差（1、1/4、1/16）都不过，**调用方必须保持原几何不变**。几何正确性优先于简化成功率。
+- 算法是 Shapely 原生拓扑保持简化（GEOS 3.10.3）。不做任何自定义几何处理：不裁剪、不吸附、不改动未提交的图斑。
+- 已知限制：GEOS 3.10.3 的拓扑保持简化对约 0.02%–0.03% 的退化输入不确定——同一输入可能得到两个不同的合法结果，或一次 `changed` 一次 `rejected`。两种结果都合法。见 [对照实验 §7](geometry-engine-simplify-ablation.md)。
+
+`union` 响应的 `data` 为 `{ "geometry": { … } }`（`Polygon` 或 `MultiPolygon`）。合并结果不被保存规则接受时 `422`，`data.details` 为 `{ code, field, reason, outside_area_m2, outside_distance_m }`，与 `validate` 的不合法项同构。
+
+**三个容差是三种不同的东西，不能互相顶替：**
+
+| 名称 | 值 | 含义 |
+| --- | --- | --- |
+| 坐标精度 | 1e-10 度 | 自动矢量化写坐标时的舍入单位。不是容差 |
+| 数值容差 | 1e-9 度（约 0.1 毫米） | 合法性判定里唯一允许的容差，只吸收坐标舍入与投影换算误差 |
+| 简化容差 | 1e-5 度（约 1.1 米） | 用户可见的简化力度。与合法性无关 |
+
+像元分辨率属于每条成果自己的 label 栅格，不参与合法性判定。前端只负责渲染、交互与撤销重做，
+**不得自行实现空间关系、相交、拓扑或有效性判断**；编辑器在每次编辑操作完成后把改动的面送 `validate`，
+在保存前就给出与保存相同的结论。
+
+测试：`backend/test_classification_geometry_api.py`（成功 / `404` / `401` / `422` / 合并失败 / 只读性 / 与保存理由逐字一致）、
+`backend/test_geometry_engine.py`（不变量与属性测试，「引擎只封装 GEOS」源码守卫）。
+
 ## 7. 409 与 422 语义
 
 | HTTP status | 何时使用 | `data.details` 的最小内容 | 禁止的行为 |
@@ -192,7 +247,15 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 保存前必须完整校验受限 FeatureCollection，且任一失败均为全量失败：
 
 - FeatureCollection 与每个 Feature 的结构必须有效；每个几何必须是非空、有效的 `Polygon` 或 `MultiPolygon`。
-- 每个 position 必须是恰有两个有限数值元素的数组 `[longitude, latitude]`；经纬度必须为 EPSG:4326 的经度 `[-180, 180]`、纬度 `[-90, 90]`，拒绝 Z 值及其他额外维度。每个几何必须完全被该 `{result_id}` 对应 ROI 的 `covers` 包含，不允许 buffer、容差或“相交即可”的宽松判断。
+- 每个 position 必须是恰有两个有限数值元素的数组 `[longitude, latitude]`；经纬度必须为 EPSG:4326 的经度 `[-180, 180]`、纬度 `[-90, 90]`，拒绝 Z 值及其他额外维度。每个几何必须完整位于该 `{result_id}` 对应的 ROI 内，判定表达式只有一条：
+  `roi.covers(g) or roi.buffer(1e-9).covers(g)`（2026-11-24 订正：原文写的是「不允许 buffer、容差」，与实现不符——1e-9 度的数值容差自引入起就一直在）。
+  1e-9 度（约 0.1 毫米）是**数值容差**，只吸收自动矢量化坐标舍入（精度 1e-10 度）与投影换算的误差；
+  它远小于最细的影像像元（0.1 米 ≈ 1e-6 度），像元量级的真实越界仍被拒绝。保存、编辑期校验、简化、合并
+  用的是同一个函数（`backend/applications/project_hub/geometry_engine.py::evaluate`），不存在第二套口径。
+- 图斑**之间**没有任何约束：契约不要求图斑互不重叠，不要求覆盖矿山时没有缝隙，`MultiPolygon` 图斑与
+  `MultiPolygon` 矿山边界都允许。这是既有规则，2026-11-24 只是把它写明；是否增加此类约束属于产品决定。
+  实测（全部 3029 条成果、144,176 个图斑）：7 条成果的图斑之间存在真实重叠（合计约 1.96 万平方米，最大一处 1,887 平方米）；
+  约 40% 的成果在矿山内有超过面积 1% 的没有图斑的部分。
 - 每个既有 `feature_id` 必须属于提交的 `base_revision_no` 且属于当前 `{result_id}`；新要素只可省略 ID 或使用临时 `client-` 前缀 ID；一个请求内所有非空 ID 必须统一唯一。客户端不得提交或覆盖 `class_name`、`source`、`result_id`、`revision_no` 等服务器权威属性。
 - 单次保存请求的 UTF-8 JSON body 不得超过 **10 MiB**（`10 × 1024 × 1024` bytes）；Feature 总数不得超过 **2,000**；每个 Feature 的全部环中坐标位置总数不得超过 **5,000**；整个 FeatureCollection 的坐标位置总数不得超过 **100,000**。坐标位置按请求中出现的每个 `[longitude, latitude]` 计数，包含闭合环重复的末端位置。
 - 三个数量上限（2,000 / 5,000 / 100,000）约束的是相对基准修订的**增长**，不是**继承**（2026-11-24 订正）。请求超过上限时，只有当它不比 `base_revision_no` 快照更大才放行：Feature 总数不超过基准修订的要素数；既有 `feature_id`（属于基准修订）的要素坐标数不超过它在基准修订中的坐标数；整集合坐标总数不超过基准修订的总量。新要素（省略 ID 或 `client-` 前缀）、重新出现的既有 ID、以及既有要素变大，仍一律按上限拒绝。请求体 10 MiB 上限不适用本条。
