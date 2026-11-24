@@ -1,0 +1,103 @@
+# 发布演练专用覆盖文件。与 docker-compose.prod.yml 叠加，得到一套与生产完全隔离的栈。
+# 步骤见 docs/deployment-release-isolation.md「发布演练」。
+#
+# 主文件里有三类东西是写死的，只换 compose 项目名挡不住，必须在这里逐项盖掉：
+#   1. container_name —— 否则与生产容器重名；
+#   2. 命名卷的 name —— 否则直接挂上生产的 yunnan_mysql_data 等数据卷；
+#   3. ports —— compose 对端口是追加而不是替换，必须用 !override，否则与生产抢 5008 / 3000 / 8000 / 4000。
+# 数据目录全部换成演练目录；KML 与 xlsx 不属于任何提交，从项目数据目录只读挂入。
+#
+# config.yaml 另挂一份演练版（REHEARSAL_CONFIG，只改 4 个端口）：GeoView 浏览器端直连后端的地址、
+# GeoView 与 Miner 互相跳转的地址，都是构建时从 config.yaml 写进产物的。演练栈如果沿用发布目录里的那一份，
+# 演练页面里的浏览器会去连 127.0.0.1:5008 —— 那是生产后端。
+#
+# 不启动 inference-worker（要 GPU 和 4.5GiB 内存，与矢量编辑无关），但它的名字和数据目录同样盖掉，
+# 免得误操作时碰到生产。
+
+x-rehearsal-config: &rehearsal-config "${REHEARSAL_CONFIG:?请设置演练 config.yaml，用 deploy/release_tool.py rehearsal-config 生成}:/app/config.yaml:ro"
+
+services:
+  mysql:
+    container_name: yunnan-rehearsal-mysql
+    mem_limit: 512m
+    command: >-
+      --default-authentication-plugin=mysql_native_password
+      --innodb-buffer-pool-size=64M
+      --performance-schema=OFF
+
+  backend:
+    container_name: yunnan-rehearsal-backend
+    environment:
+      # 后端的跨域白名单按这两个端口拼出来；演练端口与生产不同，要跟着改
+      FRONTEND_PORT: "${REHEARSAL_FRONTEND_PORT:-23000}"
+      MINER_FRONTEND_PORT: "${REHEARSAL_MINER_WEB_PORT:-24000}"
+      # 兼容性测试要从别的端口打开旧构建、新构建的副本（"旧页面 + 新后端"、"新页面 + 旧后端"），这些来源也要放行。
+      # 一旦显式配置，后端就不再按端口自动拼白名单，所以 GeoView 自己的端口要写进来
+      CORS_ALLOWED_ORIGINS: "http://127.0.0.1:${REHEARSAL_FRONTEND_PORT:-23000},http://localhost:${REHEARSAL_FRONTEND_PORT:-23000},http://127.0.0.1:23001,http://127.0.0.1:23002"
+    ports: !override
+      - "127.0.0.1:${REHEARSAL_BACKEND_PORT:-25008}:5008"
+    volumes:
+      - *rehearsal-config
+      - ${REHEARSAL_STORAGE:?请设置演练存储目录}/project_storage:/project_storage
+      - ${REHEARSAL_MAPS:?请设置演练底图目录（可以是空目录）}:/project_storage/incoming/dali:ro
+      - ${REHEARSAL_DATA_DIR:?请设置存放 yunnan.kml 与 xlsx 的项目目录}/miner/yunnan.kml:/app/miner/yunnan.kml:ro
+      - ${REHEARSAL_DATA_DIR}/miner/NDVI_2year.xlsx:/app/miner/NDVI_2year.xlsx:ro
+      - ${REHEARSAL_DATA_DIR}/miner/NDBI_by_fid_2year_avg.xlsx:/app/miner/NDBI_by_fid_2year_avg.xlsx:ro
+      - ${REHEARSAL_DATA_DIR}/miner/NDWI_by_fid_2year_avg.xlsx:/app/miner/NDWI_by_fid_2year_avg.xlsx:ro
+      - ${REHEARSAL_DATA_DIR}/miner/NDSI_by_fid_2year_avg.xlsx:/app/miner/NDSI_by_fid_2year_avg.xlsx:ro
+
+  frontend:
+    container_name: yunnan-rehearsal-frontend
+    ports: !override
+      - "127.0.0.1:${REHEARSAL_FRONTEND_PORT:-23000}:3000"
+    volumes:
+      - *rehearsal-config
+
+  miner-api:
+    container_name: yunnan-rehearsal-miner-api
+    ports: !override
+      - "127.0.0.1:${REHEARSAL_MINER_API_PORT:-28000}:8000"
+    volumes:
+      - *rehearsal-config
+      - ${REHEARSAL_STORAGE:?请设置演练存储目录}/project_storage:/project_storage:ro
+      - ${REHEARSAL_DATA_DIR:?}/miner/yunnan.kml:/app/miner/yunnan.kml:ro
+      - ${REHEARSAL_DATA_DIR}/miner/NDVI_2year.xlsx:/app/miner/NDVI_2year.xlsx:ro
+      - ${REHEARSAL_DATA_DIR}/miner/NDBI_by_fid_2year_avg.xlsx:/app/miner/NDBI_by_fid_2year_avg.xlsx:ro
+      - ${REHEARSAL_DATA_DIR}/miner/NDWI_by_fid_2year_avg.xlsx:/app/miner/NDWI_by_fid_2year_avg.xlsx:ro
+      - ${REHEARSAL_DATA_DIR}/miner/NDSI_by_fid_2year_avg.xlsx:/app/miner/NDSI_by_fid_2year_avg.xlsx:ro
+
+  miner-web:
+    container_name: yunnan-rehearsal-miner-web
+    ports: !override
+      - "127.0.0.1:${REHEARSAL_MINER_WEB_PORT:-24000}:4000"
+    volumes:
+      - *rehearsal-config
+
+  spatial-worker:
+    container_name: yunnan-rehearsal-spatial-worker
+    volumes:
+      - *rehearsal-config
+      - ${REHEARSAL_STORAGE:?请设置演练存储目录}/project_storage:/project_storage
+      - ${REHEARSAL_MAPS:?}:/project_storage/incoming/dali:ro
+      - ${REHEARSAL_DATA_DIR:?}/miner/yunnan.kml:/app/miner/yunnan.kml:ro
+
+  inference-worker:
+    container_name: yunnan-rehearsal-inference-worker
+    volumes:
+      - *rehearsal-config
+      - ${REHEARSAL_STORAGE:?请设置演练存储目录}/project_storage:/project_storage
+      - ${REHEARSAL_DATA_DIR:?}/miner/yunnan.kml:/app/miner/yunnan.kml:ro
+
+volumes:
+  backend-static:
+    name: yunnan-rehearsal_backend_static
+  mysql-data:
+    name: yunnan-rehearsal_mysql_data
+  hf-cache:
+    name: yunnan-rehearsal_hf_cache
+  miner-outputs:
+    name: yunnan-rehearsal_miner_outputs
+  miner-uploads:
+    name: yunnan-rehearsal_miner_uploads
+  inference-runtime:
+    name: yunnan-rehearsal_inference_runtime
