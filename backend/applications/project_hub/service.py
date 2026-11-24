@@ -246,6 +246,10 @@ def replace_project_mines(project_id, mines, actor="system"):
 
 def create_dataset(project_id, payload, actor="system"):
     project = _get_project_or_404(project_id)
+    if project.status == "archived":
+        # 归档写守卫（2026-11-18 验收 D-04，自 main 的 7993429 移植）：与空间入口
+        # （_editable_project）同语义——归档项目不允许新增数据集登记，且不产生部分写入
+        raise ProjectStorageValidationError("归档项目不允许登记数据集")
     if "file_path" in payload:
         raise ProjectStorageValidationError("请使用 storage_key 登记数据文件")
     dataset_kind = str(payload.get("dataset_kind") or "").strip()

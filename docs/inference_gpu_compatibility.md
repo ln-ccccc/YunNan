@@ -80,6 +80,7 @@ docker exec cugrs-inference-worker \
 | `HOST_MEMORY_EXHAUSTED` | 宿主（RAM）内存不足，模型加载分配失败（`Errno 12`），允许时回退 CPU；任务结束后卸载回退模型以便内存释放后重试 GPU |
 | `CUDA_OUT_OF_MEMORY` | GPU 显存不足，允许时用 CPU 重跑 |
 | `GPU_INFERENCE_FAILED` | 其他 GPU 推理失败 |
+| `PUBLISH_DIR_NOT_WRITABLE` | 成果发布目录不可写（`EACCES/EPERM/EROFS`，2026-11-18 验收 D-02）：bind mount 部署下 Worker（uid 10001）对 root 属主目录无写权限 |
 | `WORKER_RESTARTED` | Worker 进程重启，上一进程中的运行任务已明确置为失败 |
 | `JOB_TIMEOUT` | 任务在瓦片边界检查时超过配置时限 |
 

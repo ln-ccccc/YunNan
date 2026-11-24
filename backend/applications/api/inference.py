@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 
 from flask import Blueprint, request
@@ -24,6 +25,26 @@ from applications.project_hub.spatial_storage import get_storage_root, resolve_s
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _ensure_worker_writable_publish_dir(project_root, project_id=None):
+    """任务创建期预备推理发布目录并保证 Worker 可写（2026-11-18 验收 D-02，自 main 的 65aa0fb/9a96217 移植）。
+
+    推理镜像以 USER inference(uid 10001) 运行；bind mount 部署形态下 projects/<id> 由服务端(root)
+    创建为 755，Worker 发布期 mkdir 会被 EACCES 挡下（生产挂载同样命中——2026-11-24 在生产栈
+    实测复现：新项目的首个推理任务 5 秒内失败）。这里以 0o777 预备 outputs 与 outputs/inference
+    两级（发布还要写 outputs/change_matrix 摘要目录，只放行 inference 子目录不够）；
+    失败不阻塞任务创建，发布期由 PUBLISH_DIR_NOT_WRITABLE 给出明确错误。"""
+    outputs_dir = project_root / "outputs"
+    publish_dir = outputs_dir / "inference"
+    try:
+        publish_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(outputs_dir, 0o777)
+        os.chmod(publish_dir, 0o777)
+    except OSError as error:
+        LOGGER.warning(
+            "推理发布目录预备失败 project_id=%s: %s", project_id, error
+        )
 
 
 inference_api = Blueprint("inference_api", __name__, url_prefix="/api/inference")
@@ -105,6 +126,7 @@ def _create_job_from_public_payload(payload):
     storage_root = get_storage_root()
     project_id = private_inputs["project_id"]
     project_root = resolve_storage_path(storage_root, f"projects/{project_id}")
+    _ensure_worker_writable_publish_dir(project_root, project_id=project_id)
     normalized = normalize_job_request(
         private_inputs,
         allowed_roots=[storage_root],

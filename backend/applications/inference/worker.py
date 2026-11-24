@@ -1,5 +1,6 @@
 """持久化推理任务 Worker。"""
 
+import errno
 import gc
 import json
 import logging
@@ -18,6 +19,20 @@ logger = logging.getLogger(__name__)
 # worker 启动时按目录 mtime 清扫超龄残留。24h 阈值保证不影响活跃任务
 # （长任务超时上限 1h + 余量）。
 STALE_WORKDIR_MAX_AGE_SECONDS = 24 * 3600
+
+
+# 发布目录权限类失败的 errno 集合（2026-11-18 验收 D-02）
+_PUBLISH_PERM_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+
+
+def _classify_publish_error(error):
+    """发布阶段权限类失败单列错误码（2026-11-18 验收 D-02）：此前权限失败落入
+    GPU_INFERENCE_FAILED，误导为模型/GPU 故障。返回 None 交回原分类。"""
+    if isinstance(error, PermissionError):
+        return "PUBLISH_DIR_NOT_WRITABLE"
+    if isinstance(error, OSError) and getattr(error, "errno", None) in _PUBLISH_PERM_ERRNOS:
+        return "PUBLISH_DIR_NOT_WRITABLE"
+    return None
 
 
 def sweep_stale_workdirs(runtime_root, max_age_seconds=STALE_WORKDIR_MAX_AGE_SECONDS):
@@ -534,11 +549,15 @@ class InferenceWorker:
                 elif host_code:
                     error_code = host_code
                 else:
-                    error_code = (
-                        "GPU_INFERENCE_FAILED"
-                        if self.resolution.effective.startswith("cuda")
-                        else "INFERENCE_FAILED"
-                    )
+                    publish_code = _classify_publish_error(error)
+                    if publish_code:
+                        error_code = publish_code
+                    else:
+                        error_code = (
+                            "GPU_INFERENCE_FAILED"
+                            if self.resolution.effective.startswith("cuda")
+                            else "INFERENCE_FAILED"
+                        )
             error_message = (
                 f"推理任务超过 {self._effective_job_timeout_seconds} 秒时限"
                 if str(error) == "INFERENCE_TIMEOUT"
