@@ -44,7 +44,6 @@ from collections import OrderedDict
 
 from shapely.geometry import MultiPolygon, Point, Polygon, shape
 from shapely.ops import unary_union
-from shapely.prepared import prep
 
 
 COORDINATE_QUANTUM_DEGREES = 1e-10
@@ -192,22 +191,23 @@ LEGAL = Verdict()
 
 
 class RoiContext:
-    """一条成果的矿山边界（ROI）及其 prepared 索引。ROI 在成果矢量化后不再变化，所以按成果缓存。
+    """一条成果的矿山边界（ROI）及其数值容差外扩多边形。ROI 在成果矢量化后不再变化，所以按成果缓存。
 
-    covers() 与改造前保存接口的表达式逐字等价：
+    covers() 与改造前保存接口的表达式逐字相同：
         roi.covers(g) or roi.buffer(NUMERIC_TOLERANCE_DEGREES).covers(g)
-    区别只是外扩多边形与 prepared 索引只算一次。
+    区别只是外扩多边形只算一次（改造前每校验一个图斑重算一次）。
+    这里刻意不用 prepared 谓词：它只是加速手段，P99 也只快 1.5 毫秒，而验收规则要的是与改造前
+    逐字相同，包括数值边界上的个例。
     """
 
     def __init__(self, roi):
         if not isinstance(roi, (Polygon, MultiPolygon)) or roi.is_empty or not roi.is_valid:
             raise ValueError("成果 ROI 几何无效")
         self.roi = roi
-        self._strict = prep(roi)
-        self._tolerant = prep(roi.buffer(NUMERIC_TOLERANCE_DEGREES))
+        self._tolerant = roi.buffer(NUMERIC_TOLERANCE_DEGREES)
 
     def covers(self, geometry):
-        return bool(self._strict.covers(geometry) or self._tolerant.covers(geometry))
+        return bool(self.roi.covers(geometry) or self._tolerant.covers(geometry))
 
 
 class RoiContextCache:

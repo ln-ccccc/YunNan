@@ -568,6 +568,7 @@ class TestEngineOnlyWrapsGeos(unittest.TestCase):
         functions = {node.name for node in module.body if isinstance(node, ast.FunctionDef)}
         self.assertEqual(functions, self.FUNCTIONS)
         self.assertNotIn("STRtree", inspect.getsource(engine), "引擎不应自己建空间索引或拆边界线段")
+        self.assertNotIn("prep(", inspect.getsource(engine), "不用 prepared 谓词：验收规则要与改造前的表达式逐字相同，包括数值边界上的个例")
         self.assertIn("parsed.simplify(tolerance, preserve_topology=True)", inspect.getsource(engine), "简化只能是 GEOS 拓扑保持简化")
 
     def test_legality_comes_only_from_geos_predicates(self):
