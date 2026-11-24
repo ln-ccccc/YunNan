@@ -10,8 +10,11 @@
   WGS84 球面几何近似计算兜底（Chamberlain & Duquette 公式，与 JS 生态
   turf.area 同源，正反均忽略地球扁率，相对误差 ~0.1% 量级）。
   不读 binding.area_snapshot（量纲随源数据，历史项目曾误映射平方度）。
-- 复核对象优先 current（人工修订后）矢量，为空回落 auto，两者皆空
-  （vector_failed 等）返回零值报告而非报错。
+- 复核对象是 current（已保存的当前版本，包括人工清空后的空集合——复核
+  必须反映当前版本，而不是回退到已被取代的 auto）。只有 current 从未落库、
+  或成果本身 vector_failed 时才用 auto 作线索；两者皆无时返回零值报告而非
+  报错。（本段 2026-11-24 订正：此前写成"为空回落 auto"，与 2026-11-23 的
+  修复不符。）
 """
 from datetime import datetime, timezone
 

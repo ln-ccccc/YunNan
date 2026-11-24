@@ -87,6 +87,8 @@
 
 因此，读取接口对 `ready` 与 `ready_empty` 返回两个 FeatureCollection；对 `vector_failed` 返回上述三个 `null` 字段而不是伪造空集合。既有 PNG 推理成果仍保持其原有成功语义。
 
+**有效成果与 `effective` 提示字段（2026-11-24）**：同一 `{project_id, mine_fid, year}` 可以有多条成果（每个推理任务一条）。概览、台账、变化矩阵与溯源只认其中的**有效成果**——规则全系统唯一（`classification_stats.select_effective_result_refs`）：同年取 `result_id` 最大者，`vector_failed` 的成果在同一年存在非失败兄弟时让位。编辑一条已被取代的成果，修订只留在它自己的版本记录里，不会体现在上述任何视图中。因此成果详情与项目成果清单都返回只读布尔字段 `effective`（`vector_failed` 恒为 `false`），供 Miner 编辑入口与 GeoView 编辑器提示；该字段不改变可保存性——契约仍允许保存任意 `ready` / `ready_empty` 成果。
+
 v1 不定义面向客户端的处理中状态；若后续需要暴露处理中状态，必须先更新本契约并完成消费者评审。
 
 ## 4. 成果、修订与审计模型
@@ -114,7 +116,8 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 
 | 方法和路径 | 用途 | v1 约束 |
 | --- | --- | --- |
-| `GET /api/projects/{project_id}/classification-results/{result_id}` | 编辑器首屏读取。 | 返回成果元数据、固定类别表、状态矩阵允许的自动/当前 FeatureCollection、`current_revision_no`、项目地图 manifest、`vector_status` 和 `vector_error`。 |
+| `GET /api/projects/{project_id}/classification-results` | Miner 图斑编辑的成果清单（轻量摘要，同年多成果全列出）。 | 每条含 `result_id`、`mine_fid`、`year`、`vector_status`、`feature_count`、`current_revision_no`、`created_at` 与只读提示字段 `effective`；不返回任何矢量几何。 |
+| `GET /api/projects/{project_id}/classification-results/{result_id}` | 编辑器首屏读取。 | 返回成果元数据、固定类别表、状态矩阵允许的自动/当前 FeatureCollection、`current_revision_no`、项目地图 manifest、`vector_status`、`vector_error`，以及只读提示字段 `roi_geometry` 与 `effective`。 |
 | `GET /api/projects/{project_id}/classification-results/{result_id}/revisions` | 读取修订摘要。 | 只返回版本列表与作者/时间摘要，不返回历史版本回滚能力。 |
 | `POST /api/projects/{project_id}/classification-results/{result_id}/revisions` | 保存编辑成果。 | 只使用绑定 URL 成果的受限 FeatureCollection 与 `base_revision_no`；通过后创建一个新修订和审计记录。它不是通用 GeoJSON 文件导入、外部 URL 导入或服务器路径导入接口。 |
 | `POST /api/projects/{project_id}/classification-results/{result_id}/export` | 下载当前成果。 | 服务端根据当前版本生成 GeoJSON；不得接受或导出客户端上传的 `features`。 |
@@ -192,8 +195,11 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 - 每个 position 必须是恰有两个有限数值元素的数组 `[longitude, latitude]`；经纬度必须为 EPSG:4326 的经度 `[-180, 180]`、纬度 `[-90, 90]`，拒绝 Z 值及其他额外维度。每个几何必须完全被该 `{result_id}` 对应 ROI 的 `covers` 包含，不允许 buffer、容差或“相交即可”的宽松判断。
 - 每个既有 `feature_id` 必须属于提交的 `base_revision_no` 且属于当前 `{result_id}`；新要素只可省略 ID 或使用临时 `client-` 前缀 ID；一个请求内所有非空 ID 必须统一唯一。客户端不得提交或覆盖 `class_name`、`source`、`result_id`、`revision_no` 等服务器权威属性。
 - 单次保存请求的 UTF-8 JSON body 不得超过 **10 MiB**（`10 × 1024 × 1024` bytes）；Feature 总数不得超过 **2,000**；每个 Feature 的全部环中坐标位置总数不得超过 **5,000**；整个 FeatureCollection 的坐标位置总数不得超过 **100,000**。坐标位置按请求中出现的每个 `[longitude, latitude]` 计数，包含闭合环重复的末端位置。
+- 三个数量上限（2,000 / 5,000 / 100,000）约束的是相对基准修订的**增长**，不是**继承**（2026-11-24 订正）。请求超过上限时，只有当它不比 `base_revision_no` 快照更大才放行：Feature 总数不超过基准修订的要素数；既有 `feature_id`（属于基准修订）的要素坐标数不超过它在基准修订中的坐标数；整集合坐标总数不超过基准修订的总量。新要素（省略 ID 或 `client-` 前缀）、重新出现的既有 ID、以及既有要素变大，仍一律按上限拒绝。请求体 10 MiB 上限不适用本条。
+  - 订正原因：自动矢量化按连通分量出要素，一个带几十个洞的大面可以有五六千个坐标，而发布路径不经过保存校验。生产 3,036 条 `ready` 成果中有 10 条（3 条是有效成果）的单要素坐标数在 5,020–6,422 之间，此前这些成果连原样保存都被 `422` 拒绝，与第 3 节状态矩阵里 `ready` 允许按本契约保存的承诺矛盾。现在成立的不变量是：**凡发布成功的 `ready` / `ready_empty` 成果，其当前集合只要不比基准修订更大，就一定能通过数量校验。**
+  - 因此超限的既有面可以原样保存、改类、整体删除或简化（坐标变少），但不能再增加坐标；新画的要素仍受上限约束。
 
-API 测试必须分别覆盖：超过 10 MiB、超过 2,000 个要素、单要素超过 5,000 个顶点、总顶点超过 100,000 的四个边界；每一例均断言 HTTP `422`、无部分保存、无新修订、无审计记录、当前版本不变。测试还必须覆盖 NaN/Infinity、超经纬度、非面/无效面、ROI 外面、跨成果或跨基准版本 `feature_id`，以及 `vector_failed` 的 `409` 响应。
+API 测试必须分别覆盖：超过 10 MiB、超过 2,000 个要素、单要素超过 5,000 个顶点、总顶点超过 100,000 的四个边界；每一例均断言 HTTP `422`、无部分保存、无新修订、无审计记录、当前版本不变。测试还必须覆盖 NaN/Infinity、超经纬度、非面/无效面、ROI 外面、跨成果或跨基准版本 `feature_id`，以及 `vector_failed` 的 `409` 响应；并覆盖数量上限的继承规则——基准修订里本就超限的要素原样保存、改类、变少均放行，变大与新画的超限要素被拒（`backend/test_classification_result_api.py`）。
 
 ## 8. v1 明确不做项
 

@@ -31,6 +31,7 @@ from applications.project_hub.classification_stats import (
     MATRIX_STATE_PENDING,
     _AREA_SOURCE_INFERENCE,
     _AREA_SOURCE_REVISED,
+    effective_result_refs_by_project,
     evaluate_change_matrix_state,
     request_change_matrix_rebuild,
     resolve_result_stats,
@@ -226,7 +227,14 @@ def build_mine_traceability(project_id, fid):
 
 def list_project_classification_results(project_id):
     """项目全部分类成果清单（M3 编辑导航）：轻量摘要，同年多任务全列出，
-    每条带 vector_status/feature_count 供编辑入口门控（ready/ready_empty 可编辑）。"""
+    每条带 vector_status/feature_count 供编辑入口门控（ready/ready_empty 可编辑），
+    以及 effective 标明是否为该矿山当年的有效成果（2026-11-24）。
+
+    概览、台账、变化矩阵、溯源只认有效成果；清单里同年多条时它们的摘要完全
+    相同，此前入口无从分辨——生产 3036 条可编辑成果里 2387 条已被更新的成果
+    取代，编辑它们不会体现在任何统计里。effective 由全系统唯一规则
+    classification_stats.select_effective_result_refs 计算，只供提示，不改变可编辑性。
+    """
     project = _get_project(project_id)
     rows = (
         ClassificationResult.query.filter_by(project_id=project.id)
@@ -247,6 +255,7 @@ def list_project_classification_results(project_id):
         .order_by(ClassificationResult.year.desc(), ClassificationResult.id.desc())
         .all()
     )
+    effective_refs = effective_result_refs_by_project(project.id)
     return {
         "items": [
             {
@@ -257,6 +266,8 @@ def list_project_classification_results(project_id):
                 "feature_count": result.feature_count or 0,
                 "current_revision_no": result.current_revision_no,
                 "created_at": to_utc_z(result.create_time),
+                "effective": result.vector_status != "vector_failed"
+                and (effective_refs.get(result.mine_fid, {}).get(result.year) or (None,))[0] == result.id,
             }
             for result in rows
         ],

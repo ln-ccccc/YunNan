@@ -750,6 +750,255 @@ class TestClassificationResultAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.get_json()["data"]["details"]["field"], "body")
 
+    def _stored_feature(self, geometry, *, class_code, feature_id):
+        return {
+            "type": "Feature",
+            "properties": {
+                "feature_id": feature_id,
+                "class_code": class_code,
+                "class_name": {0: "grassland", 1: "forest"}[class_code],
+                "source": "auto",
+                "result_id": self.result.id,
+                "revision_no": 0,
+            },
+            "geometry": geometry,
+        }
+
+    def _replace_stored_baseline(self, collection):
+        """把 Revision 0 与成果的自动/当前集合改写成给定集合。
+
+        模拟"自动矢量化发布出超过保存上限的要素"：发布路径不经过保存校验，
+        生产上确有 10 条成果的单要素坐标数在 5020–6422 之间（上限 5000）。
+        """
+        payload = json.dumps(collection, ensure_ascii=False)
+        revision = ClassificationRevision.query.filter_by(result_id=self.result.id, revision_no=0).first()
+        revision.feature_collection_json = payload
+        revision.feature_count = len(collection["features"])
+        self.result.auto_feature_collection_json = payload
+        self.result.current_feature_collection_json = payload
+        self.result.feature_count = len(collection["features"])
+        db.session.commit()
+        db.session.expire(self.result)
+
+    def test_save_keeps_oversized_baseline_feature_that_did_not_grow(self):
+        oversized_id = "auto-oversized"
+        oversized_ring = self._ring_with_positions(5_001)
+        self._replace_stored_baseline({
+            "type": "FeatureCollection",
+            "features": [
+                self._stored_feature(
+                    {"type": "Polygon", "coordinates": [oversized_ring]},
+                    class_code=0,
+                    feature_id=oversized_id,
+                )
+            ],
+        })
+
+        def body(geometry, *, class_code=0):
+            return {
+                "base_revision_no": self.result.current_revision_no,
+                "feature_collection": {
+                    "type": "FeatureCollection",
+                    "features": [
+                        self._new_feature(geometry, class_code=class_code, feature_id=oversized_id),
+                    ],
+                },
+            }
+
+        # 原样保存并改类：超限要素是从基准修订继承来的，必须能保存
+        saved = self.client.post(
+            self._result_url("/revisions"),
+            json=body({"type": "Polygon", "coordinates": [oversized_ring]}, class_code=1),
+        )
+        self.assertEqual(saved.status_code, 200)
+        saved_data = saved.get_json()["data"]
+        self.assertEqual(saved_data["revision_no"], 1)
+        self.assertEqual(saved_data["feature_collection"]["features"][0]["properties"]["class_code"], 1)
+
+        # 多出一个坐标：既有要素变大，仍然拒绝
+        grown = oversized_ring[:-1] + [[8.0, 8.0], oversized_ring[0]]
+        self._assert_rejected_without_writes(
+            body({"type": "Polygon", "coordinates": [grown]}),
+            expected_reason="单要素坐标位置不能超过 5000",
+        )
+
+        # 变少：放行
+        shrunk = self._ring_with_positions(5_000)
+        saved = self.client.post(
+            self._result_url("/revisions"),
+            json=body({"type": "Polygon", "coordinates": [shrunk]}, class_code=1),
+        )
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.get_json()["data"]["revision_no"], 2)
+
+        # 新画的超限要素（临时 ID）不属于继承，一律受限
+        self._assert_rejected_without_writes(
+            {
+                "base_revision_no": self.result.current_revision_no,
+                "feature_collection": {
+                    "type": "FeatureCollection",
+                    "features": [
+                        self._new_feature(
+                            {"type": "Polygon", "coordinates": [oversized_ring]},
+                            feature_id="client-new",
+                        )
+                    ],
+                },
+            },
+            expected_reason="单要素坐标位置不能超过 5000",
+        )
+
+    def test_save_capacity_limits_constrain_growth_not_inheritance(self):
+        """要素数与总坐标数同单要素坐标数：只约束相对基准修订的增长。"""
+        from unittest import mock
+
+        from applications.project_hub import classification_results
+
+        def square(x, y):
+            return {
+                "type": "Polygon",
+                "coordinates": [[[x, y], [x + 2.0, y], [x + 2.0, y + 2.0], [x, y + 2.0], [x, y]]],
+            }
+
+        def pentagon(x, y):
+            return {
+                "type": "Polygon",
+                "coordinates": [
+                    [[x, y], [x + 2.0, y], [x + 2.0, y + 2.0], [x + 1.0, y + 3.0], [x, y + 2.0], [x, y]]
+                ],
+            }
+
+        shapes = {
+            "auto-a-pentagon": pentagon(1.0, 1.0),
+            "auto-b-square": square(5.0, 1.0),
+            "auto-c-square": square(9.0, 1.0),
+            "auto-d-square": square(13.0, 1.0),
+            "auto-e-square": square(1.0, 9.0),
+        }
+        self._replace_stored_baseline({
+            "type": "FeatureCollection",
+            "features": [
+                self._stored_feature(geometry, class_code=0, feature_id=feature_id)
+                for feature_id, geometry in shapes.items()
+            ],
+        })
+
+        def body(feature_ids, *, geometries=None, extra=()):
+            geometries = geometries or shapes
+            return {
+                "base_revision_no": self.result.current_revision_no,
+                "feature_collection": {
+                    "type": "FeatureCollection",
+                    "features": [
+                        self._new_feature(geometries[feature_id], class_code=0, feature_id=feature_id)
+                        for feature_id in feature_ids
+                    ] + list(extra),
+                },
+            }
+
+        # 四边形含闭合点是 5 个坐标、五边形是 6 个：单要素上限卡在两者之间
+        patches = [
+            mock.patch.object(classification_results, "MAX_FEATURES", 10),
+            mock.patch.object(classification_results, "MAX_POSITIONS_PER_FEATURE", 5),
+            mock.patch.object(classification_results, "MAX_POSITIONS_TOTAL", 9),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+        everything = list(shapes)
+        without_e = everything[:-1]
+        # 5 个要素（上限 10）、26 个坐标（上限 9）、A 有 6 个坐标（上限 5）：全部是继承，原样保存放行
+        saved = self.client.post(self._result_url("/revisions"), json=body(everything))
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.get_json()["data"]["revision_no"], 1)
+
+        # 删掉一个：更小，放行
+        saved = self.client.post(self._result_url("/revisions"), json=body(without_e))
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.get_json()["data"]["revision_no"], 2)
+
+        # 把 E 加回来：总量 21 → 26，超过基准修订的总量，拒绝
+        self._assert_rejected_without_writes(
+            body(everything), expected_reason="总坐标位置不能超过 100000"
+        )
+
+        # A 退成 5 个坐标的面：放行
+        small_a = dict(shapes, **{"auto-a-pentagon": square(1.0, 1.0)})
+        saved = self.client.post(self._result_url("/revisions"), json=body(without_e, geometries=small_a))
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.get_json()["data"]["revision_no"], 3)
+
+        # A 再变回 6 个坐标：比基准修订里的 A（5 个）大，拒绝
+        self._assert_rejected_without_writes(
+            body(without_e), expected_reason="单要素坐标位置不能超过 5000"
+        )
+
+        # 新画 7 个面：4 → 11 个，超过上限 10 也超过基准修订的 4 个，拒绝
+        self._assert_rejected_without_writes(
+            body(
+                without_e,
+                geometries=small_a,
+                extra=[
+                    self._new_feature(square(5.0 + 2.0 * index, 9.0), feature_id=f"client-new-{index}")
+                    for index in range(7)
+                ],
+            ),
+            expected_reason="要素数量不能超过 2000",
+        )
+
+    def test_effective_flag_marks_superseded_results_in_detail_and_list(self):
+        """概览、台账、溯源只认有效成果；详情与编辑导航清单必须标出哪一条有效。"""
+        list_url = f"/api/projects/{self.project_id}/classification-results"
+        older_id = self.result.id
+
+        self.assertTrue(self.client.get(self._result_url()).get_json()["data"]["effective"])
+        newer = self._create_ready_result(fid=101, year=2024, inference_job_id="job-api-newer")
+
+        # 同矿山同年再次推理：新成果（id 更大）成为有效成果，旧成果被取代
+        self.assertFalse(self.client.get(self._result_url()).get_json()["data"]["effective"])
+        self.assertTrue(
+            self.client.get(
+                f"/api/projects/{self.project_id}/classification-results/{newer.id}"
+            ).get_json()["data"]["effective"]
+        )
+
+        # 更新的一次矢量化失败：不得抢走有效位（与统计口径同一条规则）
+        failed = publish_classification_result(
+            project_id=self.project_id,
+            fid=101,
+            year=2024,
+            inference_job_id="job-api-failed",
+            mine_resource_id=self.mine_resource.id,
+            model_id="cc-ln/CUGRS",
+            label_path=self.root / "missing-label.tif",
+        )
+        self.assertEqual(failed["vector_status"], "vector_failed")
+        failed_detail = self.client.get(
+            f"/api/projects/{self.project_id}/classification-results/{failed['result_id']}"
+        ).get_json()["data"]
+        self.assertFalse(failed_detail["effective"])
+        self.assertTrue(
+            self.client.get(
+                f"/api/projects/{self.project_id}/classification-results/{newer.id}"
+            ).get_json()["data"]["effective"]
+        )
+
+        response = self.client.get(list_url)
+        self.assertEqual(response.status_code, 200)
+        items = response.get_json()["data"]["items"]
+        flags = {(item["result_id"]): item["effective"] for item in items}
+        self.assertEqual(flags[older_id], False)
+        self.assertEqual(flags[newer.id], True)
+        self.assertEqual(flags[failed["result_id"]], False)
+        # 每个矿山每年恰好一条有效成果
+        effective_by_mine_year = {}
+        for item in items:
+            key = (item["mine_fid"], item["year"])
+            effective_by_mine_year[key] = effective_by_mine_year.get(key, 0) + (1 if item["effective"] else 0)
+        self.assertTrue(effective_by_mine_year.values())
+        self.assertTrue(all(count == 1 for count in effective_by_mine_year.values()), effective_by_mine_year)
+
     def test_secure_tile_route_requires_login_and_project_owned_active_resource(self):
         unauthenticated = self.app.test_client().get(
             f"/api/projects/{self.project_id}/map-resources/{self.basemap_resource.id}/tiles/1/2/3.png"

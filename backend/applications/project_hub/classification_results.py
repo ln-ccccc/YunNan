@@ -21,6 +21,7 @@ from applications.models.classification_result import (
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.classification_stats import (
+    _effective_result_refs_by_year,
     _revision_stats_path,
     request_change_matrix_rebuild_for_result,
     write_revision_stats,
@@ -97,7 +98,22 @@ def get_classification_result(project_id, result_id):
     # 编辑器绘制时越 ROI 即时提示（2026-11-13 风险复盘）需要前端拿到 ROI；
     # 后端保存校验仍是唯一防线，此字段只读、仅供展示与提示
     payload["roi_geometry"] = _serialize_feature_collection(result.roi_geometry_json)
+    # 该成果是否为其矿山当年的有效成果（2026-11-24）。概览、台账、变化矩阵、溯源
+    # 一律只认有效成果；编辑一条已被取代的成果，修订只留在它自己的版本记录里。
+    # 生产 3036 条可编辑成果里 2387 条属于这种情况，此前编辑器与入口列表都不提示。
+    # 只读提示字段，不改变可保存性（契约允许任意 ready / ready_empty 成果保存）
+    payload["effective"] = is_effective_result(result)
     return payload
+
+
+def is_effective_result(result):
+    """成果是否为其矿山当年的有效成果，规则即全系统唯一的
+    classification_stats.select_effective_result_refs（同年取 id 最大者，
+    vector_failed 在同年有非失败兄弟时让位）。vector_failed 恒为 False。"""
+    if result.vector_status == "vector_failed":
+        return False
+    refs = _effective_result_refs_by_year(result.project_id, result.mine_fid)
+    return (refs.get(result.year) or (None,))[0] == result.id
 
 
 def list_classification_revisions(project_id, result_id):
@@ -252,7 +268,7 @@ def _validate_geometry(geometry, *, feature_index):
     return parsed, position_count
 
 
-def _base_feature_ids(result, base_revision_no):
+def _base_revision_payload(result, base_revision_no):
     revision = ClassificationRevision.query.filter_by(
         result_id=result.id,
         revision_no=base_revision_no,
@@ -265,12 +281,60 @@ def _base_feature_ids(result, base_revision_no):
                 "current_revision_no": result.current_revision_no,
             },
         )
-    payload = json.loads(revision.feature_collection_json)
+    return json.loads(revision.feature_collection_json)
+
+
+def _feature_ids(payload):
     return {
         feature.get("properties", {}).get("feature_id")
         for feature in payload.get("features") or []
         if feature.get("properties", {}).get("feature_id")
     }
+
+
+def _position_count(geometry):
+    """一个面几何的坐标位置总数，口径同 _validate_geometry（闭合环末端位置计入）。"""
+    geometry = geometry or {}
+    coordinates = geometry.get("coordinates") or []
+    if geometry.get("type") == "MultiPolygon":
+        return sum(len(ring) for rings in coordinates for ring in rings)
+    return sum(len(ring) for ring in coordinates)
+
+
+class _BaseCapacity:
+    """基准修订的容量快照（要素数、各既有要素的坐标数、总坐标数）。
+
+    容量上限约束的是「增长」，不是「继承」（2026-11-24）：自动矢量化按连通分量
+    出要素，一个带几十个洞的大面可以有五六千个坐标，发布时又不经过保存校验。
+    生产 3036 条成果里有 10 条（其中 3 条是有效成果）的单要素坐标数超过 5000，
+    此前这些成果连原样保存都被 422 拒绝——与状态矩阵「ready 即可保存」矛盾。
+    现在超过上限的内容只要不比基准修订里的同一个要素更大就放行；新要素、
+    以及既有要素变大，仍一律受限。数值只在超限后才计算（惰性）。
+    """
+
+    def __init__(self, payload):
+        payload = payload or {}
+        self.feature_count = len(payload.get("features") or [])
+        self._payload = payload
+        self._positions_by_id = None
+
+    def _ensure_positions(self):
+        if self._positions_by_id is not None:
+            return
+        positions = {}
+        for feature in self._payload.get("features") or []:
+            feature_id = (feature.get("properties") or {}).get("feature_id")
+            positions[feature_id] = positions.get(feature_id, 0) + _position_count(feature.get("geometry"))
+        self._positions_by_id = positions
+
+    def positions_of(self, feature_id):
+        self._ensure_positions()
+        return self._positions_by_id.get(feature_id, 0)
+
+    @property
+    def total_positions(self):
+        self._ensure_positions()
+        return sum(self._positions_by_id.values())
 
 
 def _all_historic_feature_ids(result_id):
@@ -311,7 +375,11 @@ def _validate_save_payload(result, payload, *, body_size):
     if feature_collection.get("type") != "FeatureCollection" or not isinstance(feature_collection.get("features"), list):
         _validation_error("feature_collection", "必须是 FeatureCollection")
     features = feature_collection["features"]
-    if len(features) > MAX_FEATURES:
+    base_payload = _base_revision_payload(result, base_revision_no)
+    base_ids = _feature_ids(base_payload)
+    base_capacity = _BaseCapacity(base_payload)
+    # 三个容量上限都只约束增长：超过上限时，不比基准修订更大才放行（见 _BaseCapacity）
+    if len(features) > MAX_FEATURES and len(features) > base_capacity.feature_count:
         _validation_error("feature_collection.features", "要素数量不能超过 2000")
     if result.current_revision_no != base_revision_no:
         raise ClassificationConflictError(
@@ -321,7 +389,6 @@ def _validate_save_payload(result, payload, *, body_size):
                 "current_revision_no": result.current_revision_no,
             },
         )
-    base_ids = _base_feature_ids(result, base_revision_no)
     historic_ids = _all_historic_feature_ids(result.id)
     roi = shape(json.loads(result.roi_geometry_json))
     normalized_features = []
@@ -349,10 +416,15 @@ def _validate_save_payload(result, payload, *, body_size):
                     _validation_error("feature.properties.feature_id", "请求内 feature_id 必须唯一", feature_index)
                 submitted_ids.add(submitted_feature_id)
         parsed_geometry, position_count = _validate_geometry(feature.get("geometry"), feature_index=feature_index)
-        if position_count > MAX_POSITIONS_PER_FEATURE:
+        # 单要素上限：既有要素（ID 在基准修订里）只要坐标数没比基准里多就放行
+        if position_count > MAX_POSITIONS_PER_FEATURE and not (
+            submitted_feature_id in base_ids
+            and position_count <= base_capacity.positions_of(submitted_feature_id)
+        ):
             _validation_error("geometry.coordinates", "单要素坐标位置不能超过 5000", feature_index)
         total_positions += position_count
-        if total_positions > MAX_POSITIONS_TOTAL:
+        # 总量上限同理：整集合不超过基准修订的总量即可（基准总量只在超限后才统计）
+        if total_positions > MAX_POSITIONS_TOTAL and total_positions > base_capacity.total_positions:
             _validation_error("feature_collection", "总坐标位置不能超过 100000", feature_index)
         if not roi.covers(parsed_geometry) and not roi.buffer(ROI_COVER_EPSILON_DEGREES).covers(parsed_geometry):
             # 自动矢量化产物与 ROI 边界浮点相切（~1e-9 度，亚毫米）会被严格
