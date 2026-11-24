@@ -24,6 +24,7 @@
       </div>
       <p class="hint-text">
         发起前请在「影像管理」登记并就绪影像；推理按 KML ROI 逐矿山执行，完成后记录自动出现在下方。
+        标有「已被取代」的记录指向旧的解译成果：编辑或复核它，不会体现在概览、台账与溯源中。
       </p>
 
       <p v-if="loading" class="empty-block">解译记录加载中…</p>
@@ -37,7 +38,14 @@
             <img class="thumb" :src="row.after_img" alt="预测结果" loading="lazy" />
           </div>
           <div class="record-main">
-            <strong>矿山 {{ row.data?.fid ?? '?' }} · {{ row.data?.year ?? '未知年份' }}</strong>
+            <strong>
+              矿山 {{ row.data?.fid ?? '?' }} · {{ row.data?.year ?? '未知年份' }}
+              <span
+                v-if="resolveRowTarget(row)?.effective === false"
+                class="superseded-tag"
+                title="这次推理之后，这座矿山这一年又做过新的推理；概览、台账、变化矩阵与溯源只认最新的那一条成果"
+              >已被取代</span>
+            </strong>
             <span class="muted-text">
               {{ row.type }} · {{ row.data?.file || '未知产物' }}
             </span>
@@ -53,7 +61,9 @@
             v-if="resolveRowTarget(row)?.editable"
             class="edit-btn"
             type="button"
-            title="在 GeoView 编辑器中打开"
+            :title="resolveRowTarget(row)?.effective === false
+              ? '这条成果已被同矿山同年更新的成果取代：修订只留在它自己的版本记录里，不会体现在概览、台账、变化矩阵与溯源中'
+              : '在 GeoView 编辑器中打开'"
             @click="openEditor(row)"
           >编辑矢量</button>
           <span class="record-mode">{{ row.data?.mode === 'project' ? '项目推理' : '快速推理' }}</span>
@@ -127,11 +137,19 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit)));
 // 旧记录/缺 result_id 时按溯源口径取同年最新成功成果（对齐后端
 // mine_traceability：id 倒序首个非 vector_failed）
 const editorTargets = ref(new Map());
+// 各成果是否为"当前有效"（result_id → true/false，来自后端清单的 effective 字段）。
+// 概览、台账、变化矩阵、溯源只认有效成果（同矿山同年 id 最大者）。解译记录行各指向
+// 自己那一次推理的成果，之后又推理过就已被取代——2026-11-24 核对生产数据：
+// 3036 条可编辑成果里 2387 条属于这种情况，而行上看不出来，改完哪里都不体现
+const resultEffectiveness = ref(new Map());
 const EDITABLE_STATUS = new Set(['ready', 'ready_empty']);
+// 旧后端没有 effective 字段时为 null：不显示任何标记
+const effectivenessOf = (item) => (typeof item?.effective === 'boolean' ? item.effective : null);
 
 const loadEditorTargets = async () => {
   if (!selectedProjectId.value) {
     editorTargets.value = new Map();
+    resultEffectiveness.value = new Map();
     return;
   }
   // 竞态门控：快速切换项目时旧项目的成果映射不得覆盖新项目。
@@ -144,8 +162,10 @@ const loadEditorTargets = async () => {
     if (seq !== editorTargetsSeq || projectIdAtRequest !== selectedProjectId.value) return;
     const items = res.data?.data?.items || res.data?.data || [];
     const map = new Map();
+    const effectiveness = new Map();
     for (const item of Array.isArray(items) ? items : []) {
       if (!item?.result_id) continue;
+      effectiveness.set(item.result_id, effectivenessOf(item));
       const key = `${item.mine_fid}:${item.year ?? ''}`;
       const existing = map.get(key);
       // 清单按年份+id 倒序：首个即最新；矢量化失败的最新行不抹掉既有好成果
@@ -154,13 +174,16 @@ const loadEditorTargets = async () => {
           resultId: item.result_id,
           editable: EDITABLE_STATUS.has(item.vector_status),
           vectorStatus: item.vector_status || '',
+          effective: effectivenessOf(item),
         });
       }
     }
     editorTargets.value = map;
+    resultEffectiveness.value = effectiveness;
   } catch (_) {
     if (seq !== editorTargetsSeq || projectIdAtRequest !== selectedProjectId.value) return;
     editorTargets.value = new Map();
+    resultEffectiveness.value = new Map();
   }
 };
 
@@ -169,11 +192,26 @@ const resolveRowTarget = (row) => {
   const year = row.data?.year ?? '';
   if (row.data?.result_id) {
     const status = row.data.vector_status || '';
-    return { fid, year, resultId: row.data.result_id, editable: EDITABLE_STATUS.has(status), vectorStatus: status };
+    const resultId = row.data.result_id;
+    return {
+      fid,
+      year,
+      resultId,
+      editable: EDITABLE_STATUS.has(status),
+      vectorStatus: status,
+      effective: resultEffectiveness.value.has(resultId) ? resultEffectiveness.value.get(resultId) : null,
+    };
   }
   const fallback = editorTargets.value.get(`${fid}:${year}`);
   if (!fallback) return null;
-  return { fid, year, resultId: fallback.resultId, editable: fallback.editable, vectorStatus: fallback.vectorStatus };
+  return {
+    fid,
+    year,
+    resultId: fallback.resultId,
+    editable: fallback.editable,
+    vectorStatus: fallback.vectorStatus,
+    effective: fallback.effective ?? null,
+  };
 };
 
 const openEditor = (row) => {
@@ -310,6 +348,20 @@ loadProjects();
   border: 1px solid rgba(38, 75, 69, 0.3); font-size: 13px;
 }
 .hint-text { margin: 10px 0 0; font-size: 12px; color: #5a7d75; }
+
+.superseded-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border: 1px solid rgba(217, 119, 6, 0.45);
+  border-radius: 999px;
+  background: rgba(255, 251, 235, 0.9);
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  vertical-align: middle;
+}
 
 .primary-btn {
   background: #2f6f61; color: #fff; border: none; border-radius: 6px;

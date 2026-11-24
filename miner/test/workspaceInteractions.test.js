@@ -101,6 +101,54 @@ test('interpretation keeps editor targets current after paging then switching pr
   assert.equal(bindings.editorTargets.value.has('1:2026'), false);
 });
 
+test('interpretation rows say when their own result has been superseded (2026-11-24)', async () => {
+  // 概览、台账、变化矩阵、溯源只认"同矿山同年 id 最大"的那条成果。解译记录行各指向自己
+  // 那一次推理的成果，之后又推理过就已被取代——生产 3036 条可编辑成果里 2387 条如此，
+  // 此前行上看不出来：改完、保存成功，却哪里都不体现
+  const axios = { get: async (path) => {
+    if (path === '/api/projects') return { data: { data: { items: [] } } };
+    if (path.endsWith('/classification-results')) {
+      return { data: { data: { items: [
+        { result_id: 11, mine_fid: 1, year: 2026, vector_status: 'ready', effective: true },
+        { result_id: 10, mine_fid: 1, year: 2026, vector_status: 'ready', effective: false },
+        // 旧后端没有 effective 字段
+        { result_id: 12, mine_fid: 2, year: 2025, vector_status: 'ready' },
+      ] } } };
+    }
+    return { data: { data: [], count: 0 } };
+  } };
+  const harness = setupComponent('SmartInterpretationView.vue', axios);
+  const { bindings } = harness;
+  bindings.selectedProjectId.value = 1;
+  bindings.resetAndLoad();
+  await flushRequests();
+
+  const rowFor = (resultId, fid = 1, year = 2026) => ({ data: { fid, year, result_id: resultId, vector_status: 'ready' } });
+  assert.equal(bindings.resolveRowTarget(rowFor(11)).effective, true);
+  assert.equal(bindings.resolveRowTarget(rowFor(10)).effective, false, '行内 result_id 已被取代时必须识别出来');
+  assert.equal(bindings.resolveRowTarget(rowFor(12, 2, 2025)).effective, null, '后端没给 effective 时不臆断');
+  assert.equal(bindings.resolveRowTarget({ data: { fid: 1, year: 2026 } }).effective, true, '缺行内 id 时回退到有效成果');
+
+  // 标记只落在被取代的那一行；两条记录的可编辑性不受影响
+  bindings.records.value = [
+    { record_id: 'newer', type: '解译', data: { fid: 1, year: 2026, result_id: 11, vector_status: 'ready' } },
+    { record_id: 'older', type: '解译', data: { fid: 1, year: 2026, result_id: 10, vector_status: 'ready' } },
+  ];
+  const tagged = [];
+  const editButtons = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.props?.class === 'superseded-tag') tagged.push(node);
+    if (node.props?.class === 'edit-btn' && node.children === '编辑矢量') editButtons.push(node);
+    for (const child of Array.isArray(node.children) ? node.children : []) walk(child);
+  };
+  walk(harness.render());
+  assert.equal(tagged.length, 1, '只有被取代的那一行带标记');
+  assert.equal(editButtons.length, 2, '被取代的成果仍然可以编辑（契约允许保存任意 ready 成果）');
+  assert.match(editButtons[1].props.title, /已被同矿山同年更新的成果取代/, '按钮提示要说清修订不会体现在哪里');
+  assert.equal(editButtons[0].props.title, '在 GeoView 编辑器中打开');
+});
+
 test('interpretation map button emits the selected project id', () => {
   const harness = setupComponent('SmartInterpretationView.vue', {
     get: async () => ({ data: { data: { items: [] } } }),
