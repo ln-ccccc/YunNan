@@ -14,6 +14,7 @@ from applications.common.utils.http import fail_api, success_api
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.classification_results import (
+    MAX_SAVE_BODY_BYTES,
     ClassificationConflictError,
     ClassificationValidationError,
     export_current_classification_result,
@@ -591,18 +592,42 @@ def classification_result_quality_review_api(project_id, result_id):
         return _classification_error_response(error)
 
 
+def _read_json_body(limit):
+    """读 JSON 请求体，超过 limit 字节的不再往下读。返回 (payload, 字节数, 是否超限)。
+
+    全局的 MAX_CONTENT_LENGTH 是 GB 级（给影像上传用的），而保存与三个几何接口只收几十 KB 到几 MB 的 JSON。
+    此前它们先把整个请求体读进内存再判断是否超过 10 MiB（2026-11-24 核查）。现在：请求声明了
+    Content-Length 且超限的，读都不读就拒绝；没声明（分块传输）的最多读到 limit + 1 字节。
+    payload 的判定与 request.get_json(silent=True) 相同：不是 JSON、或解析不了，都是 None。
+    """
+    if request.content_length is not None and request.content_length > limit:
+        return None, request.content_length, True
+    raw_body = request.stream.read(limit + 1)
+    if len(raw_body) > limit:
+        return None, len(raw_body), True
+    payload = None
+    if raw_body and request.is_json:
+        try:
+            payload = json.loads(raw_body)
+        except ValueError:
+            payload = None
+    return payload, len(raw_body), False
+
+
 def _classification_geometry_request(project_id, result_id, handler):
-    """编辑期几何接口（校验 / 简化 / 合并）的公共外壳：读请求体、限大小、统一错误映射。"""
-    raw_body = request.get_data(cache=True)
-    payload = request.get_json(silent=True)
-    if payload is None:
+    """编辑期几何接口（校验 / 简化 / 合并）的公共外壳：读请求体、限大小、统一错误映射。
+
+    超限的请求体交给处理函数，由它按「请求 JSON 超过 10 MiB」拒绝（与保存接口同一条规则）。
+    """
+    payload, body_size, oversized = _read_json_body(MAX_SAVE_BODY_BYTES)
+    if payload is None and not oversized:
         return fail_api(
             "几何请求不合法",
             status=422,
             details={"field": "body", "reason": "必须提交 JSON"},
         )
     try:
-        return success_api(data=handler(project_id, result_id, payload, body_size=len(raw_body)))
+        return success_api(data=handler(project_id, result_id, payload, body_size=body_size))
     except Exception as error:
         return _classification_error_response(error)
 
@@ -637,9 +662,8 @@ def classification_geometry_union_api(project_id, result_id):
 @project_api.post("/<int:project_id>/classification-results/<int:result_id>/revisions")
 @login_required
 def classification_revision_save_api(project_id, result_id):
-    raw_body = request.get_data(cache=True)
-    payload = request.get_json(silent=True)
-    if payload is None:
+    payload, body_size, oversized = _read_json_body(MAX_SAVE_BODY_BYTES)
+    if payload is None and not oversized:
         return fail_api(
             "分类成果保存数据不合法",
             status=422,
@@ -653,7 +677,7 @@ def classification_revision_save_api(project_id, result_id):
                 payload,
                 # actor 语义统一为用户名（与其余活动记录一致），混用 user_id 会导致审计无法按人追溯
                 actor=_request_actor(),
-                body_size=len(raw_body),
+                body_size=body_size,
             )
         )
     except Exception as error:
@@ -663,7 +687,8 @@ def classification_revision_save_api(project_id, result_id):
 @project_api.post("/<int:project_id>/classification-results/<int:result_id>/export")
 @login_required
 def classification_result_export_api(project_id, result_id):
-    if request.get_data(cache=False):
+    # 只读 1 个字节判断有没有请求体：不为拒绝一个大请求体而把它整个读进内存
+    if (request.content_length or 0) > 0 or request.stream.read(1):
         return fail_api(
             "分类成果导出不接受请求体",
             status=422,
