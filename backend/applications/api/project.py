@@ -591,6 +591,49 @@ def classification_result_quality_review_api(project_id, result_id):
         return _classification_error_response(error)
 
 
+def _classification_geometry_request(project_id, result_id, handler):
+    """编辑期几何接口（校验 / 简化 / 合并）的公共外壳：读请求体、限大小、统一错误映射。"""
+    raw_body = request.get_data(cache=True)
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return fail_api(
+            "几何请求不合法",
+            status=422,
+            details={"field": "body", "reason": "必须提交 JSON"},
+        )
+    try:
+        return success_api(data=handler(project_id, result_id, payload, body_size=len(raw_body)))
+    except Exception as error:
+        return _classification_error_response(error)
+
+
+@project_api.post("/<int:project_id>/classification-results/<int:result_id>/geometry/validate")
+@login_required
+def classification_geometry_validate_api(project_id, result_id):
+    """编辑操作完成后校验改动的面：结论与保存完全相同，只读。"""
+    from applications.project_hub.classification_results import validate_result_geometries
+
+    return _classification_geometry_request(project_id, result_id, validate_result_geometries)
+
+
+@project_api.post("/<int:project_id>/classification-results/<int:result_id>/geometry/simplify")
+@login_required
+def classification_geometry_simplify_api(project_id, result_id):
+    """消除锯齿：GEOS 简化 + 保护矿山边界上的顶点，结果必须通过保存同款判定。只读。"""
+    from applications.project_hub.classification_results import simplify_result_geometries
+
+    return _classification_geometry_request(project_id, result_id, simplify_result_geometries)
+
+
+@project_api.post("/<int:project_id>/classification-results/<int:result_id>/geometry/union")
+@login_required
+def classification_geometry_union_api(project_id, result_id):
+    """合并面：GEOS unary_union，结果必须通过保存同款判定。只读。"""
+    from applications.project_hub.classification_results import union_result_geometries
+
+    return _classification_geometry_request(project_id, result_id, union_result_geometries)
+
+
 @project_api.post("/<int:project_id>/classification-results/<int:result_id>/revisions")
 @login_required
 def classification_revision_save_api(project_id, result_id):

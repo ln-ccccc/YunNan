@@ -1,13 +1,12 @@
 import json
 import logging
-import math
 import os
 import shutil
 import uuid
 from contextlib import suppress
 from pathlib import Path
 
-from shapely.geometry import MultiPolygon, Polygon, mapping, shape
+from shapely.geometry import mapping, shape
 from sqlalchemy.exc import IntegrityError
 
 from applications.extensions import db
@@ -26,6 +25,21 @@ from applications.project_hub.classification_stats import (
     request_change_matrix_rebuild_for_result,
     write_revision_stats,
 )
+from applications.project_hub.geometry_engine import (
+    INVALID_GEOMETRY,
+    OUTSIDE_ROI,
+    REJECTED,
+    SIMPLIFY_TOLERANCE_DEGREES,
+    GeometryProblem,
+    RoiContext,
+    RoiContextCache,
+    evaluate,
+    evaluate_parsed,
+    parse_geometry,
+    simplify as simplify_geometry,
+    to_geojson,
+    union as union_geometries,
+)
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 from applications.common.utils.utc_time import to_utc_z
 
@@ -34,8 +48,10 @@ LOGGER = logging.getLogger(__name__)
 MAX_SAVE_BODY_BYTES = 10 * 1024 * 1024
 MAX_FEATURES = 2_000
 MAX_POSITIONS_PER_FEATURE = 5_000
-ROI_COVER_EPSILON_DEGREES = 1e-9
 MAX_POSITIONS_TOTAL = 100_000
+# 几何接口（编辑期校验 / 简化 / 合并）的请求上限：只处理用户这次操作改动的面
+MAX_UNION_GEOMETRIES = 50
+MAX_GEOMETRY_REQUEST_POSITIONS = 200_000
 
 
 class ClassificationValidationError(ValueError):
@@ -95,8 +111,8 @@ def get_classification_result(project_id, result_id):
     payload = serialize_classification_result(result)
     payload["classes"] = _class_table()
     payload["map_manifest"] = get_project_map_manifest(int(project_id))
-    # 编辑器绘制时越 ROI 即时提示（2026-11-13 风险复盘）需要前端拿到 ROI；
-    # 后端保存校验仍是唯一防线，此字段只读、仅供展示与提示
+    # 编辑器画矿山边界轮廓、做视野定位需要 ROI（2026-11-13 风险复盘）。越界与否不在这里判：
+    # 编辑期校验走 geometry/validate，与保存共用 geometry_engine.evaluate
     payload["roi_geometry"] = _serialize_feature_collection(result.roi_geometry_json)
     # 该成果是否为其矿山当年的有效成果（2026-11-24）。概览、台账、变化矩阵、溯源
     # 一律只认有效成果；编辑一条已被取代的成果，修订只留在它自己的版本记录里。
@@ -207,71 +223,25 @@ def _mark_vector_failed(result, *, error_code, snapshot_dir=None):
     return serialize_classification_result(result)
 
 
-def _validation_error(field, reason, feature_index=None):
+def _validation_error(field, reason, feature_index=None, message="分类成果保存数据不合法"):
     details = {"field": field, "reason": reason}
     if feature_index is not None:
         details["feature_index"] = feature_index
-    raise ClassificationValidationError("分类成果保存数据不合法", details)
+    raise ClassificationValidationError(message, details)
 
 
-def _validate_position(position, *, field, feature_index):
-    if not isinstance(position, list) or len(position) != 2:
-        _validation_error(field, "坐标位置必须恰有二维 [longitude, latitude]", feature_index)
-    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in position):
-        _validation_error(field, "坐标位置必须是数值", feature_index)
-    longitude, latitude = position
-    if not math.isfinite(longitude) or not math.isfinite(latitude):
-        _validation_error(field, "坐标位置必须是有限数值", feature_index)
-    if not -180 <= longitude <= 180 or not -90 <= latitude <= 90:
-        _validation_error(field, "坐标超出 EPSG:4326 范围", feature_index)
-    return 1
+def roi_context(result):
+    """成果矿山边界的加速上下文，按成果缓存（ROI 在矢量化时冻结，之后不变）。
 
-
-def _validate_ring(ring, *, field, feature_index):
-    if not isinstance(ring, list) or len(ring) < 4:
-        _validation_error(field, "面环至少需要四个闭合坐标位置", feature_index)
-    count = sum(
-        _validate_position(position, field=field, feature_index=feature_index)
-        for position in ring
+    保存校验与编辑期的校验 / 简化 / 合并接口拿的是同一个上下文、同一个判定函数。
+    """
+    roi_json = result.roi_geometry_json
+    if not roi_json:
+        raise ValueError("分类成果没有矿山边界几何")
+    return _ROI_CONTEXTS.get(
+        (result.id, len(roi_json), hash(roi_json)),
+        lambda: RoiContext(shape(json.loads(roi_json))),
     )
-    if ring[0] != ring[-1]:
-        _validation_error(field, "面环必须显式闭合", feature_index)
-    return count
-
-
-def _validate_geometry(geometry, *, feature_index):
-    if not isinstance(geometry, dict) or set(geometry) != {"type", "coordinates"}:
-        _validation_error("geometry", "几何只能包含 type 和 coordinates", feature_index)
-    geometry_type = geometry.get("type")
-    coordinates = geometry.get("coordinates")
-    if geometry_type == "Polygon":
-        if not isinstance(coordinates, list) or not coordinates:
-            _validation_error("geometry.coordinates", "Polygon 必须包含至少一个面环", feature_index)
-        position_count = sum(
-            _validate_ring(ring, field="geometry.coordinates", feature_index=feature_index)
-            for ring in coordinates
-        )
-    elif geometry_type == "MultiPolygon":
-        if not isinstance(coordinates, list) or not coordinates:
-            _validation_error("geometry.coordinates", "MultiPolygon 必须包含至少一个面", feature_index)
-        position_count = 0
-        for polygon in coordinates:
-            if not isinstance(polygon, list) or not polygon:
-                _validation_error("geometry.coordinates", "MultiPolygon 中的面不能为空", feature_index)
-            position_count += sum(
-                _validate_ring(ring, field="geometry.coordinates", feature_index=feature_index)
-                for ring in polygon
-            )
-    else:
-        _validation_error("geometry.type", "仅支持 Polygon 或 MultiPolygon", feature_index)
-
-    try:
-        parsed = shape(geometry)
-    except Exception:
-        _validation_error("geometry", "几何无法解析", feature_index)
-    if parsed.is_empty or not parsed.is_valid or not isinstance(parsed, (Polygon, MultiPolygon)):
-        _validation_error("geometry", "几何必须是非空有效面", feature_index)
-    return parsed, position_count
 
 
 def _base_revision_payload(result, base_revision_no):
@@ -396,7 +366,7 @@ def _validate_save_payload(result, payload, *, body_size):
             },
         )
     historic_ids = _all_historic_feature_ids(result.id)
-    roi = shape(json.loads(result.roi_geometry_json))
+    context = roi_context(result)
     normalized_features = []
     seen_ids = set()
     submitted_ids = set()
@@ -421,7 +391,10 @@ def _validate_save_payload(result, payload, *, body_size):
                 if submitted_feature_id in submitted_ids:
                     _validation_error("feature.properties.feature_id", "请求内 feature_id 必须唯一", feature_index)
                 submitted_ids.add(submitted_feature_id)
-        parsed_geometry, position_count = _validate_geometry(feature.get("geometry"), feature_index=feature_index)
+        try:
+            parsed_geometry, position_count = parse_geometry(feature.get("geometry"))
+        except GeometryProblem as problem:
+            _validation_error(problem.field, problem.reason, feature_index)
         # 单要素上限：既有要素（ID 在基准修订里）只要坐标数没比基准里多就放行
         if position_count > MAX_POSITIONS_PER_FEATURE and not (
             submitted_feature_id in base_ids
@@ -432,10 +405,9 @@ def _validate_save_payload(result, payload, *, body_size):
         # 总量上限同理：整集合不超过基准修订的总量即可（基准总量只在超限后才统计）
         if total_positions > MAX_POSITIONS_TOTAL and total_positions > base_capacity.total_positions:
             _validation_error("feature_collection", "总坐标位置不能超过 100000", feature_index)
-        if not roi.covers(parsed_geometry) and not roi.buffer(ROI_COVER_EPSILON_DEGREES).covers(parsed_geometry):
-            # 自动矢量化产物与 ROI 边界浮点相切（~1e-9 度，亚毫米）会被严格
-            # covers 拒绝，导致"未改动自动基线无法保存"；1e-9 容差只吸收浮点
-            # 误差，真实越界（像素级，>=1e-6 度）仍然拒绝
+        # 合法性只有 geometry_engine.evaluate 这一个判定：结构与有效性、是否完整位于 ROI。
+        # ROI 容差（1e-9 度）只吸收坐标舍入与投影换算误差，规则与改造前逐字相同
+        if evaluate_parsed(context, parsed_geometry).code == OUTSIDE_ROI:
             _validation_error("geometry", "几何必须完全位于成果 ROI 内", feature_index)
         feature_id = submitted_feature_id
         if feature_id is None:
@@ -469,6 +441,76 @@ def _validate_save_payload(result, payload, *, body_size):
             }
         )
     return base_revision_no, {"type": "FeatureCollection", "features": normalized_features}
+
+
+# 编辑期几何接口：校验、简化、合并。全部只读——不写库、不写文件、不产生修订。
+# 它们与保存共用 geometry_engine 的同一个判定函数，所以「编辑时提示会被拒绝」与
+# 「保存时确实被拒绝」是同一件事，前端不再自带一套几何判定
+_ROI_CONTEXTS = RoiContextCache()
+
+
+def _geometry_request(result, payload, body_size, *, keys, minimum, maximum):
+    message = "几何请求不合法"
+    if body_size is not None and body_size > MAX_SAVE_BODY_BYTES:
+        _validation_error("body", "请求 JSON 超过 10 MiB", message=message)
+    if not isinstance(payload, dict) or "geometries" not in payload or not set(payload).issubset(keys):
+        _validation_error("body", "请求体只能包含 " + " 和 ".join(sorted(keys)), message=message)
+    geometries = payload["geometries"]
+    if not isinstance(geometries, list) or not minimum <= len(geometries) <= maximum:
+        _validation_error("geometries", f"geometries 必须是 {minimum} 到 {maximum} 个几何的数组", message=message)
+    positions = 0
+    for index, geometry in enumerate(geometries):
+        if not isinstance(geometry, dict) or set(geometry) != {"type", "coordinates"}:
+            _validation_error("geometry", "几何只能包含 type 和 coordinates", index, message=message)
+        try:
+            positions += _position_count(geometry)
+        except TypeError:
+            positions += MAX_GEOMETRY_REQUEST_POSITIONS + 1
+    # 只数坐标、不校验结构：先挡住超量请求，再逐个解析
+    if positions > MAX_GEOMETRY_REQUEST_POSITIONS:
+        _validation_error("geometries", f"请求内坐标位置总数不能超过 {MAX_GEOMETRY_REQUEST_POSITIONS}", message=message)
+    return roi_context(result), geometries
+
+
+def validate_result_geometries(project_id, result_id, payload, *, body_size=None):
+    """逐个几何给出与保存完全相同的合法性结论（ok，或 code + reason + 越界量级）。"""
+    context, geometries = _geometry_request(
+        _result_for_project(project_id, result_id), payload, body_size,
+        keys={"geometries"}, minimum=1, maximum=MAX_FEATURES,
+    )
+    return {"items": [evaluate(context, geometry).payload() for geometry in geometries]}
+
+
+def simplify_result_geometries(project_id, result_id, payload, *, body_size=None):
+    """逐个几何简化。每个结果都是被 evaluate 接受的，否则报告 rejected、不给几何。"""
+    context, geometries = _geometry_request(
+        _result_for_project(project_id, result_id), payload, body_size,
+        keys={"geometries", "tolerance"}, minimum=1, maximum=MAX_FEATURES,
+    )
+    tolerance = payload.get("tolerance", SIMPLIFY_TOLERANCE_DEGREES)
+    try:
+        items = [simplify_geometry(context, geometry, tolerance) for geometry in geometries]
+    except GeometryProblem as problem:
+        _validation_error(problem.field, problem.reason, message="几何请求不合法")
+    return {"tolerance": tolerance, "items": items}
+
+
+def union_result_geometries(project_id, result_id, payload, *, body_size=None):
+    """合并 2 到 MAX_UNION_GEOMETRIES 个面；结果不被 evaluate 接受时 422 并带原因。"""
+    context, geometries = _geometry_request(
+        _result_for_project(project_id, result_id), payload, body_size,
+        keys={"geometries"}, minimum=2, maximum=MAX_UNION_GEOMETRIES,
+    )
+    try:
+        merged, verdict = union_geometries(context, geometries)
+    except GeometryProblem as problem:
+        _validation_error(problem.field, problem.reason, message="几何无法合并")
+    if merged is None:
+        raise ClassificationValidationError(
+            "几何无法合并",
+            {key: value for key, value in verdict.payload().items() if key != "ok"},
+        )
+    return {"geometry": to_geojson(merged)}
 
 
 def _claim_current_revision(result, base_revision_no, revision_no, feature_collection_json):
