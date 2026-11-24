@@ -12,6 +12,7 @@ import unittest
 import uuid
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "."))
 
@@ -20,6 +21,7 @@ from applications.extensions import db
 from applications.models.classification_result import ClassificationResult
 from applications.models.inference_job import InferenceJob
 from applications.models.project import Project, ProjectMineBinding
+from applications.api import stats as stats_module
 from applications.api.stats import _change_metrics, _spherical_ring_area_m2
 
 
@@ -211,6 +213,180 @@ class TestStatsOverview(StatsOverviewBase):
         fresh = self.app.test_client()
         response = fresh.get("/api/stats/overview")
         self.assertEqual(response.status_code, 401)
+
+
+class TestAreaMemo(StatsOverviewBase):
+    """逐成果地类面积的记忆（2026-11-24）：概览此前每次缓存过期都把全库矢量 JSON 从头解析一遍
+    （约 9 秒）。成果没变就不再重算；面积函数不变，结果与逐条现算一致。"""
+
+    def _memo_path(self, project_id):
+        return self.storage_root / "projects" / str(project_id) / "outputs" / "stats" / stats_module._AREA_MEMO_FILE
+
+    def _build(self):
+        return stats_module.build_stats_overview(storage_root=self.storage_root, use_area_memo=True)
+
+    def _count_recomputations(self):
+        return mock.patch.object(
+            stats_module, "_feature_collection_class_areas", wraps=stats_module._feature_collection_class_areas
+        )
+
+    def test_unchanged_results_are_reused_and_only_changed_ones_are_recomputed(self):
+        project = self._create_project("面积记忆项目")
+        first = self._make_result(project.id, 1, 2024, [_feature(0, _SQUARE)])
+        second = self._make_result(project.id, 2, 2024, [_feature(1, _SQUARE)] * 2)
+        db.session.commit()
+
+        with self._count_recomputations() as compute:
+            cold = self._build()
+            self.assertEqual(compute.call_count, 2, "首次没有记忆：两条成果都要算")
+            warm = self._build()
+            self.assertEqual(compute.call_count, 2, "成果没变：不得再取矢量 JSON 重算")
+        self.assertEqual(warm, cold)
+
+        # 第二条成果保存成新修订（图斑数变了）：只重算它，第一条继续用记忆
+        second.current_feature_collection_json = json.dumps(
+            {"type": "FeatureCollection", "features": [_feature(1, _SQUARE)] * 4}
+        )
+        second.current_revision_no = 1
+        second.feature_count = 4
+        db.session.commit()
+        db.session.expire_all()
+        with self._count_recomputations() as compute:
+            refreshed = self._build()
+            self.assertEqual(compute.call_count, 1, "只有变过的成果重算")
+        self.assertEqual(refreshed["feature_total"], 5)
+        self.assertAlmostEqual(refreshed["class_area"]["percent"]["forest"], 80.0, places=2)
+        saved = json.loads(self._memo_path(project.id).read_text(encoding="utf-8"))
+        self.assertEqual(saved["version"], stats_module._AREA_MEMO_VERSION)
+        self.assertEqual(sorted(saved["entries"]), [str(first.id), str(second.id)])
+        self.assertEqual(saved["entries"][str(second.id)]["signature"].split("|")[:3], ["1", "4", "ready"])
+
+    def test_signature_follows_every_production_write_path(self):
+        project = self._create_project("签名项目")
+        result = self._make_result(project.id, 3, 2024, [_feature(0, _SQUARE)])
+        db.session.commit()
+
+        def signature():
+            # 每一步都重新取行并立刻算成字符串：expire 之后旧对象会按库里的最新状态刷新，不能拿它做"改前"的值
+            db.session.expire_all()
+            return stats_module._result_area_signature(ClassificationResult.query.get(result.id))
+
+        before = signature()
+        # 发布：图斑数与状态变（ORM 赋值，行更新时间随之刷新）
+        ClassificationResult.query.get(result.id).feature_count = 9
+        db.session.commit()
+        published = signature()
+        self.assertNotEqual(published, before)
+        # 保存修订：修订号变（CAS 批量更新，不依赖行更新时间）
+        ClassificationResult.query.filter_by(id=result.id).update(
+            {"current_revision_no": 2, "feature_count": 9}, synchronize_session=False
+        )
+        db.session.commit()
+        revised = signature()
+        self.assertNotEqual(revised, published)
+        # 标记失败：矢量状态变（同样不依赖行更新时间）
+        ClassificationResult.query.filter_by(id=result.id).update(
+            {"vector_status": "vector_failed"}, synchronize_session=False
+        )
+        db.session.commit()
+        failed = signature()
+        self.assertNotEqual(failed, revised)
+
+    def test_memo_result_equals_full_recomputation(self):
+        project = self._create_project("一致性项目")
+        other = self._create_project("一致性项目二")
+        self._make_result(project.id, 1, 2024, [_feature(0, _SQUARE), _feature(2, _SQUARE)])
+        self._make_result(project.id, 2, 2025, [_feature(0, _SQUARE)] * 3)
+        self._make_result(other.id, 7, 2024, [_feature(5, _SQUARE), _feature(9, _SQUARE)])   # 9 是不认识的类别码
+        db.session.commit()
+
+        full = stats_module.build_stats_overview(storage_root=self.storage_root)["class_area"]
+        self._build()
+        from_memo = self._build()["class_area"]
+        self.assertEqual(from_memo, full)
+
+    def test_memo_keeps_only_results_that_are_still_effective(self):
+        project = self._create_project("记忆清理项目")
+        older = self._make_result(project.id, 1, 2024, [_feature(0, _SQUARE)])
+        db.session.flush()
+        self._build()
+        self.assertEqual(list(json.loads(self._memo_path(project.id).read_text(encoding="utf-8"))["entries"]), [str(older.id)])
+        # 同年同矿的新成果取代旧成果：旧成果的记忆条目随之清掉，文件不随历史增长
+        newer = self._make_result(project.id, 1, 2024, [_feature(0, _SQUARE), _feature(1, _SQUARE)])
+        db.session.commit()
+        self._build()
+        self.assertEqual(list(json.loads(self._memo_path(project.id).read_text(encoding="utf-8"))["entries"]), [str(newer.id)])
+
+    def test_unreadable_or_foreign_memo_is_ignored_and_rewritten(self):
+        project = self._create_project("坏记忆项目")
+        self._make_result(project.id, 1, 2024, [_feature(0, _SQUARE)])
+        db.session.commit()
+        reference = stats_module.build_stats_overview(storage_root=self.storage_root)["class_area"]
+        path = self._memo_path(project.id)
+        path.parent.mkdir(parents=True)
+        for content in ("not json", json.dumps({"version": 0, "entries": {"1": "x"}}), json.dumps([1, 2])):
+            path.write_text(content, encoding="utf-8")
+            with self._count_recomputations() as compute:
+                self.assertEqual(self._build()["class_area"], reference)
+            self.assertEqual(compute.call_count, 1, "读不懂的记忆当空，照常现算")
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["version"], stats_module._AREA_MEMO_VERSION)
+
+    def test_memo_write_failure_does_not_break_the_overview(self):
+        project = self._create_project("记忆不可写项目")
+        self._make_result(project.id, 1, 2024, [_feature(0, _SQUARE)])
+        db.session.commit()
+        reference = stats_module.build_stats_overview(storage_root=self.storage_root)["class_area"]
+        # 让记忆目录的位置被一个文件占住：mkdir 失败属于 OSError，只记告警
+        blocker = self.storage_root / "projects" / str(project.id) / "outputs" / "stats"
+        blocker.parent.mkdir(parents=True)
+        blocker.write_text("占位", encoding="utf-8")
+        with self.assertLogs(stats_module.LOGGER, level="WARNING") as logs:
+            self.assertEqual(self._build()["class_area"], reference)
+        self.assertTrue(any("概览地类面积记忆写入失败" in line for line in logs.output))
+
+
+class TestChangeMetricsParallelScan(unittest.TestCase):
+    def test_parallel_scan_matches_sequential_reference(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="stats-scan-") as temp:
+            root = Path(temp)
+            inference_root = root / "outputs" / "inference"
+            # 10：疑似异常（草→裸 90/100，流失 90）；20：净修复（裸→草 150）；30：没有变化矩阵；另有杂散文件
+            for fid, rows in (
+                ("10", "class,grassland,forest,building,road,bareground,water\ngrassland,10,0,0,0,90,0\nforest,0,0,0,0,0,0\n"),
+                ("20", "class,grassland,forest,building,road,bareground,water\nbareground,150,0,0,0,0,0\nforest,0,5,0,0,0,0\n"),
+                ("30", None),
+            ):
+                fid_dir = inference_root / fid
+                fid_dir.mkdir(parents=True)
+                if rows:
+                    _write_tif(fid_dir / f"{fid}+2024_label.tif")
+                    (fid_dir / "change_matrix_pixels.csv").write_text(rows, encoding="utf-8")
+            (inference_root / "notes.txt").write_text("杂散文件", encoding="utf-8")
+
+            def sequential():
+                restoration_m2 = 0.0
+                suspect = []
+                for name in sorted(item.name for item in inference_root.iterdir()):
+                    item = stats_module._scan_change_dir(inference_root / name)
+                    if item is None:
+                        continue
+                    gained, lost, to_disturbance, total_valid, pixel_area = item
+                    if pixel_area:
+                        restoration_m2 += (gained - lost) * pixel_area
+                    if total_valid > 0 and to_disturbance / total_valid >= stats_module.SUSPECT_LOSS_RATIO:
+                        suspect.append(name)
+                return {
+                    "restored_area_m2": round(max(restoration_m2, 0.0), 1),
+                    "suspect_mine_count": len(suspect),
+                    "suspect_fids": sorted(suspect, key=str),
+                }
+
+            result = _change_metrics(root)
+            self.assertEqual(result, sequential())
+            self.assertEqual(result["suspect_fids"], ["10"])
+            self.assertGreater(result["restored_area_m2"], 0.0)
 
 
 class TestProjectListEnhancements(StatsOverviewBase):
