@@ -320,5 +320,100 @@ class TestYunnanProjectSeed(unittest.TestCase):
         self.assertEqual(ProjectMineBinding.query.count(), 0)
 
 
+    def test_skip_foreign_returns_structured_result_on_mixed_regions(self):
+        """BUG-003：混合区域库 + skip_foreign → 结构化 skipped，不抛错不写入。"""
+        db.session.add(
+            Project(
+                name="江西矿山生态修复监测项目",
+                region="江西省",
+                status="active",
+            )
+        )
+        db.session.commit()
+        self._write_kml(
+            [
+                ("Mine 1", {"FID_1": "1", "SHENG": "云南省"}),
+                ("Mine 2", {"FID_1": "2", "SHENG": "云南省"}),
+            ]
+        )
+
+        result = seed_yunnan_project(self.kml_path, expected_count=2, skip_foreign=True)
+
+        self.assertFalse(result["created"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["skip_reason"], "foreign_project_present")
+        self.assertEqual(result["foreign_projects"], ["江西矿山生态修复监测项目"])
+        self.assertIsNone(result["project_id"])
+        self.assertEqual(result["mine_count"], 0)
+        # 既有数据不被触碰，种子项目不创建
+        self.assertEqual(Project.query.count(), 1)
+        self.assertIsNone(Project.query.filter_by(name=PROJECT_NAME).first())
+        self.assertEqual(ProjectMineBinding.query.count(), 0)
+
+    def test_skip_foreign_still_seeds_empty_database(self):
+        """skip_foreign 只收敛非云南项目分支；空库初始化语义不变。"""
+        self._write_kml(
+            [
+                ("Mine 1", {"FID_1": "1", "SHENG": "云南省"}),
+                ("Mine 2", {"FID_1": "2", "SHENG": "云南省"}),
+            ]
+        )
+
+        result = seed_yunnan_project(self.kml_path, expected_count=2, skip_foreign=True)
+
+        self.assertTrue(result["created"])
+        self.assertNotIn("skipped", result)
+        self.assertEqual(result["mine_count"], 2)
+        self.assertEqual(Project.query.count(), 1)
+
+    def test_skip_foreign_rerun_remains_idempotent(self):
+        """重复启动（带 skip_foreign）：第二次不重建，绑定保留。"""
+        self._write_kml(
+            [
+                ("Mine 1", {"FID_1": "1", "SHENG": "云南省"}),
+                ("Mine 2", {"FID_1": "2", "SHENG": "云南省"}),
+            ]
+        )
+        first = seed_yunnan_project(self.kml_path, expected_count=2, skip_foreign=True)
+
+        second = seed_yunnan_project(self.kml_path, expected_count=2, skip_foreign=True)
+
+        self.assertFalse(second["created"])
+        self.assertEqual(second["project_id"], first["project_id"])
+        self.assertEqual(Project.query.count(), 1)
+        self.assertEqual(ProjectMineBinding.query.count(), 2)
+
+    def test_skip_foreign_does_not_swallow_database_errors(self):
+        """skip_foreign 只收敛"存在非云南项目"；数据库异常必须照常抛出。"""
+        self._write_kml(
+            [
+                ("Mine 1", {"FID_1": "1", "SHENG": "云南省"}),
+                ("Mine 2", {"FID_1": "2", "SHENG": "云南省"}),
+            ]
+        )
+
+        class ExplodingQuery:
+            def filter(self, *args, **kwargs):
+                raise RuntimeError("simulated database failure")
+
+        with patch("applications.project_hub.yunnan_seed.Project") as mocked_project:
+            mocked_project.query = ExplodingQuery()
+            with self.assertRaisesRegex(RuntimeError, "simulated database failure"):
+                seed_yunnan_project(self.kml_path, expected_count=2, skip_foreign=True)
+
+    def test_migrate_allows_missing_project_only_with_flag(self):
+        """BUG-003 联动：种子跳过后 migrate 不得阻断启动；手动模式保持严格报错。"""
+        from migrate_yunnan_spatial import migrate
+
+        # 默认（手动）：严格报错
+        with self.assertRaisesRegex(RuntimeError, "未找到云南种子项目"):
+            migrate("whatever.kml")
+        # 自动启动（带 flag）：结构化 skipped，且不触碰任何项目
+        result = migrate("whatever.kml", allow_missing_project=True)
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "yunnan_project_missing")
+        self.assertEqual(Project.query.count(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

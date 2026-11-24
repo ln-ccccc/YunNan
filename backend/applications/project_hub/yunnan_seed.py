@@ -1,10 +1,14 @@
 import json
+import logging
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from applications.extensions import db
 from applications.models.project import Project, ProjectActivityLog, ProjectMineBinding
+
+
+logger = logging.getLogger(__name__)
 
 
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
@@ -98,16 +102,43 @@ def _parse_kml(kml_path):
     return [mines_by_fid[fid] for fid in sorted(mines_by_fid)]
 
 
-def seed_yunnan_project(kml_path, expected_count=EXPECTED_MINE_COUNT, manager="admin"):
+def seed_yunnan_project(
+    kml_path,
+    expected_count=EXPECTED_MINE_COUNT,
+    manager="admin",
+    skip_foreign=False,
+):
     mines = _parse_kml(kml_path)
     if len(mines) != expected_count:
         raise RuntimeError(f"KML 有效矿山数为 {len(mines)}，预期 {expected_count}")
 
     projects = Project.query.filter(Project.deleted_at.is_(None)).all()
-    for candidate in projects:
-        region = _text(candidate.region)
-        if not _is_yunnan_region(region):
-            raise RuntimeError(f"数据库中存在非云南项目：{candidate.name}")
+    foreign_projects = [
+        candidate
+        for candidate in projects
+        if not _is_yunnan_region(_text(candidate.region))
+    ]
+    if foreign_projects:
+        # BUG-003（2026-11-16 验收）：守卫原样 raise 会经 start-backend.sh 的 set -e
+        # 使 backend 无法启动——含非云南区域用户项目的部署从此不可重启。
+        # 自动启动路径（--skip-foreign）在此分支返回结构化 skipped 结果并告警；
+        # 仅收敛"存在非云南项目"这一条件，其余异常（DB 连接/权限/KML 解析/计数
+        # 不符）照常抛出。手动执行不带该参数保持严格校验（既有测试语义不变）。
+        foreign_names = [candidate.name for candidate in foreign_projects]
+        if not skip_foreign:
+            raise RuntimeError(f"数据库中存在非云南项目：{foreign_names[0]}")
+        logger.warning(
+            "seed_yunnan_project 检测到非云南项目，按 skip_foreign 跳过种子: %s",
+            foreign_names,
+        )
+        return {
+            "created": False,
+            "skipped": True,
+            "skip_reason": "foreign_project_present",
+            "foreign_projects": foreign_names,
+            "project_id": None,
+            "mine_count": 0,
+        }
 
     project = next(
         (candidate for candidate in projects if candidate.remark == PROJECT_REMARK),
