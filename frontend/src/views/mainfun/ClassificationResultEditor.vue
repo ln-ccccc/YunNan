@@ -452,10 +452,10 @@ export default {
       this.map.on('load', () => {
         if (!this.map) return;
         this.map.addControl(new NavigationControl(), 'top-left');
-        // 顶点删除防护挂在真实入口（2026-11-23 P1）：删除按钮与 Delete/Backspace
-        // 键盘两条路都汇到 direct_select.onTrash。此前只在地图容器 click 捕获阶段
-        // 拦截：键盘完全绕过；且只判"面当前是否 ≤3 顶点"，四边形 Shift 选两个
-        // 顶点再删除会整面被删；对 MultiPolygon 把环数当顶点数，合法删除被误拦
+        // 顶点删除防护挂在真实入口（2026-11-23 P1）：工具栏删除按钮与画布上的 Delete/Backspace
+        // （2026-11-24 起经容器 keydown 转到同一个 draw.trash()，见下）都汇到 direct_select.onTrash。
+        // 此前只在地图容器 click 捕获阶段拦截：键盘完全绕过；且只判"面当前是否 ≤3 顶点"，四边形
+        // Shift 选两个顶点再删除会整面被删；对 MultiPolygon 把环数当顶点数，合法删除被误拦
         this.draw = new MapboxDraw({
           displayControlsDefault: false,
           controls: { polygon: true, trash: true },
@@ -481,34 +481,49 @@ export default {
           },
         });
         this.map.addControl(this.draw, 'top-right');
-        // direct_select 下未点选顶点时删除按钮是无操作（mapbox-gl-draw 1.5 行为，
-        // 2026-11 验收遗留）：点击无效果且无提示，用户以为删除坏了。捕获点击给引导。
+        // 顶点模式下没有选中顶点时，删除按钮与 Delete/Backspace 都是无操作（mapbox-gl-draw 1.5
+        // 行为，2026-11 验收遗留）：没有效果也没有提示，用户以为删除坏了。这里给出引导。
+        const guideTrashWithoutVertex = () => {
+          if (!this.draw || this.draw.getMode() !== 'direct_select') return;
+          const selectedPoints = this.draw.getSelectedPoints?.();
+          const hasSelectedVertex = !!(selectedPoints && selectedPoints.features && selectedPoints.features.length);
+          if (!hasSelectedVertex) {
+            this.$message.info(
+              '当前处于顶点编辑模式：请先点击选中某个顶点，删除按钮或 Delete 键才会移除该顶点；要删除整个面，请按 Esc 退出顶点编辑后单击选中面再删除',
+            );
+          }
+        };
         // 注意必须挂容器捕获阶段：draw 控件自身的按钮 click 监听会拦截同元素上
         // 后注册的监听（浏览器实测 click 探针不触发），按钮上 addEventListener 是死代码。
-        // 顶点删除防护已移到 direct_select.onTrash（见上），这里只负责引导提示
+        // 顶点删除防护在 direct_select.onTrash（见上），这里只负责引导提示。
         this.map.getContainer().addEventListener(
           'click',
           (e) => {
             if (!(e.target instanceof Element) || !e.target.closest('.mapbox-gl-draw_trash')) return;
-            if (!this.draw || this.draw.getMode() !== 'direct_select') return;
-            const selectedPoints = this.draw.getSelectedPoints?.();
-            const hasSelectedVertex = !!(selectedPoints && selectedPoints.features && selectedPoints.features.length);
-            if (!hasSelectedVertex) {
-              this.$message.info(
-                '当前处于顶点编辑模式：请先点击选中某个顶点，删除按钮才会移除该顶点；要删除整个面，请按 Esc 退出顶点编辑后单击选中面再删除',
-              );
-            }
+            guideTrashWithoutVertex();
           },
           true,
         );
-        // Esc 退出 direct_select（2026-11-23 P1）：draw 1.5.1 顶点模式不处理
-        // Escape，上面引导文案里的"按 Esc 退出"此前无法执行；容器 keydown 补齐
+        // 画布上的按键统一在这里补齐。mapbox-gl-draw 自己的键盘处理只认 class 含 mapboxgl-canvas
+        // 的目标，而这里是 MapLibre 的 maplibregl-canvas——Esc、Delete、Backspace 在画布上从来没
+        // 有效果。Esc 于 2026-11-23 补齐；Delete/Backspace 于 2026-11-24 在真实成果上测出（此前
+        // "Delete 键删除被拦且有说明"的验收结论是上一步按钮提示残留造成的假阳性）。
+        // 删除走 draw.trash()：与工具栏删除按钮汇合到同一条入口，顶点删除防护对按键同样生效。
+        // 只认以画布为目标的事件：焦点在按钮等处时按键不做删除。
+        const TRASH_KEYS = new Set(['Delete', 'Backspace']);
         this.map.getContainer().addEventListener(
           'keydown',
           (e) => {
-            if (e.key !== 'Escape' || !this.draw || this.draw.getMode() !== 'direct_select') return;
-            const selectedId = this.draw.getSelected?.()?.features?.[0]?.id;
-            this.draw.changeMode('simple_select', selectedId != null ? { featureIds: [selectedId] } : {});
+            if (!this.draw) return;
+            if (e.key === 'Escape' && this.draw.getMode() === 'direct_select') {
+              const selectedId = this.draw.getSelected?.()?.features?.[0]?.id;
+              this.draw.changeMode('simple_select', selectedId != null ? { featureIds: [selectedId] } : {});
+              return;
+            }
+            if (!TRASH_KEYS.has(e.key) || !(e.target instanceof HTMLCanvasElement)) return;
+            e.preventDefault();
+            guideTrashWithoutVertex();
+            this.draw.trash();
           },
         );
         // ROI 边界叠加（2026-11-13 风险复盘）：此前绘制越界只能等保存 422 才

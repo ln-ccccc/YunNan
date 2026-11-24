@@ -247,17 +247,35 @@ test('vertex deletion guard is registered on the real direct_select entry (A1)',
   }
   // 旧的"数当前顶点数"函数及其容器捕获拦截已删除
   assert.doesNotMatch(source, /polygonVertexCount/, 'polygonVertexCount 已被 vertexDeletionBlockers 取代');
-  const clickGuard = source.slice(source.indexOf("'click',"), source.indexOf('// Esc 退出 direct_select'));
+  // 文件里更前面还有撤销/重做用的 document keydown，切片锚点必须用这段代码独有的名字
+  const clickGuard = source.slice(source.indexOf("const guideTrashWithoutVertex"), source.indexOf("const TRASH_KEYS"));
   assert.match(clickGuard, /if \(!hasSelectedVertex\) \{\s*\n\s*this\.\$message\.info\(/, '无选中顶点的引导提示保留');
   assert.doesNotMatch(
     clickGuard,
     /stopPropagation|preventDefault/,
     '容器捕获监听只负责引导提示，不再在点击路上拦截删除',
   );
-  // Esc 退出顶点模式的 keydown 监听保留不动
   assert.match(
-    source,
-    /this\.map\.getContainer\(\)\.addEventListener\(\s*'keydown',\s*\(e\) => \{\s*if \(e\.key !== 'Escape' \|\| !this\.draw \|\| this\.draw\.getMode\(\) !== 'direct_select'\) return;/,
+    clickGuard,
+    /e\.target\.closest\('\.mapbox-gl-draw_trash'\)\) return;\s*guideTrashWithoutVertex\(\);\s*\},\s*true,/,
+    '删除按钮的引导仍挂在容器捕获阶段',
+  );
+  // 画布上的按键在容器 keydown 里补齐：mapbox-gl-draw 自己的键盘处理只认 class 含 mapboxgl-canvas
+  // 的目标，MapLibre 的画布是 maplibregl-canvas，Esc 与 Delete/Backspace 原本在画布上都没有效果。
+  // Delete/Backspace 必须走 draw.trash()（与工具栏按钮汇合，顶点删除防护对按键同样生效），
+  // 且只认以画布为目标的事件。2026-11-24 在真实成果上测出此前按键路径不通，而旧的浏览器回归
+  // 被上一步按钮提示的残留满足，属于假阳性。
+  const keyGuard = source.slice(source.indexOf("const TRASH_KEYS"), source.indexOf("this.map.addSource('result-roi'"));
+  assert.match(
+    keyGuard,
+    /if \(e\.key === 'Escape' && this\.draw\.getMode\(\) === 'direct_select'\) \{[\s\S]{0,260}this\.draw\.changeMode\('simple_select'/,
+    'Esc 退出顶点模式保留',
+  );
+  assert.match(source, /const TRASH_KEYS = new Set\(\['Delete', 'Backspace'\]\)/, '删除键固定为 Delete 与 Backspace');
+  assert.match(
+    keyGuard,
+    /if \(!TRASH_KEYS\.has\(e\.key\) \|\| !\(e\.target instanceof HTMLCanvasElement\)\) return;\s*e\.preventDefault\(\);\s*guideTrashWithoutVertex\(\);\s*this\.draw\.trash\(\);/,
+    'Delete/Backspace 只在画布上生效，并经 draw.trash() 与删除按钮汇合',
   );
 });
 

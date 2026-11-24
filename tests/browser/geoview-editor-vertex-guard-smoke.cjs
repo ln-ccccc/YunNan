@@ -7,6 +7,9 @@
 // 用户看不到任何解释。只有加载真实消息组件才能发现。
 // 第三个：无底图提示是盖在地图右下角的纯文字浮层，曾拦截鼠标——落在它下面的点击画不出
 // 顶点，回车后草稿被丢弃，页面不报任何错。下面的 clickMap 每次点击前先确认落点是画布。
+// 第四个：画布上的 Delete/Backspace 从来没有生效过（mapbox-gl-draw 的键盘处理只认 mapboxgl-canvas，
+// 这里是 MapLibre 的 maplibregl-canvas）。而本脚本曾据此报"Delete 键被拦且有说明"——那是上一步点删除
+// 按钮时弹出的提示还没消失，被断言误认。现在断言"按键后出现的新提示"：按键前先等提示条清空。
 //
 // HTTP fixture 只在测试浏览器内拦截：不登录真实账号、不写入真实项目、不访问真实后端。
 // 从仓库根目录运行（PowerShell；路径换成自己的独立安装/输出目录）：
@@ -110,6 +113,11 @@ async function main() {
     const focusCanvas = async () => {
       await page.locator('.classification-map canvas.maplibregl-canvas').focus();
     };
+    // 提示条默认停留 3 秒。"按键后应出现提示"的断言必须以清空为前提，否则上一步残留的提示会让它假通过
+    const waitToastsCleared = async () => {
+      await page.waitForFunction(() => !document.querySelector('.el-message'), null, { timeout: 15000 });
+    };
+
     const drawPolygon = async (points) => {
       await page.click('.mapbox-gl-draw_polygon');
       for (const point of points) await clickMap(point);
@@ -136,11 +144,12 @@ async function main() {
     checks.push('三角面按钮删除被拦且有说明');
 
     await clickMap(a);
+    await waitToastsCleared();
     await focusCanvas();
     await page.keyboard.press('Delete');
     await page.waitForTimeout(400);
     messages = await toasts();
-    assert.ok(messages.some((text) => text.includes('只剩 2 个顶点')), `Delete 键盘删除被拦时应有说明提示，实际：${JSON.stringify(messages)}`);
+    assert.ok(messages.some((text) => text.includes('只剩 2 个顶点')), `Delete 键盘删除被拦时应有说明提示（按键前提示条已清空），实际：${JSON.stringify(messages)}`);
     assert.match(await stateText(), /已选择 1 个面/, 'Delete 键盘不得把三角面整面删除');
     await shot('02-triangle-keyboard-blocked');
     checks.push('三角面 Delete 键盘删除被拦且有说明');
@@ -159,17 +168,30 @@ async function main() {
     assert.ok(messages.some((text) => text.includes('只剩 2 个顶点')), '四边形一次删两个顶点应被拦');
     assert.match(await stateText(), /已选择 1 个面/, '四边形不得被整面删除');
     await shot('03-quad-two-vertices-blocked');
+    // 只删一个顶点是合法编辑：用 Delete 键删（顶点是否真的少了一个，在下面导出草稿时核对坐标数）
+    await waitToastsCleared();
     await clickMap(quad[2]);
-    await page.click('.mapbox-gl-draw_trash');
+    await focusCanvas();
+    await page.keyboard.press('Delete');
     await page.waitForTimeout(500);
-    assert.match(await stateText(), /已选择 1 个面/, '只删一个顶点是合法编辑，面应保留');
+    assert.match(await stateText(), /存在未保存编辑.*已选择 1 个面/s, '只删一个顶点是合法编辑，面应保留');
+    assert.deepEqual(await toasts(), [], '合法删除不应有任何提示');
     await shot('04-quad-one-vertex-deleted');
+    // 剩三个顶点时再删应被拦：Delete 键与删除按钮各验一次，都要求是按键/点击之后新出现的提示
     await clickMap({ x: quad[0].x + 1, y: quad[0].y + 1 });
-    await page.waitForTimeout(250);
+    await focusCanvas();
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(400);
+    messages = await toasts();
+    assert.ok(messages.some((text) => text.includes('只剩 2 个顶点')), `剩三个顶点时 Delete 键再删应被拦，实际：${JSON.stringify(messages)}`);
+    assert.match(await stateText(), /已选择 1 个面/, 'Delete 键不得把面删掉');
+    await waitToastsCleared();
     await page.click('.mapbox-gl-draw_trash');
     await page.waitForTimeout(400);
-    assert.match(await stateText(), /已选择 1 个面/, '剩三个顶点时再删应被拦');
-    checks.push('四边形 Shift 删两个被拦 / 删一个生效 / 再删被拦');
+    messages = await toasts();
+    assert.ok(messages.some((text) => text.includes('只剩 2 个顶点')), `剩三个顶点时删除按钮再删应被拦，实际：${JSON.stringify(messages)}`);
+    assert.match(await stateText(), /已选择 1 个面/, '删除按钮不得把面删掉');
+    checks.push('四边形 Shift 删两个被拦 / Delete 键删一个生效 / 再删时键与按钮都被拦');
 
     // ---- 草稿导出：按钮文案与下载内容（纯客户端，不经过 fixture 的保存接口）----
     assert.equal((await page.locator('.toolbar-actions button', { hasText: 'GeoJSON' }).innerText()).trim(), '导出草稿 GeoJSON');
@@ -182,7 +204,16 @@ async function main() {
     let raw = '';
     for await (const chunk of stream) raw += chunk;
     const draft = JSON.parse(raw);
-    assert.ok(draft.features.some((feature) => String(feature.properties.feature_id).startsWith('client-')), '草稿应包含未保存的新面');
+    const ringSize = (feature) => feature.geometry.coordinates[0].length;
+    const latitudeOf = (feature) => feature.geometry.coordinates[0].reduce((sum, point) => sum + point[1], 0) / ringSize(feature);
+    const clientFeatures = draft.features.filter((feature) => String(feature.properties.feature_id).startsWith('client-'));
+    assert.ok(clientFeatures.length >= 2, `草稿应包含未保存的新面，实际 ${clientFeatures.length} 个`);
+    // Delete 键删掉了四边形的一个顶点：外环由 5 个坐标（含闭合点）变成 4 个。三角面也是 4 个；
+    // 四边形画在画面左上，纬度更高
+    const fourPoint = clientFeatures.filter((feature) => ringSize(feature) === 4);
+    assert.equal(fourPoint.length, 2, `三角面与删过一个顶点的四边形都应是 4 个坐标，实际各面坐标数：${clientFeatures.map(ringSize)}`);
+    fourPoint.sort((p, q) => latitudeOf(q) - latitudeOf(p));
+    assert.ok(latitudeOf(fourPoint[0]) > latitudeOf(fourPoint[1]) + 0.005, '纬度较高的那个应是四边形');
     checks.push('脏状态下导出的是草稿而非已保存版本');
 
     // ---- 放弃全部修改需要确认 ----
