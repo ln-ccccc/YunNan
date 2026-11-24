@@ -67,8 +67,9 @@ const GEOMETRY_SIMPLIFY_FIXTURE = {
   type: 'Polygon',
   coordinates: [[[102.709, 25.05], [102.721, 25.05], [102.721, 25.054], [102.715, 25.055], [102.709, 25.054], [102.709, 25.05]]],
 };
-// 与后端应答同一形状的简化容差（度，≈1m）。前端不传 tolerance，由后端决定
-const GEOMETRY_SIMPLIFY_TOLERANCE = 0.00001;
+// 与后端应答同一形状：2026-11-25 起容差由后端按成果的像元与图斑面积自适应，响应带 mode / pixel_size_m，
+// changed 项带实际使用的容差与面积、形态变化。前端不传 tolerance
+const GEOMETRY_SIMPLIFY_PIXEL_M = 0.24;
 
 // 几何接口的请求体。解析不了时记下 null，由脚本末尾的形状核对报出来
 function geometryBody(request) {
@@ -135,12 +136,14 @@ async function main() {
       geometryCalls.union.push(geometryBody(request));
       data = { geometry: GEOMETRY_UNION_FIXTURE };
     } else if (request.method() === 'POST' && endpoint.endsWith(`/classification-results/${RESULT_ID}/geometry/simplify`)) {
-      // 与后端同一形状：tolerance + 与入参同序的 items。每个入参都回一个 changed 的固定几何
+      // 与后端同一形状：与入参同序的 items。每个入参都回一个 changed 的固定几何
       const body = geometryBody(request);
       geometryCalls.simplify.push(body);
       data = {
-        tolerance: GEOMETRY_SIMPLIFY_TOLERANCE,
-        items: (body?.geometries || []).map(() => ({ outcome: 'changed', geometry: GEOMETRY_SIMPLIFY_FIXTURE })),
+        mode: 'adaptive',
+        tolerance: null,
+        pixel_size_m: GEOMETRY_SIMPLIFY_PIXEL_M,
+        items: (body?.geometries || []).map(() => ({ outcome: 'changed', geometry: GEOMETRY_SIMPLIFY_FIXTURE, tolerance: 2e-6, area_change: 0.0031, shape_change: 0.018 })),
       };
     } else { missing.push(endpoint); await route.fulfill({ status: 404, headers, json: { success: false, code: 1, msg: '未提供测试 fixture' } }); return; }
     await route.fulfill({ headers, json: { code: 0, success: true, data, count: Array.isArray(data) ? data.length : 0 } });

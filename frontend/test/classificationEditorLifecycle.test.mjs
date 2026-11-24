@@ -468,7 +468,10 @@ test('merge button is disabled for mixed-class selections (E2-b)', () => {
   const drawAdd = merge.indexOf('this.draw.add(');
   assert.ok(mixedGuard > 0 && mixedGuard < unionCall, '同地类守卫必须先于发出合并请求');
   assert.ok(unionCall > 0 && unionCall < drawAdd, '合并结果必须来自后端请求，且请求先于替换画布');
-  assert.match(merge, /geometry: merged\.geometry,/, '画布上套用的必须是后端返回的几何，前端不得再加工或校验');
+  assert.ok(merge.indexOf('parseUnionResponse(await unionClassificationGeometries(') === unionCall - 'parseUnionResponse('.length,
+    '请求的返回值必须直接交给 parseUnionResponse，中间不得有别的处理');
+  assert.match(merge, /const merged = parseUnionResponse\(await unionClassificationGeometries\(/, '合并结果必须来自后端请求，并先过响应形状检查');
+  assert.match(merge, /geometry: merged,/, '画布上套用的必须是后端返回的几何，前端不得再加工或校验');
   assert.doesNotMatch(withoutComments(merge), /polygonStructureProblem|polygonGeometryProblems/, '结构校验已由后端几何引擎承担');
   // 失败文案：有具体原因用后端的，没有就沿用原来这句
   assert.match(merge, /合并失败：\$\{requestFailureReason\(error, MERGE_FAILURE_FALLBACK\)\}/);
@@ -480,37 +483,36 @@ test('merge button is disabled for mixed-class selections (E2-b)', () => {
   );
 });
 
-test('simplify takes every verdict from the backend and leaves rejected faces untouched (E2-c)', () => {
+test('simplify takes every verdict from the backend and leaves refused faces untouched (E2-c)', () => {
   // 前端不再自带简化、有效性与越界判定（原 simplifyPolygonSafely + turf simplify + roiViolation）：
-  // 简化与「简化后是否仍合法」都在后端几何引擎里完成，changed 的结果一定通过了保存同款校验
+  // 简化与「简化后是否仍合法、面积和形态变化是否在精度门槛内」都在后端几何引擎里完成，changed 的结果
+  // 一定通过了保存同款校验。怎样提示、怎样记状态是 utils 里的纯逻辑，有行为测试
+  // （classificationEditorValidation.test.mjs 的 summarizeSimplify / simplifyMessages / parseSimplifyResponse）；
+  // 这里只守住组件与它的接线
   const code = withoutComments(sliceBetween('async simplifySelectedFeatures() {', 'async saveDrawing()'));
   const simplifyCall = code.indexOf('await simplifyClassificationGeometries(');
   assert.ok(simplifyCall > 0 && simplifyCall < code.indexOf('this.draw.add('), '简化结果必须来自后端请求，且请求先于替换画布');
-  assert.doesNotMatch(code, /tolerance/, '容差用后端默认，前端不得传 tolerance');
-  // 只有 changed 才替换画布；rejected（简化后会越界或几何无效）计入跳过、原面不动；unchanged 不动
+  assert.doesNotMatch(code, /tolerance/, '容差由后端按像元与图斑面积决定，前端不得传 tolerance');
+  // 返回项必须与送审的面一一对应才往下走；对不上抛错，走 catch，画布一个面都不动
+  assert.match(code, /const items = parseSimplifyResponse\(simplified, targets\.length\);/);
+  // 只有 changed 才进入替换名单；请求期间被改动的面不套用
   assert.match(
     code,
-    /if \(!target \|\| item\?\.outcome !== 'changed'\) \{\s*if \(item\?\.outcome === 'rejected'\) skippedCount \+= 1;\s*return;\s*\}/,
+    /if \(item\.outcome !== 'changed'\) return;[\s\S]*if \(live\) applied\.push\(\{ live, geometry: item\.geometry \}\);\s*else changedMeanwhileCount \+= 1;/,
   );
-  assert.match(code, /geometry: item\.geometry,/, '替换画布的几何逐项取自后端返回');
-  assert.match(code, /properties: live\.properties,/, '原面的属性原样保留');
+  assert.match(code, /properties: live\.properties,\s*geometry \}\);/, '替换画布的几何逐项取自后端返回，原面的属性原样保留');
   assert.doesNotMatch(code, /roi_geometry/, '越界与否由后端判定，前端不得再拿 ROI 做几何运算');
-  assert.match(code, /个面简化后会超出矿山边界或几何无效，已跳过，原面保持不变/);
-  assert.doesNotMatch(code, /几何退化/, '旧的"无法简化（几何退化）"文案已替换');
-  // 有面被跳过、或在请求期间被改动时，不再同时提示"边缘已足够平滑"
-  assert.match(
-    code,
-    /\} else if \(!skippedCount && !changedMeanwhileCount\) \{\s*this\.\$message\.info\('选中面的边缘已足够平滑'\);/,
-  );
-  assert.match(code, /if \(!live\) \{\s*changedMeanwhileCount \+= 1;\s*return;\s*\}/, '请求期间被改动的面不套用简化结果，单独计数');
+  // 已是简化结果、之后没被修改的面不重复提交（接口不保证幂等）
+  assert.match(code, /const targets = selected\.filter\(\(feature\) => !this\.simplifiedResults\.isFreshResult\(feature\)\);/);
+  assert.match(code, /this\.simplifiedResults\.remember\(newId, geometry\);/);
   // 只有真的改动画布才清选中、记历史
-  assert.match(code, /if \(simplifiedCount\) \{\s*this\.setSelectedDrawIds\(\[\]\);\s*this\.recordMutation\('simplify'\);/);
-  // 逐面「先 add 后 delete」并各自包在 try/catch 里：单面失败只跳过这一面，不中断整批
+  assert.match(code, /if \(applied\.length\) \{[\s\S]*this\.setSelectedDrawIds\(\[\]\);\s*this\.recordMutation\('simplify'\);/);
   assert.match(
     code,
-    /try \{\s*this\.draw\.add\(\{\s*type: 'Feature',\s*id: createClientFeatureId\(\),\s*properties: live\.properties,\s*geometry: item\.geometry,\s*\}\);\s*this\.draw\.delete\(target\.id\);\s*simplifiedCount \+= 1;\s*\} catch \(_\) \{\s*skippedCount \+= 1;\s*\}/,
+    /simplifyMessages\(summarizeSimplify\(items\), \{ changedMeanwhile: changedMeanwhileCount, alreadySimplified \}\)/,
+    '提示由纯逻辑函数生成，组件不复述判定规则',
   );
-  assert.match(source, /title="轻度简化选中面边缘（≈1m 容差）"/, '按钮说明不变');
+  assert.match(source, /title="按影像分辨率与图斑大小轻度简化选中面边缘（偏离不超过 1 个像元，面积变化不超过 3%）"/);
 });
 
 test('save 422 selects and locates the offending feature (E2-d)', () => {
@@ -588,7 +590,7 @@ test('a sketch in progress never meets whole-canvas operations (2026-11-24)', ()
   const undo = withoutComments(sliceBetween('undoLastEdit() {', 'redoLastEdit() {'));
   assert.match(
     undo,
-    /if \(!this\.draw\) return;\s*if \(this\.draw\.getMode\(\) === SKETCH_MODE\) \{\s*this\.draw\.trash\(\);\s*return;\s*\}\s*if \(!this\.history\?\.canUndo\) return;[\s\S]*this\.draw\.set\(JSON\.parse\(previous\)\);/,
+    /if \(!this\.draw\) return;\s*if \(this\.draw\.getMode\(\) === SKETCH_MODE\) \{\s*this\.draw\.trash\(\);\s*return;\s*\}\s*if \(!this\.history\?\.canUndo\) return;[\s\S]*this\.replaceCanvas\(JSON\.parse\(previous\)\);/,
     '绘制中的撤销不得走到 draw.set',
   );
   const redo = withoutComments(sliceBetween('redoLastEdit() {', 'handleKeydown(event) {'));
@@ -680,11 +682,22 @@ test('click targets are resolved by the corrected rule in both selection modes (
 // 前端此前自带三套几何判定（turf booleanWithin 无容差判定、采样式 roiViolation、手写的有效性
 // 镜像），与后端 Shapely/GEOS 的结论对不上：真实数据上 33% 的图斑被误报越界，简化后的面要到
 // 保存才被 422 拒绝。现在保存、编辑期校验、简化、合并共用后端同一个判定函数，前端只做渲染、
-// 交互与撤销重做。下面守护两件事：前端不再自行判定几何；每个结论都来自后端。
-// 调度器本身的行为（合并请求、过期丢弃、cancel、失败静默）见 classificationEditorValidation.test.mjs。
+// 交互与撤销重做。
+//
+// 2026-11-25 起，校验的状态与提示逻辑抽成了纯逻辑（utils/classificationEditorValidation.mjs 的调度器、
+// 状态跟踪与协调器），行为测试在那里：Pending / Valid / Invalid / Unknown 的转移、过期结论的判定、
+// 断网 / 超时 / 404 / 500 / 响应格式异常、快速连续编辑、校验期间撤销重做。真实界面上的表现由
+// tests/browser/geoview-editor-validation-smoke.cjs 验证。下面只留几条结构守护：组件确实接在了
+// 那套纯逻辑上，并且没有把几何算法或「失败静默」写回来。
 
-test('the editor no longer judges geometry itself (2026-11-24)', () => {
+const validationModule = fs.readFileSync(
+  fileURLToPath(new URL('../src/utils/classificationEditorValidation.mjs', import.meta.url)),
+  'utf8',
+);
+
+test('the editor and its validation module contain no geometry algorithms (2026-11-24)', () => {
   const code = withoutComments(source);
+  const module = withoutComments(validationModule);
   assert.doesNotMatch(code, /@turf\//, '不得再引入任何 turf 几何库');
   assert.doesNotMatch(code, /classificationEditorGeometry/, '本地几何模块已被后端引擎取代并删除');
   for (const name of [
@@ -693,11 +706,19 @@ test('the editor no longer judges geometry itself (2026-11-24)', () => {
   ]) {
     assert.doesNotMatch(code, new RegExp(name), `${name} 已被后端几何引擎取代`);
   }
-  // 逐值相等比较只用来确认「请求期间这个面没被改过」，不是几何算法
-  const compare = withoutComments(sliceBetween('function sameGeometry(left, right) {', 'function requestFailureReason('));
-  assert.match(compare, /JSON\.stringify\(left\.coordinates\) === JSON\.stringify\(right\.coordinates\)/);
-  assert.doesNotMatch(compare, /Math\.|orient|segment|intersects|within|contains/i, '不得借比较之名重写几何运算');
-
+  // 逐值相等比较只用来确认「还是不是同一个几何」，不是几何算法
+  assert.match(
+    withoutComments(sliceBetween('function sameGeometry(left, right) {', 'function requestFailureReason(')),
+    /const key = geometryKey\(left\);\s*return key !== null && key === geometryKey\(right\);/,
+  );
+  for (const [label, text] of [['编辑器', code], ['校验模块', module]]) {
+    assert.doesNotMatch(
+      text,
+      /Math\.(hypot|atan2|acos|asin|sqrt|sin|cos)\b|\.intersects\(|\.within\(|\.contains\(|\.covers\(|orient2d|segmentIntersect/,
+      `${label}不得出现任何几何运算`,
+    );
+    assert.doesNotMatch(text, /@turf\//, `${label}不得引入 turf`);
+  }
   // 三个接口都经同一个客户端发出
   assert.match(
     source,
@@ -706,9 +727,21 @@ test('the editor no longer judges geometry itself (2026-11-24)', () => {
   );
 });
 
-test('draw.create / draw.update queue the edited faces for backend validation (2026-11-24)', () => {
-  const handlers = withoutComments(sliceBetween('handleDrawCreate(event) {', 'queueGeometryValidation(features, action) {'));
-  // create：地类 / ID 赋值、suppressDrawEvents 守卫、历史记录全部保留，只是把本地判定换成排队送审
+test('the editor is wired to the validation coordinator (2026-11-25)', () => {
+  // 防抖 200ms。mapbox-gl-draw 的 draw.update 只在鼠标释放、增删顶点时各发一次，不需要再挂鼠标事件
+  assert.match(source, /const VALIDATION_DEBOUNCE_MS = 200;/);
+  const created = withoutComments(sliceBetween('created() {', 'mounted() {'));
+  assert.match(created, /this\.validationScheduler = createValidationScheduler\(\{\s*delayMs: VALIDATION_DEBOUNCE_MS,\s*validate: \(drawIds\) => this\.validateDrawGeometries\(drawIds\),\s*onVerdicts: \(verdicts\) => this\.validationCoordinator\.verdicts\(verdicts\),\s*onFailure: \(failure\) => this\.reportValidationFailure\(failure\),\s*\}\);/,
+    '结论与失败分别交给协调器：失败不能没有去处');
+  assert.match(created, /readGeometryKey: \(drawId\) => this\.liveGeometryKey\(drawId\),/);
+  assert.match(created, /warnMerged: \(text\) => this\.\$message\.warning\(\{ message: text, grouping: true \}\),/,
+    '「未确认」会连续出现，同样内容的提示合并成一条（选项必须放在第一个对象参数里）');
+  assert.doesNotMatch(withoutComments(sliceBetween('data() {', 'computed: {')), /validationScheduler|validationCoordinator|simplifiedResults/,
+    '调度器、协调器、登记簿不进 data()：它们不需要响应式');
+  assert.doesNotMatch(withoutComments(sliceBetween('this.map.on(\'load\'', 'destroyMap() {')), /mousedown|mouseup|mousemove/, '不得另加鼠标事件');
+
+  // 事件 → 协调器：create / update 记为校验中，delete 清掉记录
+  const handlers = withoutComments(sliceBetween('handleDrawCreate(event) {', 'handleSelectionChange(event) {'));
   assert.match(
     handlers,
     /handleDrawCreate\(event\) \{\s*if \(this\.suppressDrawEvents\) return;\s*event\.features\.forEach\(\(feature\) => \{\s*this\.draw\.setFeatureProperty\(feature\.id, 'class_code', this\.activeClassCode\);\s*this\.draw\.setFeatureProperty\(feature\.id, 'feature_id', createClientFeatureId\(\)\);\s*\}\);\s*this\.recordMutation\('create'\);\s*this\.queueGeometryValidation\(event\.features, VALIDATION_ACTION_CREATE\);/,
@@ -717,96 +750,103 @@ test('draw.create / draw.update queue the edited faces for backend validation (2
     handlers,
     /handleDrawUpdate\(event\) \{\s*if \(this\.suppressDrawEvents\) return;\s*this\.recordMutation\('vertex'\);\s*this\.queueGeometryValidation\(event\?\.features, VALIDATION_ACTION_UPDATE\);/,
   );
+  assert.match(handlers, /handleDrawDelete\(event\) \{\s*if \(this\.suppressDrawEvents\) return;[\s\S]*this\.validationCoordinator\.removed\(/);
   assert.doesNotMatch(handlers, /\$message|roi_geometry/, '事件处理里不弹提示、不读 ROI：越界与否要等后端的结论');
-
-  const queue = withoutComments(sliceBetween('queueGeometryValidation(features, action) {', 'async validateDrawGeometries(drawIds) {'));
-  assert.match(queue, /this\.validationScheduler\.request\(drawIds, action\);/, '只把 draw id 记入待校验集合');
-
-  // 防抖 200ms；取几何发请求与中文提示由组件注入。mapbox-gl-draw 的 draw.update 只在鼠标释放、
-  // 增删顶点时各发一次，不需要再挂鼠标事件
-  assert.match(source, /import \{ createValidationScheduler, matchVerdicts \} from '@\/utils\/classificationEditorValidation\.mjs';/);
-  assert.match(source, /const VALIDATION_DEBOUNCE_MS = 200;/);
   assert.match(
-    withoutComments(sliceBetween('created() {', 'mounted() {')),
-    /delayMs: VALIDATION_DEBOUNCE_MS,\s*validate: \(drawIds\) => this\.validateDrawGeometries\(drawIds\),\s*onVerdicts: \(verdicts\) => this\.reportGeometryVerdicts\(verdicts\),/,
+    withoutComments(sliceBetween('queueGeometryValidation(features, action) {', 'async validateDrawGeometries(drawIds) {')),
+    /this\.validationCoordinator\.edited\(drawIds, action\);/,
   );
-  assert.doesNotMatch(withoutComments(sliceBetween('data() {', 'computed: {')), /validationScheduler/, '调度器不进 data()：它不需要响应式');
-  assert.doesNotMatch(withoutComments(sliceBetween('this.map.on(\'load\'', 'destroyMap() {')), /mousedown|mouseup|mousemove/, '不得另加鼠标事件');
-});
 
-test('the validation request belongs to the editing session and fails silently (2026-11-24)', () => {
-  const validate = withoutComments(sliceBetween('async validateDrawGeometries(drawIds) {', 'reportGeometryVerdicts('));
-  const awaitAt = validate.indexOf('await validateClassificationGeometries(projectId, resultId, geometries)');
+  // 发请求：发出之前捕获会话代次与成果（与 loadRevisions / saveDrawing 同构）与每个面的几何指纹；
+  // 返回之后归属不符即没有结论；结论必须经 matchVerdicts 对上号；失败不吞，带着送审的面原样抛出
+  const validate = withoutComments(sliceBetween('async validateDrawGeometries(drawIds) {', 'reportValidationFailure('));
+  const awaitAt = validate.indexOf('const payload = await validateClassificationGeometries(projectId, resultId, geometries);');
   assert.ok(awaitAt > 0, '应调用后端校验接口');
-  // 发出之前捕获会话代次与成果（与 loadRevisions / saveDrawing 同构）
-  for (const capture of ['const sessionSeq = this.reloadSeq;', 'const { projectId, resultId } = this.context || {};']) {
+  for (const capture of ['const sessionSeq = this.reloadSeq;', 'const { projectId, resultId } = this.context || {};',
+                         'const sent = { ids, snapshots, sessionSeq };']) {
     const at = validate.indexOf(capture);
     assert.ok(at >= 0 && at < awaitAt, `必须在 await 之前捕获：${capture}`);
   }
-  // 取不到几何的 id（期间已被删除）跳过；一个都不剩就不发请求
-  const empty = validate.indexOf('if (!ids.length) return null;');
-  assert.ok(empty > 0 && empty < awaitAt, '没有可校验的面时不发请求');
-  assert.match(validate, /if \(!geometry\) return;/);
+  assert.ok(validate.indexOf('if (!ids.length) return null;') > 0 && validate.indexOf('if (!ids.length) return null;') < awaitAt, '没有可校验的面时不发请求');
   assert.match(validate, /geometries\.push\(\{ type: geometry\.type, coordinates: geometry\.coordinates \}\);/, '请求体只带 type 与 coordinates');
-  // 返回之后、交付之前四项比对；任一不符即没有结论
-  const after = validate.slice(awaitAt);
+  assert.match(validate, /snapshots\.push\(key\);/, '送审时记下每个面的几何指纹');
   assert.match(
-    after,
+    validate.slice(awaitAt),
     /if \(\s*sessionSeq !== this\.reloadSeq\s*\|\| sessionSeq === -1\s*\|\| this\.context\?\.projectId !== projectId\s*\|\| this\.context\?\.resultId !== resultId\s*\) \{\s*return null;\s*\}/,
-    '归属不符返回 null',
-  );
-  // 接口返回的是 { items } 对象，不是数组：必须经 matchVerdicts 对上号再交给调度器。
-  // 2026-11-24 的第一版把整个响应对象当成数组往下传，调度器静默丢弃，界面上一条提示都不出，
-  // 而当时的测试只数了「请求发出去了」——所以这里钉住对接方式，另由单测与浏览器夹具验证提示确实出现
-  assert.match(
-    validate,
-    /const payload = await validateClassificationGeometries\(projectId, resultId, geometries\);/,
-    '校验接口的返回值先落在 payload 上',
+    '归属不符返回 null：A 成果的结论不得落到已切换到的 B 成果上',
   );
   assert.match(
-    after,
-    /const items = matchVerdicts\(payload, ids\);\s*return items \? \{ ids, items \} : null;/,
-    '结论数组必须与送审的面一一对应才交付，否则视为没有结论',
+    validate.slice(awaitAt),
+    /const items = matchVerdicts\(payload, ids\);\s*if \(!items\) throw protocolError\(/,
+    '响应格式异常当作没有取得结论（记为未确认），不得把下标错位的提示弹出来',
   );
-  assert.doesNotMatch(after, /items: payload|items: await|\{ ids, items: payload \}/, '不得把响应对象当成结论数组');
-  // 请求失败静默：不 catch、不提示——保存时后端仍会校验
-  assert.doesNotMatch(after, /\$message|\bcatch\b/, '请求失败不得弹提示');
+  assert.match(validate.slice(awaitAt), /\} catch \(error\) \{\s*error\.validation = sent;\s*throw error;\s*\}/, '请求失败不吞：带着送审的面抛给 onFailure');
+  assert.doesNotMatch(validate, /\$message/, '取几何发请求的方法里不弹提示');
+
+  // 失败上报：同样先过归属检查
+  const failure = withoutComments(sliceBetween('reportValidationFailure({ ids, snapshots, error }) {', 'handleDrawDelete('));
+  assert.match(failure, /if \(sessionSeq !== this\.reloadSeq \|\| this\.reloadSeq === -1\) return;/);
+  assert.match(failure, /this\.validationCoordinator\.failed\(\{ ids, snapshots: sent, error \}\);/);
 });
 
-test('backend verdicts are reported in two categories with the original wording (2026-11-24)', () => {
-  const report = withoutComments(sliceBetween('reportGeometryVerdicts({ items, contexts }) {', 'handleDrawDelete() {'));
-  assert.match(report, /if \(!item \|\| item\.ok\) return;/, '合法的面不提示');
+test('the editor only ever constructs the map with `new Map(`: Map is maplibre\'s Map here (2026-11-25)', () => {
+  // 组件顶部 `import { Map } from 'maplibre-gl'`。2026-11-25 在组件里写了一个用 `new Map()` 的辅助函数，
+  // 构造出来的是没有参数的地图对象——撤销走到一半抛 "reading 'canvasContextAttributes'"，
+  // 画布不复原。现有的浏览器夹具抓到了它；纯逻辑模块里的同类函数没有这个名字遮蔽，所以单测全绿。
+  const code = withoutComments(source);
+  const constructors = [...code.matchAll(/new Map\(/g)];
+  assert.equal(constructors.length, 1, '组件里只应有一处 new Map(');
+  assert.ok(code.slice(Math.max(0, constructors[0].index - 12), constructors[0].index).endsWith('this.map = '),
+    '唯一的 new Map( 必须是创建地图');
+  assert.doesNotMatch(code, /new Map\(\)/, '不得在组件里用内置 Map 的无参构造');
+  // 需要内置 Map / Set 的逻辑都放在纯逻辑模块里
+  const helpers = withoutComments(validationModule);
+  assert.match(helpers, /export function geometryKeysOf\(featureCollection\) \{[\s\S]*?const keys = new Map\(\);/);
+  assert.doesNotMatch(source, /import \{[^}]*\bSet\b[^}]*\} from 'maplibre-gl'/, '没有从 maplibre 引入 Set（否则 new Set() 也会被遮蔽）');
+});
+
+test('validation failures are never swallowed: every await of the validate client feeds the coordinator or throws (2026-11-25)', () => {
+  // 2026-11-24 的第一版在调度器里 `() => {}` 把拒绝吞掉，断网 / 超时 / 404 / 500 时界面上一片安静，
+  // 面与「已确认合法」没有区别。现在：失败必须有人接。这里守住「没有人再把它接走后扔掉」
+  assert.doesNotMatch(withoutComments(source), /catch \(_\) \{\s*\},\s*\(\) => \{\}/, '不得再出现吞掉拒绝的空回调');
+  assert.doesNotMatch(withoutComments(validationModule), /Promise\.resolve\(outcome\)\.then\(\s*\(result\) => deliver\(batch, result\),\s*\(\) => \{\},?\s*\)/);
   assert.match(
-    report,
-    /if \(item\.code === 'OUTSIDE_ROI'\) \{\s*outsideActions\.push\(contexts\[index\]\);\s*\} else \{\s*invalidCount \+= 1;\s*\}/,
-    '越界按「下一步」计数，其余不合法项并成一类',
-  );
-  assert.match(
-    report,
-    /if \(outsideActions\.length\) \{[\s\S]*this\.\$message\.warning\(`\$\{outsideActions\.length\} 个面超出成果 ROI（矿山边界），保存时将被拒绝\$\{hint\}`\);\s*\}\s*if \(invalidCount\) \{\s*this\.\$message\.warning\(`\$\{invalidCount\} 个面几何无效（如自相交），保存时将被拒绝，请调整顶点位置`\);/,
-    '两类各有其提示，同一批里都有就各弹一条',
-  );
-  assert.match(
-    report,
-    /outsideActions\.every\(\(action\) => action === VALIDATION_ACTION_CREATE\);\s*const hint = allCreated \? '，请拖回界内或删除' : '，请调整顶点位置';/,
-    '新建的面：拖回界内或删除；改过顶点的：调整顶点位置（与改造前的文案一致）',
+    withoutComments(validationModule),
+    /Promise\.resolve\(outcome\)\.then\(\s*\(result\) => deliver\(batch, result\),\s*\(error\) => fail\(batch, error\),\s*\);/,
+    '调度器把拒绝交给 onFailure',
   );
 });
 
-test('pending validations die with the canvas (2026-11-24)', () => {
-  const destroy = withoutComments(sliceBetween('destroyMap() {', 'fitToCurrentFeatures(manifestBounds = null) {'));
-  const cancel = destroy.indexOf('this.validationScheduler.cancel()');
-  assert.ok(cancel > 0 && cancel < destroy.indexOf('this.map.remove()'), '销毁地图时先作废待校验集合与在途响应');
-  // destroyMap 是 reloadResult 与 beforeUnmount 共用的清理点：切换成果、卸载组件都经它
-  assert.match(sliceBetween('async reloadResult()', 'initializeMap() {'), /this\.reloadSeq = \(this\.reloadSeq \|\| 0\) \+ 1\);\s*this\.destroyMap\(\);/);
-  assert.match(withoutComments(sliceBetween('beforeUnmount() {', 'async beforeRouteLeave(')), /this\.destroyMap\(\);\s*this\.reloadSeq = -1;/);
-  // 放弃全部修改把画布重置回已保存的状态：对着被丢弃的编辑做的校验同样作废，不得事后补弹提示
-  const reset = withoutComments(sliceBetween('resetDrawing() {', 'setSelectedDrawIds(drawIds) {'));
-  const resetCancel = reset.indexOf('this.validationScheduler.cancel()');
-  assert.ok(resetCancel > 0 && resetCancel < reset.indexOf('this.draw.set('), '重置画布前先作废待校验与在途的校验');
+test('the canvas says what is pending, invalid or unconfirmed (2026-11-25)', () => {
+  assert.match(
+    source,
+    /<span\s*v-if="validationNotice\.text"\s*class="validation-state"\s*:class="`is-\$\{validationNotice\.tone\}`"\s*:title="validationNotice\.hint"\s*data-testid="validation-state"\s*>\{\{ validationNotice\.text \}\}<\/span>/,
+    '工具区显示校验状态，悬停有说明',
+  );
+  assert.match(source, /validationNotice\(\) \{\s*return describeValidationSummary\(this\.validationSummary\);\s*\},/);
+  assert.match(source, /onChange: \(summary\) => \{ this\.validationSummary = summary; \},/, '汇总只由协调器写入');
 });
 
-test('merge and simplify are backend requests guarded against re-entry and stale context (2026-11-24)', () => {
+test('undo, redo and save keep the validation state in step with the canvas (2026-11-25)', () => {
+  // 撤销 / 重做是 draw.set()，不发 draw 事件：经 replaceCanvas 对比替换前后，几何变了的面重新送审
+  const undo = withoutComments(sliceBetween('undoLastEdit() {', 'redoLastEdit() {'));
+  const redo = withoutComments(sliceBetween('redoLastEdit() {', 'replaceCanvas(featureCollection) {'));
+  for (const [name, body] of [['撤销', undo], ['重做', redo]]) {
+    assert.equal(body.split('this.replaceCanvas(').length - 1, 1, `${name}经一次 replaceCanvas`);
+    assert.doesNotMatch(body, /this\.draw\.set\(/, `${name}不得绕过 replaceCanvas 直接 draw.set`);
+  }
+  const replace = withoutComments(sliceBetween('replaceCanvas(featureCollection) {', 'handleDrawCreate(event) {'));
+  assert.match(replace, /const before = this\.canvasGeometryKeys\(\);[\s\S]*this\.draw\.set\(featureCollection\);[\s\S]*const after = this\.canvasGeometryKeys\(\);\s*this\.simplifiedResults\.retainOnly\(new Set\(after\.keys\(\)\)\);\s*this\.validationCoordinator\.canvasReplaced\(before, after\);/);
+
+  const save = withoutComments(sliceBetween('async saveDrawing() {', 'async loadRevisions'));
+  // 保存成功且没有新修改：画布换成服务端的新版本，逐面的校验状态清空
+  assert.match(save, /this\.validationScheduler\.cancel\(\);\s*this\.validationCoordinator\.reset\(\);\s*this\.simplifiedResults\.clear\(\);\s*this\.draw\.set\(saved\.feature_collection \|\| emptyFeatureCollection\(\)\);/,
+    '清空校验状态必须在 draw.set 之前：之后回来的在途结论判为过期');
+  // 保存期间又有新修改：提交后没改过的面，后端在保存时认可了
+  assert.match(save, /this\.validationCoordinator\.savedUnchanged\(geometryKeysOf\(JSON\.parse\(submittedDrawJson\)\)\);/);
+});
+
+test('a failed merge or simplify leaves the canvas and the undo stack exactly as they were (2026-11-25)', () => {
   const cases = [
     { method: 'mergeSelectedFeatures', flag: 'merging', request: 'await unionClassificationGeometries(', end: 'async simplifySelectedFeatures() {' },
     { method: 'simplifySelectedFeatures', flag: 'simplifying', request: 'await simplifyClassificationGeometries(', end: 'async saveDrawing()' },
@@ -825,21 +865,26 @@ test('merge and simplify are backend requests guarded against re-entry and stale
     assert.ok(resultCapture >= 0, `${method} 必须在 await 之前捕获 resultId`);
     const after = code.slice(requestAt);
     const guard = after.indexOf('if (!stillOwnsState()) return;');
-    assert.ok(guard >= 0 && guard < after.indexOf('this.draw.add('), `${method}：await 之后的画布更新前必须先过 stillOwnsState 守卫`);
+    assert.ok(guard >= 0 && guard < after.indexOf('this.applyCanvasChange('), `${method}：await 之后的画布更新前必须先过 stillOwnsState 守卫`);
     assert.match(code, /\} catch \(error\) \{\s*if \(!stillOwnsState\(\)\) return;\s*this\.\$message\.error\(/, `${method}：错误提示同样要过归属检查`);
     const resetGuard = new RegExp(String.raw`if \(stillOwnsState\(\) \|\| this\.reloadSeq === -1\) \{\s*this\.${flag} = false;\s*\}`);
     assert.match(code, resetGuard, `${method}：finally 复位标志前必须确认仍持有上下文`);
-    // 先 add 后 delete 的原子化写法与 suppressDrawEvents 包裹保留：add 与 delete 都必须落在包裹之内
+    // 改动画布只经 applyCanvasChange：抛错时整体回滚；请求期间被改过的面不套用
+    assert.equal(code.split('this.draw.add(').length - 1, 1, `${method}：只有一处 draw.add`);
     const add = code.indexOf('this.draw.add(');
-    const remove = code.indexOf('this.draw.delete(');
-    const unsuppress = code.indexOf('this.suppressDrawEvents = false;', add);
-    assert.ok(add > 0 && remove > add, `${method}：先 add 后 delete`);
-    assert.ok(unsuppress > remove, `${method}：delete 也必须在 suppressDrawEvents 包裹之内`);
-    assert.match(code, /this\.suppressDrawEvents = true;\s*try \{[\s\S]*this\.draw\.add\([\s\S]*\} finally \{\s*this\.suppressDrawEvents = false;\s*\}/, `${method}：替换画布全程包在 suppressDrawEvents 里`);
-    // 请求期间画布没有冻结：被拖动、删除或被撤销 / 重做换掉的面不套用结果
+    const apply = code.indexOf('this.applyCanvasChange((afterKeys) => {');
+    assert.ok(apply > 0 && apply < add, `${method}：draw.add 必须在 applyCanvasChange 之内`);
+    assert.doesNotMatch(code.slice(0, apply), /this\.draw\.(add|delete|set)\(/, `${method}：请求返回并过守卫之前不得动画布`);
     assert.match(code, /this\.unchangedLiveFeature\(/, `${method}：套用结果前必须确认那个面没被改过`);
+    assert.ok(code.indexOf('this.recordMutation(') > add, `${method}：真的改了画布才记历史`);
     assert.match(source, new RegExp(String.raw`:loading="${flag}"\s*:disabled="[^"]*\|\| ${flag}"`), `${method}：请求期间按钮转圈并禁用`);
   }
+  // applyCanvasChange：全程不发 draw 事件；抛错就把画布恢复成改动前的样子，再把错误抛出去
+  const apply = withoutComments(sliceBetween('applyCanvasChange(mutate) {', 'async mergeSelectedFeatures() {'));
+  assert.match(
+    apply,
+    /const before = this\.currentDrawJson\(\);\s*this\.suppressDrawEvents = true;\s*try \{\s*mutate\(\(\) => this\.canvasGeometryKeys\(\)\);\s*\} catch \(error\) \{\s*try \{\s*this\.draw\.set\(JSON\.parse\(before\)\);\s*\} catch \(_\) \{[\s\S]*\}\s*throw error;\s*\} finally \{\s*this\.suppressDrawEvents = false;\s*\}/,
+  );
   // 合并：同地类的前提对着画布现状再核一次，地类也取现状
   const merge = withoutComments(sliceBetween('async mergeSelectedFeatures() {', 'async simplifySelectedFeatures() {'));
   assert.match(merge, /const liveClassCodes = new Set\(live\.map\(\(feature\) => feature\.properties\?\.class_code\)\);\s*if \(liveClassCodes\.size > 1\) \{/);
@@ -852,7 +897,22 @@ test('merge and simplify are backend requests guarded against re-entry and stale
   );
 });
 
-test('the three geometry endpoints post bare geometries under the result URL', () => {
+test('pending validations die with the canvas (2026-11-24)', () => {
+  const destroy = withoutComments(sliceBetween('destroyMap() {', 'fitToCurrentFeatures(manifestBounds = null) {'));
+  const cancel = destroy.indexOf('this.validationScheduler.cancel()');
+  assert.ok(cancel > 0 && cancel < destroy.indexOf('this.map.remove()'), '销毁地图时先作废待校验集合');
+  assert.ok(destroy.indexOf('this.validationCoordinator.reset()') > 0, '逐面的校验状态一并清空');
+  // destroyMap 是 reloadResult 与 beforeUnmount 共用的清理点：切换成果、卸载组件都经它
+  assert.match(sliceBetween('async reloadResult()', 'initializeMap() {'), /this\.reloadSeq = \(this\.reloadSeq \|\| 0\) \+ 1\);\s*this\.destroyMap\(\);/);
+  assert.match(withoutComments(sliceBetween('beforeUnmount() {', 'async beforeRouteLeave(')), /this\.destroyMap\(\);\s*this\.reloadSeq = -1;/);
+  // 放弃全部修改把画布重置回已保存的状态：对着被丢弃的编辑做的校验同样作废，不得事后补弹提示
+  const reset = withoutComments(sliceBetween('resetDrawing() {', 'setSelectedDrawIds(drawIds) {'));
+  const resetCancel = reset.indexOf('this.validationScheduler.cancel()');
+  assert.ok(resetCancel > 0 && resetCancel < reset.indexOf('this.draw.set('), '重置画布前先作废待校验与在途的校验');
+  assert.ok(reset.indexOf('this.validationCoordinator.reset()') > 0 && reset.indexOf('this.validationCoordinator.reset()') < reset.indexOf('this.draw.set('));
+});
+
+test('the three geometry endpoints post bare geometries under the result URL and classify failures', () => {
   for (const [name, suffix] of [
     ['validateClassificationGeometries', '/geometry/validate'],
     ['simplifyClassificationGeometries', '/geometry/simplify'],
@@ -876,4 +936,8 @@ test('the three geometry endpoints post bare geometries under the result URL', (
     /geometries\.map\(\(geometry\) => \(\{ type: geometry\?\.type, coordinates: geometry\?\.coordinates \}\)\)/,
     '每个几何只带 type 与 coordinates（后端多一个键就 422）',
   );
+  // 每个失败都带类别：没有响应体时 axios 对超时给 ECONNABORTED，其余（断网、不可达、跨域）都是连接失败
+  assert.match(apiCode, /kind: response \? 'http' : \(error\?\.code === 'ECONNABORTED' \? 'timeout' : 'network'\),/);
+  assert.match(apiCode, /error\.kind = kind \|\| \(response \|\| status !== null \? 'http' : 'network'\);/);
+  assert.match(apiCode, /kind: 'business',/, 'HTTP 200 但业务码非 0');
 });
