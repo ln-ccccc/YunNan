@@ -97,6 +97,29 @@ def literal_save_rule(roi, geometry_object):
     return geometry_object.is_valid and (roi.covers(geometry_object) or roi.buffer(TOL).covers(geometry_object))
 
 
+# 测试用的物理标架：一个像元取 1.5e-6 度（约 0.17 米）。测试里的栅格锯齿幅值是 1e-6 度，
+# 约为一个像元的 2/3——与真实数据一致（斜向栅格边界的台阶拐点离弦约 0.7 个像元）
+METRES_LON = 100454.3
+METRES_LAT = 110781.9
+PIXEL_METRES = 1.5e-6 * METRES_LAT
+SCALE = engine.SimplifyScale(PIXEL_METRES, METRES_LON, METRES_LAT)
+
+
+def parts_of_face(face):
+    return [face] if face.geom_type == "Polygon" else list(face.geoms)
+
+
+def assert_within_accuracy(test, original, simplified):
+    """I2 的精度部分：逐部件的面积相对变化与对称差占比都在门槛内。这里独立重算，不走引擎的 _shape_drift。"""
+    old_parts, new_parts = parts_of_face(original), parts_of_face(simplified)
+    test.assertEqual((len(old_parts), original.geom_type), (len(new_parts), simplified.geom_type))
+    for old, new in zip(old_parts, new_parts):
+        test.assertEqual(len(old.interiors), len(new.interiors), "孔数不能变")
+        test.assertLessEqual(abs(new.area - old.area) / old.area, engine.MAX_SIMPLIFY_AREA_CHANGE)
+        test.assertLessEqual(old.symmetric_difference(new).area / old.area, engine.MAX_SIMPLIFY_SHAPE_CHANGE)
+    test.assertLessEqual(abs(simplified.area - original.area) / original.area, engine.MAX_SIMPLIFY_AREA_CHANGE)
+
+
 UNIT = square(0, 0, K, K)  # 1e-3 度见方的矿山
 NOTCH_Y = K - 4e-7
 # 矿山边界上有个 22 米宽、4.4 厘米深的小凹口
@@ -272,43 +295,61 @@ class TestEvaluate(unittest.TestCase):
 
 
 class TestSimplify(unittest.TestCase):
+    def setUp(self):
+        self.roi_context = context(UNIT)
+
     def test_staircase_is_reduced_and_stays_legal(self):
-        roi_context = context(UNIT)
         feature = polygon(right_staircase(1e-4, 1e-4, 9e-4, 9e-4))
-        outcome = engine.simplify(roi_context, feature)
+        outcome = engine.simplify(self.roi_context, feature, scale=SCALE)
         self.assertEqual(outcome["outcome"], engine.CHANGED)
-        self.assertEqual(set(outcome), {"outcome", "geometry"})
+        self.assertEqual(set(outcome), {"outcome", "geometry", "tolerance", "area_change", "shape_change"})
         self.assertLess(positions_of(outcome["geometry"]), positions_of(feature) / 4)
-        self.assertTrue(engine.evaluate(roi_context, outcome["geometry"]).ok)
+        self.assertTrue(engine.evaluate(self.roi_context, outcome["geometry"]).ok)
         self.assertTrue(vertex_set(outcome["geometry"]) <= vertex_set(feature), "I3：简化结果的顶点必须都来自原几何")
         # 锯齿被拉直：偏差只有 1 像素幅值的小三角，面积变化远小于 0.1%
         self.assertLess(abs(shape(outcome["geometry"]).area - shape(feature).area) / shape(feature).area, 0.001)
+        assert_within_accuracy(self, shape(feature), shape(outcome["geometry"]))
+        # 这个面很大，尺寸封顶不起作用：自适应容差就是 1 个像元
+        self.assertAlmostEqual(outcome["tolerance"], PIXEL_METRES / METRES_LAT)
+        self.assertAlmostEqual(outcome["area_change"], (shape(outcome["geometry"]).area - shape(feature).area) / shape(feature).area, places=6)
 
     def test_triangle_is_unchanged(self):
         triangle = polygon([(1e-4, 1e-4), (9e-4, 1e-4), (5e-4, 9e-4)])
-        self.assertEqual(engine.simplify(context(UNIT), triangle), {"outcome": engine.UNCHANGED})
+        self.assertEqual(engine.simplify(self.roi_context, triangle, scale=SCALE), {"outcome": engine.UNCHANGED})
+
+    def test_small_patch_is_left_alone(self):
+        # 5 × 5 个像元的小图斑（约 0.3 平方米），边上是一格一格的锯齿。去掉锯齿的形态变化超过门槛，
+        # 所以自适应容差按图斑尺寸封顶（0.05 × √面积 ≈ 0.25 个像元），结果保持原样
+        blob = polygon([(0, 0), (4.5, 0), (4.5, 1.5), (6, 1.5), (6, 3), (4.5, 3), (4.5, 4.5), (6, 4.5), (6, 6), (0, 6)])
+        blob["coordinates"][0] = [[x * 1e-6 + X0, y * 1e-6 + Y0] for x, y in blob["coordinates"][0]]
+        parsed = shape(blob)
+        area_m2 = SCALE.area_m2(parsed)
+        self.assertLess(area_m2, 1.0)
+        self.assertEqual(engine.simplify(self.roi_context, blob, scale=SCALE), {"outcome": engine.UNCHANGED})
+        self.assertAlmostEqual(
+            engine.initial_tolerance(parsed, SCALE), 0.05 * math.sqrt(area_m2) / METRES_LAT, places=16,
+        )
+        self.assertLess(engine.initial_tolerance(parsed, SCALE), PIXEL_METRES / METRES_LAT / 2)
 
     def test_boundary_feature_is_simplified_and_stays_inside_roi(self):
         # 图斑贴着矿山底边，底边是一格一格的锯齿：简化后底边拉直，仍在矿山内
-        roi_context = context(UNIT)
         feature = polygon(bottom_staircase(0, K) + [(K, K), (0, K)])
         self.assertGreater(positions_of(feature), 50)
-        outcome = engine.simplify(roi_context, feature)
+        outcome = engine.simplify(self.roi_context, feature, scale=SCALE)
         self.assertEqual(outcome["outcome"], engine.CHANGED)
-        self.assertTrue(engine.evaluate(roi_context, outcome["geometry"]).ok)
+        self.assertTrue(engine.evaluate(self.roi_context, outcome["geometry"]).ok)
         self.assertLessEqual(positions_of(outcome["geometry"]), 6)
 
     def test_simplify_rejects_geometry_that_is_already_outside(self):
-        outcome = engine.simplify(context(UNIT), square(0, 0, K + 1e-7, K))
+        outcome = engine.simplify(self.roi_context, square(0, 0, K + 1e-7, K), scale=SCALE)
         self.assertEqual((outcome["outcome"], outcome["reason"]["code"]), (engine.REJECTED, engine.OUTSIDE_ROI))
         self.assertEqual(set(outcome), {"outcome", "reason"})
 
     def test_simplify_rejects_invalid_geometry(self):
-        roi_context = context(UNIT)
         bow_tie = polygon([(1e-4, 1e-4), (9e-4, 9e-4), (9e-4, 1e-4), (1e-4, 9e-4)])
-        self.assertEqual(engine.simplify(roi_context, bow_tie)["reason"]["code"], engine.INVALID_GEOMETRY)
+        self.assertEqual(engine.simplify(self.roi_context, bow_tie, scale=SCALE)["reason"]["code"], engine.INVALID_GEOMETRY)
         unclosed = {"type": "Polygon", "coordinates": [[[X0, Y0], [X0 + K, Y0], [X0 + K, Y0 + K]]]}
-        outcome = engine.simplify(roi_context, unclosed)
+        outcome = engine.simplify(self.roi_context, unclosed, scale=SCALE)
         self.assertEqual((outcome["outcome"], outcome["reason"]["code"]), (engine.REJECTED, engine.INVALID_GEOMETRY))
 
     def test_thin_structures_are_never_returned_as_invalid_geometry(self):
@@ -316,24 +357,27 @@ class TestSimplify(unittest.TestCase):
         # 0.1 毫米宽、60 米深的缝：偏差远小于容差，会被抹平成一条直边——结果仍是有效面
         slit = polygon([(1e-4, 1e-4), (9e-4, 1e-4), (9e-4, 9e-4), (5.000005e-4, 9e-4), (5.000005e-4, 3e-4), (4.999995e-4, 3e-4), (4.999995e-4, 9e-4), (1e-4, 9e-4)])
         self.assertTrue(engine.evaluate(roi_context, slit).ok)
-        outcome = engine.simplify(roi_context, slit)
+        outcome = engine.simplify(roi_context, slit, scale=SCALE)
         self.assertEqual(outcome["outcome"], engine.CHANGED)
         self.assertTrue(engine.evaluate(roi_context, outcome["geometry"]).ok)
         # 0.1 毫米宽的细颈连着两块：要么给出仍被接受的有效面，要么拒绝、原面不动
         dumbbell = polygon([(1e-4, 1e-4), (4e-4, 1e-4), (4e-4, 4.9e-4), (6e-4, 4.9e-4), (6e-4, 1e-4), (9e-4, 1e-4), (9e-4, 9e-4), (6e-4, 9e-4), (6e-4, 4.90001e-4), (4e-4, 4.90001e-4), (4e-4, 9e-4), (1e-4, 9e-4)])
         self.assertTrue(engine.evaluate(roi_context, dumbbell).ok)
         for thin in (slit, dumbbell):
-            outcome = engine.simplify(roi_context, thin)
+            outcome = engine.simplify(roi_context, thin, scale=SCALE)
             if outcome["outcome"] == engine.CHANGED:
                 self.assertTrue(engine.evaluate(roi_context, outcome["geometry"]).ok)
                 self.assertTrue(literal_save_rule(shape(UNIT), shape(outcome["geometry"])))
+                assert_within_accuracy(self, shape(thin), shape(outcome["geometry"]))
             elif outcome["outcome"] == engine.REJECTED:
-                self.assertIn(outcome["reason"]["code"], (engine.INVALID_GEOMETRY, engine.OUTSIDE_ROI))
+                self.assertIn(outcome["reason"]["code"], (engine.INVALID_GEOMETRY, engine.OUTSIDE_ROI, engine.SHAPE_DRIFT))
                 self.assertNotIn("geometry", outcome)
+            else:
+                self.assertEqual(outcome, {"outcome": engine.UNCHANGED})
 
     def test_retry_ladder(self):
-        roi_context = context(UNIT)
         feature = polygon(right_staircase(1e-4, 1e-4, 9e-4, 9e-4))
+        start = engine.initial_tolerance(shape(feature), SCALE)
         real = engine._simplify_candidate
         tolerances = []
 
@@ -342,78 +386,214 @@ class TestSimplify(unittest.TestCase):
             return Polygon() if len(tolerances) == 1 else real(parsed, tolerance)
 
         with mock.patch.object(engine, "_simplify_candidate", fails_once):
-            outcome = engine.simplify(roi_context, feature)
+            outcome = engine.simplify(self.roi_context, feature, scale=SCALE)
         self.assertEqual(outcome["outcome"], engine.CHANGED, "第一次结果无效时应降容差重试")
-        self.assertEqual(tolerances, [1e-5, 2.5e-6])
+        self.assertEqual(tolerances, [start, start * 0.5])
 
         tolerances.clear()
-        with mock.patch.object(engine, "_simplify_candidate", lambda parsed, tolerance: (tolerances.append(tolerance), Polygon())[1]):
-            outcome = engine.simplify(roi_context, feature)
+        bow_tie = shape(polygon([(1e-4, 1e-4), (9e-4, 9e-4), (9e-4, 1e-4), (1e-4, 9e-4)]))
+        with mock.patch.object(engine, "_simplify_candidate", lambda parsed, tolerance: (tolerances.append(tolerance), bow_tie)[1]):
+            outcome = engine.simplify(self.roi_context, feature, scale=SCALE)
         self.assertEqual((outcome["outcome"], outcome["reason"]["code"]), (engine.REJECTED, engine.INVALID_GEOMETRY))
-        self.assertEqual(tolerances, [1e-5, 2.5e-6, 6.25e-7], "三级容差各试一次后放弃")
+        self.assertEqual(tolerances, [start * scale for scale in engine.SIMPLIFY_RETRY_SCALES], "四级容差各试一次后放弃")
+
+        # 前两级被拒、后面已经去不动了：这是「没法安全简化」，要带着原因报 rejected，不能报 unchanged
+        tolerances.clear()
+
+        def record(parsed, tolerance):
+            tolerances.append(tolerance)
+            return real(parsed, tolerance)
+
+        drift_gate = mock.patch.object(engine, "_shape_drift", lambda original, candidate: None)
+        with mock.patch.object(engine, "_simplify_candidate", record), drift_gate:
+            outcome = engine.simplify(self.roi_context, feature, scale=SCALE)
+        self.assertEqual((outcome["outcome"], outcome["reason"]["code"]), (engine.REJECTED, engine.SHAPE_DRIFT))
+        # 这个锯齿面共 44 个坐标位置：第 1 级剩 5 个、第 2 级剩 42 个（都被拒），第 3 级已经一个顶点都去不掉。
+        # 发现去不动就停，不再试第 4 级
+        self.assertEqual(tolerances, [start * scale for scale in engine.SIMPLIFY_RETRY_SCALES[:3]], "去不动的那一级不再往下试")
+
+    def test_explicit_tolerance_only_replaces_the_starting_tolerance(self):
+        # 调用方显式给容差（度）时不标架也能算：重试阶梯照常，精度门槛照样生效
+        feature = polygon(right_staircase(1e-4, 1e-4, 9e-4, 9e-4))
+        outcome = engine.simplify(self.roi_context, feature, tolerance=4e-6)
+        self.assertEqual((outcome["outcome"], outcome["tolerance"]), (engine.CHANGED, 4e-6))
+        self.assertTrue(engine.evaluate(self.roi_context, outcome["geometry"]).ok)
+
+    def test_explicit_large_tolerance_never_returns_a_distorted_face(self):
+        # 0.6 米宽的长条，两条长边上是 0.2 米深的三角齿。旧实现的固定容差 1e-5 度（约 1.1 米）
+        # 会把齿全部抹掉（对照：不设门槛的原生简化，面积少 17%）；现在各级容差都过不了精度门槛，
+        # 结果保持原样
+        teeth = [(2e-4 + index * 5e-6, 4.997e-4 + (1e-6 if index % 2 else 0)) for index in range(121)]
+        strip = polygon(teeth + [(x, 1e-3 - y) for x, y in reversed(teeth)])
+        parsed = shape(strip)
+        raw = parsed.simplify(1e-5, preserve_topology=True)
+        self.assertGreater(abs(raw.area - parsed.area) / parsed.area, engine.MAX_SIMPLIFY_AREA_CHANGE, "对照：不设门槛的原生简化确实会失真")
+        outcome = engine.simplify(self.roi_context, strip, tolerance=1e-5)
+        self.assertIn(outcome["outcome"], (engine.UNCHANGED, engine.REJECTED))
+        self.assertNotIn("geometry", outcome)
+
+    def test_shape_drift_is_reported_as_its_own_reason(self):
+        # 0.2 米宽的梳齿：每一级容差（1e-5 … 1.25e-6 度）都比齿深，齿都会被抹掉，面积少一成——
+        # 候选结果合法，但过不了精度门槛：拒绝原因应是 SHAPE_DRIFT，而不是越界或非法
+        top = [(2e-4 + index * 5e-6, 5.02e-4 + (4e-7 if index % 2 else 0)) for index in range(121)]
+        comb = polygon([(x, y) for x, y in top] + [(x, y - 4e-6) for x, y in reversed(top)])
+        parsed = shape(comb)
+        self.assertTrue(engine.evaluate(self.roi_context, comb).ok)
+        raw = parsed.simplify(1.25e-6, preserve_topology=True)
+        self.assertTrue(raw.is_valid and engine.evaluate(self.roi_context, engine.to_geojson(raw)).ok)
+        self.assertGreater(abs(raw.area - parsed.area) / parsed.area, engine.MAX_SIMPLIFY_AREA_CHANGE, "对照：最小一级容差的原生结果仍会失真")
+        outcome = engine.simplify(self.roi_context, comb, tolerance=1e-5)
+        self.assertEqual((outcome["outcome"], outcome["reason"]["code"]), (engine.REJECTED, engine.SHAPE_DRIFT))
+        self.assertEqual(set(outcome), {"outcome", "reason"})
+        self.assertFalse(outcome["reason"]["ok"])
+        self.assertEqual(outcome["reason"]["field"], "geometry")
+
+    def test_shape_drift_that_cannot_be_measured_is_not_accepted(self):
+        # 对称差算不出来（GEOS 叠加的数值问题）：证明不了精度就不接受，而不是把没量过的结果放行
+        feature = polygon(right_staircase(1e-4, 1e-4, 9e-4, 9e-4))
+        with mock.patch.object(engine, "_shape_drift", lambda original, candidate: None):
+            outcome = engine.simplify(self.roi_context, feature, scale=SCALE)
+        self.assertEqual((outcome["outcome"], outcome["reason"]["code"]), (engine.REJECTED, engine.SHAPE_DRIFT))
+
     def test_boundary_feature_with_shallow_notch_is_rejected_and_kept(self):
         # 矿山边界上有个 22 米宽、4.4 厘米深的小凹口，图斑贴边经过它。原生简化会把偏差小于容差的凹口顶点
         # 去掉，新直边越过凹口、越出矿山（2026-11-24 真实数据上保存被 422 拒绝的原因）。
-        # 统一校验必须拦住它：拒绝并保持原面不动。几何正确性优先于简化成功率。
+        # 统一校验必须拦住它：保持原面不动。几何正确性优先于简化成功率。
         roi_context = context(NOTCHED_ROI)
         feature = polygon(bottom_staircase(0, K) + [(K, K), (6e-4, K), (6e-4, NOTCH_Y), (4e-4, NOTCH_Y), (4e-4, K), (0, K)])
         self.assertTrue(engine.evaluate(roi_context, feature).ok)
-        for preserve in (False, True):
-            plain = engine.to_geojson(shape(feature).simplify(engine.SIMPLIFY_TOLERANCE_DEGREES, preserve_topology=preserve))
+        for tolerance in (1e-5, 1.5e-6):  # 旧的固定容差，与自适应的起始容差（1 个像元）
+            plain = engine.to_geojson(shape(feature).simplify(tolerance, preserve_topology=True))
             self.assertEqual(engine.evaluate(roi_context, plain).code, engine.OUTSIDE_ROI, "对照：不校验的原生简化会越出 ROI")
-        outcome = engine.simplify(roi_context, feature)
-        self.assertEqual((outcome["outcome"], outcome["reason"]["code"]), (engine.REJECTED, engine.OUTSIDE_ROI))
-        self.assertNotIn("geometry", outcome)
+        outcome = engine.simplify(roi_context, feature, scale=SCALE)
+        if outcome["outcome"] == engine.CHANGED:
+            # 降容差后给出的结果：必须合法，并且凹口的两个顶点都还在（没有拿直边越过凹口）
+            new_geometry = outcome["geometry"]
+            self.assertTrue(engine.evaluate(roi_context, new_geometry).ok)
+            self.assertTrue(literal_save_rule(shape(NOTCHED_ROI), shape(new_geometry)))
+            for corner in ((X0 + 6e-4, Y0 + NOTCH_Y), (X0 + 4e-4, Y0 + NOTCH_Y)):
+                self.assertIn((round(corner[0], 12), round(corner[1], 12)), vertex_set(new_geometry))
+            assert_within_accuracy(self, shape(feature), shape(new_geometry))
+        else:
+            self.assertNotIn("geometry", outcome)
+            self.assertEqual(outcome["outcome"], engine.REJECTED)
+            self.assertEqual(outcome["reason"]["code"], engine.OUTSIDE_ROI)
 
     def test_multipolygon_parts_are_simplified_together(self):
-        roi_context = context(UNIT)
         feature = multipolygon((right_staircase(1e-4, 1e-4, 3e-4, 3e-4),), (right_staircase(6e-4, 6e-4, 9e-4, 9e-4),))
-        outcome = engine.simplify(roi_context, feature)
+        outcome = engine.simplify(self.roi_context, feature, scale=SCALE)
         self.assertEqual(outcome["outcome"], engine.CHANGED)
         self.assertEqual(outcome["geometry"]["type"], "MultiPolygon")
         self.assertEqual(len(outcome["geometry"]["coordinates"]), 2)
-        self.assertTrue(engine.evaluate(roi_context, outcome["geometry"]).ok)
+        self.assertTrue(engine.evaluate(self.roi_context, outcome["geometry"]).ok)
+        assert_within_accuracy(self, shape(feature), shape(outcome["geometry"]))
+
+    def test_multipolygon_small_part_caps_the_tolerance(self):
+        # 大部件（800 米见方、带锯齿）旁边带一个 0.2 米的小部件：一个 MultiPolygon 的所有部件共用一个容差，
+        # 按整体面积算的话容差是 1 个像元，小部件会被抹得面目全非。容差按最小部件封顶，整体保持原样
+        tiny = [[2e-4, 2e-4], [2.02e-4, 2e-4], [2.02e-4, 2.02e-4], [2e-4, 2.02e-4]]
+        feature = multipolygon((right_staircase(4e-4, 4e-4, 9e-4, 9e-4),), (tiny,))
+        parsed = shape(feature)
+        small = min(parts_of_face(parsed), key=lambda part: part.area)
+        self.assertEqual(engine.simplify(self.roi_context, feature, scale=SCALE), {"outcome": engine.UNCHANGED})
+        self.assertAlmostEqual(engine.initial_tolerance(parsed, SCALE), 0.05 * math.sqrt(SCALE.area_m2(small)) / METRES_LAT, places=18)
+
     def test_hole_and_near_collinear_edges(self):
         roi_context = context(UNIT)
         with_hole = polygon([(1e-4, 1e-4), (9e-4, 1e-4), (9e-4, 9e-4), (1e-4, 9e-4)], right_staircase(4e-4, 4e-4, 6e-4, 6e-4))
-        outcome = engine.simplify(roi_context, with_hole)
+        outcome = engine.simplify(roi_context, with_hole, scale=SCALE)
         self.assertEqual(outcome["outcome"], engine.CHANGED)
         self.assertTrue(engine.evaluate(roi_context, outcome["geometry"]).ok)
         self.assertEqual(len(outcome["geometry"]["coordinates"]), 2, "孔洞不能被简化没了")
         self.assertEqual(len(outcome["geometry"]["coordinates"][1]), 5)
         # 近共边：偏差 3e-7（约 3 厘米）的顶点应被去掉，面积几乎不变
         near_collinear = polygon([(1e-4, 1e-4), (9e-4, 1e-4), (9e-4, 5e-4), (9e-4 - 3e-7, 5e-4 + 2e-5), (9e-4, 5e-4 + 4e-5), (9e-4, 9e-4), (1e-4, 9e-4)])
-        outcome = engine.simplify(roi_context, near_collinear)
+        outcome = engine.simplify(roi_context, near_collinear, scale=SCALE)
         self.assertEqual(outcome["outcome"], engine.CHANGED)
         self.assertEqual(positions_of(outcome["geometry"]), 5)
         self.assertNotIn((round(X0 + 9e-4 - 3e-7, 12), round(Y0 + 5e-4 + 2e-5, 12)), vertex_set(outcome["geometry"]))
 
     def test_oversized_feature(self):
         # 一万多个坐标位置（生产上单要素最多 6422 个，超过保存接口 5000 的单要素上限）
-        roi_context = context(UNIT)
         feature = polygon(right_staircase(1e-4, 1e-4, 9e-4, 9e-4, step=8e-8))
         self.assertGreater(positions_of(feature), 9000)
         started = time.perf_counter()
-        outcome = engine.simplify(roi_context, feature)
+        outcome = engine.simplify(self.roi_context, feature, scale=SCALE)
         elapsed = time.perf_counter() - started
         self.assertEqual(outcome["outcome"], engine.CHANGED)
-        self.assertTrue(engine.evaluate(roi_context, outcome["geometry"]).ok)
+        self.assertTrue(engine.evaluate(self.roi_context, outcome["geometry"]).ok)
         self.assertLess(positions_of(outcome["geometry"]), positions_of(feature) / 50)
         self.assertLess(elapsed, 5.0, f"超限图斑简化耗时 {elapsed:.2f}s")
 
     def test_tolerance_bounds(self):
-        roi_context = context(UNIT)
         feature = square(1e-4, 1e-4, 9e-4, 9e-4)
         for tolerance in (0, -1e-5, math.nan, math.inf, True, "0.00001", 1e-2):
             with self.subTest(tolerance=tolerance), self.assertRaises(engine.GeometryProblem) as raised:
-                engine.simplify(roi_context, feature, tolerance)
+                engine.simplify(self.roi_context, feature, tolerance=tolerance)
             self.assertEqual(raised.exception.field, "tolerance")
-        self.assertEqual(engine.simplify(roi_context, feature, 1e-3)["outcome"], engine.UNCHANGED)
-        self.assertEqual(engine.simplify(roi_context, feature, 1e-6)["outcome"], engine.UNCHANGED)
+        self.assertEqual(engine.simplify(self.roi_context, feature, tolerance=1e-3)["outcome"], engine.UNCHANGED)
+        self.assertEqual(engine.simplify(self.roi_context, feature, tolerance=1e-6)["outcome"], engine.UNCHANGED)
         # 锯齿幅值 1e-6：容差比它小就不动，比它大就拉直
         staircase = polygon(right_staircase(1e-4, 1e-4, 9e-4, 9e-4))
-        self.assertEqual(engine.simplify(roi_context, staircase, 5e-7)["outcome"], engine.UNCHANGED)
-        self.assertEqual(engine.simplify(roi_context, staircase, 2e-6)["outcome"], engine.CHANGED)
+        self.assertEqual(engine.simplify(self.roi_context, staircase, tolerance=5e-7)["outcome"], engine.UNCHANGED)
+        self.assertEqual(engine.simplify(self.roi_context, staircase, tolerance=2e-6)["outcome"], engine.CHANGED)
+
+    def test_adaptive_tolerance_needs_a_scale(self):
+        # 自适应容差要靠标架把米换成度：没给标架是调用方的编程错误，必须报出来，不能悄悄退回某个固定容差
+        with self.assertRaises(ValueError):
+            engine.simplify(self.roi_context, square(1e-4, 1e-4, 9e-4, 9e-4))
+
+
+class TestSimplifyScale(unittest.TestCase):
+    """起始容差怎么定，以及米 / 度换算的保守性。"""
+
+    def test_large_face_gets_one_pixel(self):
+        parsed = shape(square(1e-4, 1e-4, 9e-4, 9e-4))
+        self.assertAlmostEqual(engine.initial_tolerance(parsed, SCALE), PIXEL_METRES / METRES_LAT)
+
+    def test_pixel_cap_is_bounded_by_one_metre(self):
+        # 粗影像（一个像元 5 米）：容差不超过 1 米
+        coarse = engine.SimplifyScale(5.0, METRES_LON, METRES_LAT)
+        parsed = shape(square(1e-4, 1e-4, 9e-4, 9e-4))
+        self.assertAlmostEqual(engine.initial_tolerance(parsed, coarse), 1.0 / METRES_LAT)
+
+    def test_unknown_pixel_falls_back_to_a_fixed_small_tolerance(self):
+        # label 读不到：按保守回退值 0.1 米，而不是沿用旧的 1.1 米，也不是拒绝服务
+        unknown = engine.SimplifyScale(None, METRES_LON, METRES_LAT)
+        parsed = shape(square(1e-4, 1e-4, 9e-4, 9e-4))
+        self.assertAlmostEqual(engine.initial_tolerance(parsed, unknown), 0.1 / METRES_LAT)
+        staircase = polygon(right_staircase(1e-4, 1e-4, 9e-4, 9e-4, amplitude=5e-8))
+        self.assertEqual(engine.simplify(context(UNIT), staircase, scale=unknown)["outcome"], engine.CHANGED)
+
+    def test_shape_drift_is_checked_per_part(self):
+        # 一个 MultiPolygon：大部件原样不动，小部件被换成一个面积相同、位置偏了的小方块。
+        # 整体面积变化是 0——只看整体会放行；逐部件看，小部件的对称差是它自己面积的两倍
+        big = shape(square(1e-4, 1e-4, 9e-4, 9e-4))
+        small, moved = box(2e-4, 2e-4, 2.1e-4, 2.1e-4), box(2.5e-4, 2.5e-4, 2.6e-4, 2.6e-4)
+        original, candidate = MultiPolygon([big, small]), MultiPolygon([big, moved])
+        self.assertEqual(original.area, candidate.area)
+        self.assertIsNone(engine._shape_drift(original, candidate))
+        # 对照：小部件原样保留时通过；大部件的面积变了 4%（整体也只有 3.96%）则不通过
+        self.assertEqual(engine._shape_drift(original, MultiPolygon([big, small])), (0.0, 0.0))
+        grown = shape(square(1e-4, 1e-4, 9e-4, 9e-4 + 4e-5))
+        self.assertIsNone(engine._shape_drift(original, MultiPolygon([grown, small])))
+        self.assertIsNone(engine._shape_drift(big, grown), "单个面同样按 3% 的门槛")
+
+    def test_metres_to_degrees_is_conservative_on_both_axes(self):
+        for metres in (0.01, 0.1, 1.0):
+            degrees = SCALE.metres_to_degrees(metres)
+            self.assertLessEqual(degrees * METRES_LON, metres, "经向偏离不能超过给定的米数")
+            self.assertAlmostEqual(degrees * METRES_LAT, metres)
+
+    def test_area_uses_both_scale_factors(self):
+        parsed = shape(square(1e-4, 1e-4, 9e-4, 9e-4))
+        self.assertAlmostEqual(SCALE.area_m2(parsed), parsed.area * METRES_LON * METRES_LAT)
+
+    def test_scale_rejects_non_positive_factors(self):
+        for arguments in ((0.1, 0, METRES_LAT), (0.1, METRES_LON, -1), (0, METRES_LON, METRES_LAT), (-1, METRES_LON, METRES_LAT)):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                engine.SimplifyScale(*arguments)
+        self.assertIsNone(engine.SimplifyScale(None, METRES_LON, METRES_LAT).pixel_metres)
 
 
 class TestUnion(unittest.TestCase):
@@ -559,8 +739,9 @@ class TestEngineOnlyWrapsGeos(unittest.TestCase):
     合法性只能来自 GEOS 的 covers / is_valid；要加新的几何逻辑，先补对照实验，再改这个清单。"""
 
     FUNCTIONS = {
-        "_check_position", "_check_ring", "_is_valid_face", "parse_geometry", "_rings", "position_count", "to_geojson",
-        "_measure_outside", "evaluate_parsed", "evaluate", "_simplify_candidate", "simplify", "union",
+        "_check_position", "_check_ring", "_is_valid_face", "parse_geometry", "_parts", "_rings", "position_count",
+        "to_geojson", "_measure_outside", "evaluate_parsed", "evaluate", "_simplify_candidate", "check_tolerance",
+        "initial_tolerance", "_same_structure", "_shape_drift", "simplify", "union",
     }
 
     def test_function_set_is_pinned(self):
@@ -570,6 +751,7 @@ class TestEngineOnlyWrapsGeos(unittest.TestCase):
         self.assertNotIn("STRtree", inspect.getsource(engine), "引擎不应自己建空间索引或拆边界线段")
         self.assertNotIn("prep(", inspect.getsource(engine), "不用 prepared 谓词：验收规则要与改造前的表达式逐字相同，包括数值边界上的个例")
         self.assertIn("parsed.simplify(tolerance, preserve_topology=True)", inspect.getsource(engine), "简化只能是 GEOS 拓扑保持简化")
+        self.assertNotIn("rasterio", inspect.getsource(engine), "引擎不做单位换算：米 / 度只能由标架（geometry_metric）提供")
 
     def test_legality_comes_only_from_geos_predicates(self):
         # evaluate_parsed 是全系统唯一的合法性判定：有效性看 GEOS is_valid，覆盖看 GEOS covers
@@ -578,15 +760,44 @@ class TestEngineOnlyWrapsGeos(unittest.TestCase):
         self.assertIn("context.covers(parsed)", source)
         self.assertEqual(inspect.getsource(engine.RoiContext.covers).count("covers("), 3)
 
+    def test_starting_tolerance_is_the_smallest_of_three_terms(self):
+        source = inspect.getsource(engine.initial_tolerance)
+        for term in ("SIMPLIFY_PIXEL_FACTOR * pixel", "SIMPLIFY_SIZE_FACTOR * math.sqrt(min(",
+                     "MAX_INITIAL_SIMPLIFY_TOLERANCE_M", "FALLBACK_SIMPLIFY_TOLERANCE_M"):
+            self.assertIn(term, source, f"起始容差必须包含 {term}")
+        self.assertLess(source.index("min("), source.index("SIMPLIFY_PIXEL_FACTOR * pixel"), "三项取最小")
+
+    def test_simplify_checks_legality_before_measuring_accuracy(self):
+        # 对无效几何做叠加会失败：必须先过 evaluate，再量精度
+        loop = inspect.getsource(engine.simplify)
+        self.assertLess(loop.index("evaluate_parsed(context, candidate"), loop.index("_shape_drift(parsed, candidate"))
+
     def test_three_tolerances_are_different_things(self):
         self.assertLess(engine.COORDINATE_QUANTUM_DEGREES * 5, engine.NUMERIC_TOLERANCE_DEGREES, "坐标精度不是容差")
         self.assertLess(engine.NUMERIC_TOLERANCE_DEGREES * 100, 1e-6, "数值容差必须远小于最细像元（0.1 米）")
-        self.assertLess(engine.NUMERIC_TOLERANCE_DEGREES * 1000, engine.SIMPLIFY_TOLERANCE_DEGREES, "简化容差不能拿去做合法性判定")
-        self.assertEqual(engine.SIMPLIFY_RETRY_SCALES, (1.0, 0.25, 0.0625))
+        # 简化容差以米计。最小的起始容差（保守回退值 0.1 米）换算成度以后，仍是数值容差的上万倍——
+        # 简化容差不能、也不会被拿去做合法性判定
+        smallest = engine.SimplifyScale(None, METRES_LON, METRES_LAT).metres_to_degrees(engine.FALLBACK_SIMPLIFY_TOLERANCE_M)
+        self.assertGreater(smallest, engine.NUMERIC_TOLERANCE_DEGREES * 100)
+
+    def test_parameters_are_pinned_to_the_ones_the_regression_ran_with(self):
+        # 这些数值来自 docs/geometry-engine-adaptive-tolerance-20261125.md 的对照实验。
+        # 要改其中任何一个，先改那份实验，再改这里——不要只改一处
+        self.assertEqual(engine.SIMPLIFY_RETRY_SCALES, (1.0, 0.5, 0.25, 0.125))
+        self.assertEqual((engine.SIMPLIFY_PIXEL_FACTOR, engine.SIMPLIFY_SIZE_FACTOR, engine.MAX_INITIAL_SIMPLIFY_TOLERANCE_M), (1.0, 0.05, 1.0))
+        self.assertEqual((engine.FALLBACK_SIMPLIFY_TOLERANCE_M, engine.MAX_SIMPLIFY_AREA_CHANGE, engine.MAX_SIMPLIFY_SHAPE_CHANGE), (0.1, 0.03, 0.05))
+        self.assertEqual(engine.MAX_SIMPLIFY_TOLERANCE_DEGREES, 1e-3)
+        self.assertFalse(hasattr(engine, "SIMPLIFY_TOLERANCE_DEGREES"), "固定简化容差 1e-5 度已废除，不应再有同名常量")
+
+
+# 属性测试用的标架：栅格掩膜的格子是 2.5e-5 度，一个「像元」就是一格（约 2.8 米）
+RASTER_CELL_DEGREES = 2.5e-5
+RASTER_PIXEL_METRES = RASTER_CELL_DEGREES * METRES_LAT
+RASTER_SCALE = engine.SimplifyScale(RASTER_PIXEL_METRES, METRES_LON, METRES_LAT)
 
 
 class TestProperties(unittest.TestCase):
-    """随机场景下的不变量：I2 简化结果必被接受、I3 顶点来自原几何、I4 面积偏差有界。
+    """随机场景下的不变量：I2 简化结果必被接受且逐部件满足精度门槛、I3 顶点来自原几何、I4 面积偏差有界。
 
     图斑是「随机栅格掩膜 ∩ 矿山」，与自动矢量化产物同构：内部是锯齿，贴矿山的部分是边界链。
     """
@@ -615,7 +826,7 @@ class TestProperties(unittest.TestCase):
             for piece, feature in cases:
                 multi_part_features += feature["type"] == "MultiPolygon"
                 self.assertTrue(engine.evaluate(roi_context, feature).ok, "生成的图斑本身必须合法")
-                outcome = engine.simplify(roi_context, feature)
+                outcome = engine.simplify(roi_context, feature, scale=RASTER_SCALE)
                 if outcome["outcome"] != engine.CHANGED:
                     rejected += outcome["outcome"] == engine.REJECTED
                     unchanged += outcome["outcome"] == engine.UNCHANGED
@@ -633,8 +844,11 @@ class TestProperties(unittest.TestCase):
                 self.assertLess(positions_of(new_geometry), positions_of(feature))
                 self.assertEqual(new_geometry["type"], feature["type"], "Polygon / MultiPolygon 类型不变")
                 # I4：面积偏差有界——被移除的顶点都在保留下来的弦的容差范围内，偏差区域落在弦的容差带里
+                assert_within_accuracy(self, piece, shape(new_geometry))
                 new_object = shape(new_geometry)
-                tolerance = engine.SIMPLIFY_TOLERANCE_DEGREES
+                tolerance = outcome["tolerance"]  # 实际使用的容差（可能比起始容差小）
+                self.assertLessEqual(tolerance, min(RASTER_PIXEL_METRES, engine.MAX_INITIAL_SIMPLIFY_TOLERANCE_M) / METRES_LAT * (1 + 1e-12),
+                                     "容差不应超过 1 个像元，也不应超过 1 米")
                 bound = tolerance * new_object.length + math.pi * tolerance ** 2
                 self.assertLessEqual(abs(new_object.area - piece.area), bound * 1.001 + 1e-18, "面积偏差超过容差带")
                 # 独立交叉验证（纯 Python，不用 GEOS）：新几何每条边的 1/4、1/2、3/4 处都在矿山内或贴边界
@@ -674,6 +888,40 @@ class TestProperties(unittest.TestCase):
                 nudged = {"type": "Polygon", "coordinates": [[[x + 1e-10, y] for x, y in piece.exterior.coords]]}
                 self.assertTrue(engine.evaluate(roi_context, nudged).ok, "右移 1e-10 度（舍入量级）必须接受")
         self.assertGreater(checked, 20, "随机样本产生的图斑太少")
+
+    def test_second_pass_stays_within_twice_the_thresholds(self):
+        """接口不保证幂等：对简化结果再简化一次，仍以上一次的结果为基准重新判定。所以相对原始几何，
+        第二次的累计偏差最多是门槛的两倍（对称差的三角不等式），而不会无界累积。"""
+        rng = random.Random(20261125)
+        changed = 0
+        for _ in range(25):
+            roi = random_roi(rng)
+            roi_context = context(engine.to_geojson(roi))
+            mask = grid_cells(roi, RASTER_CELL_DEGREES, rng, keep_probability=rng.uniform(0.3, 0.9)).intersection(roi)
+            for piece in [item for item in getattr(mask, "geoms", [mask]) if not item.is_empty and item.area > 4e-10][:3]:
+                first = engine.simplify(roi_context, engine.to_geojson(piece), scale=RASTER_SCALE)
+                if first["outcome"] != engine.CHANGED:
+                    continue
+                changed += 1
+                second = engine.simplify(roi_context, first["geometry"], scale=RASTER_SCALE)
+                final = shape(second["geometry"] if second["outcome"] == engine.CHANGED else first["geometry"])
+                self.assertLessEqual(final.symmetric_difference(piece).area / piece.area, 2 * engine.MAX_SIMPLIFY_SHAPE_CHANGE + 1e-12)
+                self.assertLessEqual(abs(final.area - piece.area) / piece.area, 2 * engine.MAX_SIMPLIFY_AREA_CHANGE + 1e-12)
+                if second["outcome"] == engine.CHANGED:
+                    assert_within_accuracy(self, shape(first["geometry"]), final)
+        self.assertGreater(changed, 20, "随机样本应产生足够多的成功简化")
+
+    def test_worst_case_request_time_is_bounded(self):
+        """接口上限是一个请求 20 万个坐标位置：单个这么大的面，四级容差都走一遍也要在几秒内返回。"""
+        feature = polygon(right_staircase(1e-5, 1e-5, 9e-5, 9e-5, amplitude=2e-7, step=4.02e-10))
+        self.assertGreater(positions_of(feature), 190_000)
+        self.assertLessEqual(positions_of(feature), 200_000)
+        # 容差故意取大（2e-7 度约等于幅值）：逐级的候选都不一样，每一级都要做完校验与叠加
+        started = time.perf_counter()
+        outcome = engine.simplify(context(UNIT), feature, tolerance=5e-7)
+        elapsed = time.perf_counter() - started
+        self.assertIn(outcome["outcome"], (engine.CHANGED, engine.UNCHANGED, engine.REJECTED))
+        self.assertLess(elapsed, 30.0, f"20 万个坐标位置的面简化耗时 {elapsed:.1f}s")
 
 
 if __name__ == "__main__":

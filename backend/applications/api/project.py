@@ -619,7 +619,7 @@ def classification_geometry_validate_api(project_id, result_id):
 @project_api.post("/<int:project_id>/classification-results/<int:result_id>/geometry/simplify")
 @login_required
 def classification_geometry_simplify_api(project_id, result_id):
-    """消除锯齿：GEOS 简化 + 保护矿山边界上的顶点，结果必须通过保存同款判定。只读。"""
+    """消除锯齿：GEOS 拓扑保持简化，容差按成果的像元与图斑面积自适应，结果必须通过保存同款判定与精度门槛。只读。"""
     from applications.project_hub.classification_results import simplify_result_geometries
 
     return _classification_geometry_request(project_id, result_id, simplify_result_geometries)

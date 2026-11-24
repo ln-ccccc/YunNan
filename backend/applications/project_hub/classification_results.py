@@ -6,6 +6,7 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 
+import rasterio
 from shapely.geometry import mapping, shape
 from sqlalchemy.exc import IntegrityError
 
@@ -29,10 +30,11 @@ from applications.project_hub.geometry_engine import (
     INVALID_GEOMETRY,
     OUTSIDE_ROI,
     REJECTED,
-    SIMPLIFY_TOLERANCE_DEGREES,
     GeometryProblem,
     RoiContext,
     RoiContextCache,
+    SimplifyScale,
+    check_tolerance,
     evaluate,
     evaluate_parsed,
     parse_geometry,
@@ -40,6 +42,7 @@ from applications.project_hub.geometry_engine import (
     to_geojson,
     union as union_geometries,
 )
+from applications.project_hub.geometry_metric import metres_per_degree, pixel_size_metres
 from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
 from applications.common.utils.utc_time import to_utc_z
 
@@ -447,6 +450,41 @@ def _validate_save_payload(result, payload, *, body_size):
 # 它们与保存共用 geometry_engine 的同一个判定函数，所以「编辑时提示会被拒绝」与
 # 「保存时确实被拒绝」是同一件事，前端不再自带一套几何判定
 _ROI_CONTEXTS = RoiContextCache()
+_SIMPLIFY_SCALES = RoiContextCache()
+
+
+def simplify_scale(result):
+    """成果的物理标架（按成果缓存）：ROI 中心处的米 / 度换算，以及 label 像元的真米尺寸。
+
+    像元尺寸只读 label 栅格的头信息。label 打不开、或它的坐标系量不出米制尺寸时，像元记为 None：
+    本进程内这条成果的简化按保守回退容差（0.1 米）进行，并留一条日志。label 发布后不再修改，
+    所以连同「读不到」一起缓存——每个进程、每条成果最多读一次栅格。
+    """
+    roi_json = result.roi_geometry_json
+    key = (result.id, result.label_path, len(roi_json) if roi_json else 0, hash(roi_json))
+
+    def build():
+        centre = shape(json.loads(roi_json)).centroid
+        pixel = None
+        if result.label_path:
+            try:
+                with rasterio.open(resolve_storage_path(get_storage_root(), result.label_path)) as dataset:
+                    pixel = pixel_size_metres(dataset)
+            except Exception as error:  # noqa: BLE001 —— 读不到像元不是请求错误：按回退容差简化，如实记日志
+                LOGGER.warning(
+                    "label 像元尺寸读取失败，简化按回退容差 result_id=%s label=%s: %s",
+                    result.id, result.label_path, type(error).__name__,
+                )
+            else:
+                if pixel is None:
+                    LOGGER.warning("label 的坐标系未知或量不出像元尺寸，简化按回退容差 result_id=%s label=%s",
+                                   result.id, result.label_path)
+        else:
+            LOGGER.warning("成果没有 label，简化按回退容差 result_id=%s", result.id)
+        metres_lon, metres_lat = metres_per_degree(centre.x, centre.y)
+        return SimplifyScale(max(pixel) if pixel is not None else None, metres_lon, metres_lat)
+
+    return _SIMPLIFY_SCALES.get(key, build)
 
 
 def _geometry_request(result, payload, body_size, *, keys, minimum, maximum):
@@ -482,17 +520,31 @@ def validate_result_geometries(project_id, result_id, payload, *, body_size=None
 
 
 def simplify_result_geometries(project_id, result_id, payload, *, body_size=None):
-    """逐个几何简化。每个结果都是被 evaluate 接受的，否则报告 rejected、不给几何。"""
+    """逐个几何简化。changed 的结果都通过了 evaluate 与精度门槛，否则报告 rejected / unchanged、不给几何。
+
+    不传 tolerance（或传 null）时用自适应容差：按这条成果的 label 像元与每个图斑自己的面积定；
+    传了就以它为起始容差，精度门槛照样生效。
+    """
+    result = _result_for_project(project_id, result_id)
     context, geometries = _geometry_request(
-        _result_for_project(project_id, result_id), payload, body_size,
+        result, payload, body_size,
         keys={"geometries", "tolerance"}, minimum=1, maximum=MAX_FEATURES,
     )
-    tolerance = payload.get("tolerance", SIMPLIFY_TOLERANCE_DEGREES)
     try:
-        items = [simplify_geometry(context, geometry, tolerance) for geometry in geometries]
+        tolerance = check_tolerance(payload.get("tolerance"))
     except GeometryProblem as problem:
         _validation_error(problem.field, problem.reason, message="几何请求不合法")
-    return {"tolerance": tolerance, "items": items}
+    scale = None if tolerance is not None else simplify_scale(result)
+    items = [
+        simplify_geometry(context, geometry, tolerance=tolerance, scale=scale)
+        for geometry in geometries
+    ]
+    return {
+        "mode": "explicit" if tolerance is not None else "adaptive",
+        "tolerance": tolerance,
+        "pixel_size_m": round(scale.pixel_metres, 6) if scale is not None and scale.pixel_metres is not None else None,
+        "items": items,
+    }
 
 
 def union_result_geometries(project_id, result_id, payload, *, body_size=None):

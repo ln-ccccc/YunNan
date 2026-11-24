@@ -122,7 +122,7 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 | `POST /api/projects/{project_id}/classification-results/{result_id}/revisions` | 保存编辑成果。 | 只使用绑定 URL 成果的受限 FeatureCollection 与 `base_revision_no`；通过后创建一个新修订和审计记录。它不是通用 GeoJSON 文件导入、外部 URL 导入或服务器路径导入接口。 |
 | `POST /api/projects/{project_id}/classification-results/{result_id}/export` | 下载当前成果。 | 服务端根据当前版本生成 GeoJSON；不得接受或导出客户端上传的 `features`。 |
 | `POST /api/projects/{project_id}/classification-results/{result_id}/geometry/validate` | 编辑完成后校验改动的面。 | 只读。请求体 `{ "geometries": [GeoJSON Polygon / MultiPolygon, ...] }`（1–2000 个）；逐个给出与保存完全相同的结论。 |
-| `POST /api/projects/{project_id}/classification-results/{result_id}/geometry/simplify` | 消除锯齿。 | 只读。请求体同上（可选 `tolerance`，不传用默认 1e-5 度）；只返回通过了保存同款校验的几何。 |
+| `POST /api/projects/{project_id}/classification-results/{result_id}/geometry/simplify` | 消除锯齿。 | 只读。请求体同上，可选 `tolerance`（显式起始容差，度；不传或传 `null` 时按这条成果的 label 像元与每个图斑自己的面积自适应，2026-11-25 起）；只返回通过了保存同款校验**和精度门槛**的几何。 |
 | `POST /api/projects/{project_id}/classification-results/{result_id}/geometry/union` | 合并面。 | 只读。请求体 `{ "geometries": [...] }`（2–50 个）；合并结果不被保存规则接受时 `422`。 |
 | `GET /api/projects/{project_id}/map-resources/{resource_id}/tiles/{z}/{x}/{y}.png` | GeoView 受控读取底图瓦片。 | 必须验证会话和资源归属；编辑器只能消费地图 manifest 中提供的 `api_tile_url`。 |
 | 既有分类历史接口的扩展 | 分类历史卡片跳转。 | 项目关联记录只增补 `result_id`、`vector_status`、`vector_error`；没有矢量成果的旧记录保持可读且这些字段为空。 |
@@ -184,9 +184,11 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 
 示例中的 `coordinates` 仅省略具体合法环以突出字段白名单；实际保存必须满足第 7 节的几何校验。`base_revision_no` 必须是非负安全整数。一个请求内所有非空 `feature_id` 必须统一唯一；既有 ID 仅可指向同一 `{result_id}` 的 `base_revision_no` 中既有逻辑要素，正式人工 ID 由服务端生成、在该成果所有历史和当前修订中唯一且永不复用；临时 `client-` ID 只用于本次请求且不得持久化。服务端不得自动修补自交、未闭合环、ROI 外或其他无效几何，而是全量拒绝。该 body 只能代表 URL 已绑定的单一 `{result_id}`；不得上传通用 GeoJSON 文件、`multipart/form-data` 文件、外部 URL、对象存储 URL 或服务器路径。保存成功的 `data` 至少返回 `result_id`、新 `revision_no`、新的 `current_revision_no` 和服务器规范化后的当前 `feature_collection`。导出请求没有 `features` 业务输入，返回的下载内容只能是服务器当前修订生成的 GeoJSON。
 
-### 6.2 编辑期几何接口（2026-11-24）
+### 6.2 编辑期几何接口（2026-11-24；简化容差 2026-11-25 改为自适应）
 
 三个 `geometry/*` 接口都**只读**：不写库、不写文件、不产生修订。入参里的每个几何必须恰为 `{ "type", "coordinates" }`（多一个键即 `422`）；请求体不超过 10 MiB，请求内坐标位置总数不超过 200,000。成果不属于该项目返回 `404`，未登录 `401`。
+
+请求体上限对保存接口和三个几何接口是同一条规则：超过 10 MiB 的请求体在**读进内存之前**就被拒绝（`422`，`field` 为 `body`）。全局的 `MAX_CONTENT_LENGTH` 是 GB 级（给影像上传用的），不替这几个只收 JSON 的接口设防。
 
 `validate` 响应的 `data`：
 
@@ -206,35 +208,57 @@ v1 不定义面向客户端的处理中状态；若后续需要暴露处理中�
 
 ```json
 {
-  "tolerance": 0.00001,
+  "mode": "adaptive",
+  "tolerance": null,
+  "pixel_size_m": 0.2376,
   "items": [
-    { "outcome": "changed", "geometry": { "type": "Polygon", "coordinates": [] } },
+    { "outcome": "changed", "geometry": { "type": "Polygon", "coordinates": [] },
+      "tolerance": 0.00000214, "area_change": 0.0031, "shape_change": 0.018 },
     { "outcome": "unchanged" },
-    { "outcome": "rejected", "reason": { "ok": false, "code": "OUTSIDE_ROI", "field": "geometry", "reason": "…", "outside_area_m2": 0.0, "outside_distance_m": 0.0 } }
+    { "outcome": "rejected", "reason": { "ok": false, "code": "OUTSIDE_ROI", "field": "geometry", "reason": "…", "outside_area_m2": 0.0, "outside_distance_m": 0.0 } },
+    { "outcome": "rejected", "reason": { "ok": false, "code": "SHAPE_DRIFT", "field": "geometry", "reason": "简化后的面积或形态变化会超过精度上限", "outside_area_m2": 0.0, "outside_distance_m": 0.0 } }
   ]
 }
 ```
 
-- `changed` 一定带 `geometry`，且一定通过 `evaluate`；`unchanged` 表示没有可去掉的顶点；`rejected` 表示三级容差（1、1/4、1/16）都不过，**调用方必须保持原几何不变**。几何正确性优先于简化成功率。
+- `mode` 为 `adaptive`（自适应容差，此时 `tolerance` 为 `null`）或 `explicit`（调用方显式给了 `tolerance`，原样回显）。
+  `pixel_size_m` 是这条成果 label 像元的真米尺寸（两个方向取较大者）；label 读不到时为 `null`，此时按保守的固定值 0.1 米。
+- `changed` 一定带 `geometry`，且一定通过 `evaluate` 并满足下面的精度门槛；`tolerance` 是这一个面实际使用的容差（度），
+  `area_change` 是带符号的面积相对变化，`shape_change` 是各部件「对称差面积 ÷ 该部件面积」的最大值。
+- `unchanged` 只表示**起始容差下就没有可去的顶点**。`rejected` 表示候选结果都没被接受，**调用方必须保持原几何不变**。
+  `reason` 的 `code`：`OUTSIDE_ROI` / `INVALID_GEOMETRY` 与 `validate` 的结论同构；`SHAPE_DRIFT` 表示候选合法但面积或形态变化超限。
+  几何正确性优先于简化成功率。
+- **自适应容差**（每个图斑各自计算，以米计）：起始容差 = min(1 个 label 像元， 0.05 × √最小部件的面积， 1 米)。
+  候选结果必须逐部件满足：面积相对变化 ≤ 3%，对称差占该部件面积 ≤ 5%，部件数与孔数不变。
+  不满足就把容差减半重试（共 4 级），仍不满足就保持原样。调用方显式给 `tolerance` 时只替换起始容差，精度门槛照样生效。
+  也就是说：**这个接口在任何容差下都不会返回面积变化超过 3%、或被移动的面积超过 5% 的结果**。
+  此前的固定容差 1e-5 度（约 1.1 米）已废除——它相对图斑过粗，被简化的图斑面积变化中位 13%。
+  选型与数值依据见 [自适应容差对照实验](geometry-engine-adaptive-tolerance-20261125.md)。
+- 接口不保证幂等：对同一个面连续调用，每次都以上一次的结果为基准重新判定。实测第 2 次只有约 5% 的面还会变化，
+  相对原始几何的累计偏差不超过门槛的两倍。编辑器对「已是简化结果、之后没被修改」的面不重复提交。
 - 算法是 Shapely 原生拓扑保持简化（GEOS 3.10.3）。不做任何自定义几何处理：不裁剪、不吸附、不改动未提交的图斑。
 - 已知限制：GEOS 3.10.3 的拓扑保持简化对约 0.02%–0.03% 的退化输入不确定——同一输入可能得到两个不同的合法结果，或一次 `changed` 一次 `rejected`。两种结果都合法。见 [对照实验 §7](geometry-engine-simplify-ablation.md)。
+  贴矿山边界的大图斑多数无法简化（原生简化会越出边界，被拒后保持原样）；一个 `MultiPolygon` 的各部件共用一个容差，
+  按最小部件封顶，所以带细小部件的 `MultiPolygon` 基本不简化。
 
 `union` 响应的 `data` 为 `{ "geometry": { … } }`（`Polygon` 或 `MultiPolygon`）。合并结果不被保存规则接受时 `422`，`data.details` 为 `{ code, field, reason, outside_area_m2, outside_distance_m }`，与 `validate` 的不合法项同构。
 
-**三个容差是三种不同的东西，不能互相顶替：**
+**合法性判定里只有一个容差，简化容差是另一回事，不能互相顶替：**
 
 | 名称 | 值 | 含义 |
 | --- | --- | --- |
 | 坐标精度 | 1e-10 度 | 自动矢量化写坐标时的舍入单位。不是容差 |
 | 数值容差 | 1e-9 度（约 0.1 毫米） | 合法性判定里唯一允许的容差，只吸收坐标舍入与投影换算误差 |
-| 简化容差 | 1e-5 度（约 1.1 米） | 用户可见的简化力度。与合法性无关 |
+| 简化容差 | 自适应，以米计：不超过 1 个 label 像元、图斑特征尺寸的 5%、1 米 | 用户可见的简化力度。由像元与图斑面积推出，经 PROJ 把米换成度；与合法性判定无关 |
 
 像元分辨率属于每条成果自己的 label 栅格，不参与合法性判定。前端只负责渲染、交互与撤销重做，
 **不得自行实现空间关系、相交、拓扑或有效性判断**；编辑器在每次编辑操作完成后把改动的面送 `validate`，
 在保存前就给出与保存相同的结论。
 
-测试：`backend/test_classification_geometry_api.py`（成功 / `404` / `401` / `422` / 合并失败 / 只读性 / 与保存理由逐字一致）、
-`backend/test_geometry_engine.py`（不变量与属性测试，「引擎只封装 GEOS」源码守卫）。
+测试：`backend/test_classification_geometry_api.py`（成功 / `404` / `401` / `422` / 合并失败 / 只读性 / 与保存理由逐字一致 /
+自适应容差的像元来源与回退 / 显式容差）、`backend/test_classification_body_limit.py`（请求体上限：声明超限的不读、
+未声明的读到上限即停）、`backend/test_geometry_engine.py`（不变量与属性测试，「引擎只封装 GEOS」源码守卫，
+参数与对照实验所用的数值钉在一起）。
 
 ## 7. 409 与 422 语义
 
