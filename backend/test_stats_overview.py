@@ -23,6 +23,7 @@ from applications.models.inference_job import InferenceJob
 from applications.models.project import Project, ProjectMineBinding
 from applications.api import stats as stats_module
 from applications.api.stats import _change_metrics, _spherical_ring_area_m2
+from applications.project_hub import derived_cache
 
 
 def _write_tif(path: Path, width=4, height=4, pixel_deg=0.0001):
@@ -220,7 +221,7 @@ class TestAreaMemo(StatsOverviewBase):
     （约 9 秒）。成果没变就不再重算；面积函数不变，结果与逐条现算一致。"""
 
     def _memo_path(self, project_id):
-        return self.storage_root / "projects" / str(project_id) / "outputs" / "stats" / stats_module._AREA_MEMO_FILE
+        return self.storage_root / "projects" / str(project_id) / "outputs" / "stats" / stats_module._AREA_CACHE_FILE
 
     def _build(self):
         return stats_module.build_stats_overview(storage_root=self.storage_root, use_area_memo=True)
@@ -257,7 +258,7 @@ class TestAreaMemo(StatsOverviewBase):
         self.assertEqual(refreshed["feature_total"], 5)
         self.assertAlmostEqual(refreshed["class_area"]["percent"]["forest"], 80.0, places=2)
         saved = json.loads(self._memo_path(project.id).read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], stats_module._AREA_MEMO_VERSION)
+        self.assertEqual(saved["version"], derived_cache.CACHE_VERSION)
         self.assertEqual(sorted(saved["entries"]), [str(first.id), str(second.id)])
         self.assertEqual(saved["entries"][str(second.id)]["signature"].split("|")[:3], ["1", "4", "ready"])
 
@@ -269,7 +270,7 @@ class TestAreaMemo(StatsOverviewBase):
         def signature():
             # 每一步都重新取行并立刻算成字符串：expire 之后旧对象会按库里的最新状态刷新，不能拿它做"改前"的值
             db.session.expire_all()
-            return stats_module._result_area_signature(ClassificationResult.query.get(result.id))
+            return derived_cache.result_signature(ClassificationResult.query.get(result.id))
 
         before = signature()
         # 发布：图斑数与状态变（ORM 赋值，行更新时间随之刷新）
@@ -329,7 +330,7 @@ class TestAreaMemo(StatsOverviewBase):
             with self._count_recomputations() as compute:
                 self.assertEqual(self._build()["class_area"], reference)
             self.assertEqual(compute.call_count, 1, "读不懂的记忆当空，照常现算")
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["version"], stats_module._AREA_MEMO_VERSION)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["version"], derived_cache.CACHE_VERSION)
 
     def test_memo_write_failure_does_not_break_the_overview(self):
         project = self._create_project("记忆不可写项目")
@@ -340,9 +341,9 @@ class TestAreaMemo(StatsOverviewBase):
         blocker = self.storage_root / "projects" / str(project.id) / "outputs" / "stats"
         blocker.parent.mkdir(parents=True)
         blocker.write_text("占位", encoding="utf-8")
-        with self.assertLogs(stats_module.LOGGER, level="WARNING") as logs:
+        with self.assertLogs(derived_cache.LOGGER, level="WARNING") as logs:
             self.assertEqual(self._build()["class_area"], reference)
-        self.assertTrue(any("概览地类面积记忆写入失败" in line for line in logs.output))
+        self.assertTrue(any("派生缓存写入失败" in line for line in logs.output))
 
 
 class TestChangeMetricsParallelScan(unittest.TestCase):

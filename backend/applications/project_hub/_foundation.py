@@ -130,9 +130,14 @@ def _validate_incoming_tiff_storage_key(value):
     return source_path.relative_to(storage_root).as_posix(), source_format
 
 def _write_xlsx(path, project, results=None, project_id=None, record_id=None):
+    from flask import current_app
+
     from applications.project_hub.ledger import build_project_ledger_workbook
 
-    path.write_bytes(build_project_ledger_workbook(project, results).read())
+    # 抽取结果走项目派生缓存；测试环境与概览的 TTL 缓存一样旁路，用例之间不共享
+    path.write_bytes(
+        build_project_ledger_workbook(project, results, use_cache=not current_app.config.get("TESTING")).read()
+    )
 
 def _storage_key(*parts):
     return Path(*parts).as_posix()

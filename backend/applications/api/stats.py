@@ -14,7 +14,6 @@ import csv
 import json
 import logging
 import math
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,6 +27,7 @@ from applications.common.utils.http import success_api
 from applications.extensions import db
 from applications.models.project import Project
 from applications.models.classification_result import ClassificationResult
+from applications.project_hub.derived_cache import cache_path, load_cache, result_signature, save_cache
 
 stats_api = Blueprint('stats_api', __name__, url_prefix='/api/stats')
 LOGGER = logging.getLogger(__name__)
@@ -128,61 +128,12 @@ def _latest_results_per_fid_year(project_ids):
 
 # 逐成果地类面积的记忆（2026-11-24）。概览此前每次缓存过期都要把全库有效成果的矢量 JSON
 # （实测 644 条、167.8MB、440 万个顶点）取回、解析、逐点求面积：约 9 秒，其中六秒多是进程
-# CPU，期间拖慢同一 worker 上的其它接口。成果几乎不变，所以把"每个有效成果各类别的面积"按
-# 成果记在项目自己的派生目录，并带一个能判断成果是否变过的签名。没变的直接取用，变了的
-# 只重算那几条。面积函数不变；与逐次全量计算相比只有求和次序不同带来的浮点末位差异。
-# 签名 = 修订号 + 图斑数 + 矢量状态 + 行更新时间：发布、保存修订、标记失败三条写入路径
-# 都至少改动其中一项。绕过保存流程直接改库且四项都不变（同秒、同图斑数、不升修订号）不会
-# 被察觉——生产没有这样的写入路径。
-_AREA_MEMO_VERSION = 1
-_AREA_MEMO_FILE = "class_area_by_result.json"
+# CPU，期间拖慢同一 worker 上的其它接口。成果几乎不变，所以把"每个有效成果各类别的面积"记进
+# 项目派生缓存（约定与签名见 applications/project_hub/derived_cache.py）：没变的直接取用，
+# 变了的只重算那几条。面积函数不变；与逐次全量计算相比只有求和次序不同带来的浮点末位差异。
+_AREA_CACHE_FILE = "class_area_by_result.json"
 # 变化矩阵与像元面积是纯文件读取（生产存储单次 stat 约 8ms），逐矿山并发
 _CHANGE_SCAN_WORKERS = 16
-
-
-def _result_area_signature(result):
-    updated = result.update_time.isoformat(sep=" ") if getattr(result, "update_time", None) else ""
-    return "|".join(str(part) for part in (result.current_revision_no, result.feature_count, result.vector_status, updated))
-
-
-def _area_memo_path(project_root):
-    return Path(project_root) / "outputs" / "stats" / _AREA_MEMO_FILE
-
-
-def _load_area_memo(path):
-    """读不回来、格式不对、版本不同一律当空：只影响本次耗时，不影响结果。"""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    entries = data.get("entries") if isinstance(data, dict) and data.get("version") == _AREA_MEMO_VERSION else None
-    memo = {}
-    for key, entry in (entries or {}).items():
-        try:
-            result_id = int(key)
-        except (TypeError, ValueError):
-            continue
-        if (
-            isinstance(entry, dict)
-            and isinstance(entry.get("signature"), str)
-            and isinstance(entry.get("area_m2"), dict)
-        ):
-            memo[result_id] = entry
-    return memo
-
-
-def _save_area_memo(path, entries):
-    """原子替换；只保留仍然有效的成果，文件不随历史成果增长。写失败只记告警。"""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(
-            json.dumps({"version": _AREA_MEMO_VERSION, "entries": entries}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
-    except OSError as exc:
-        LOGGER.warning("概览地类面积记忆写入失败 path=%s: %s", path, exc)
 
 
 def _feature_collection_class_areas(raw):
@@ -214,11 +165,12 @@ def _class_area_share(results, project_roots=None):
         group = sorted(grouped[project_id], key=lambda result: result.id)
         areas = {}
         project_root = (project_roots or {}).get(project_id)
-        memo = _load_area_memo(_area_memo_path(project_root)) if project_root is not None else {}
+        cache_file = cache_path(project_root, _AREA_CACHE_FILE) if project_root is not None else None
+        memo = load_cache(cache_file) if cache_file is not None else {}
         stale = []
         for result in group:
-            entry = memo.get(result.id)
-            if entry and entry.get("signature") == _result_area_signature(result):
+            entry = memo.get(str(result.id))
+            if entry and entry.get("signature") == result_signature(result):
                 areas[result.id] = entry["area_m2"]
             else:
                 stale.append(result)
@@ -231,11 +183,11 @@ def _class_area_share(results, project_roots=None):
             computed = {result_id: _feature_collection_class_areas(raw) for result_id, raw in collections}
             for result in stale:
                 areas[result.id] = computed.get(result.id, {name: 0.0 for name in CLASS_BY_CODE.values()})
-        if project_root is not None:
-            _save_area_memo(
-                _area_memo_path(project_root),
+        if cache_file is not None:
+            save_cache(
+                cache_file,
                 {
-                    str(result.id): {"signature": _result_area_signature(result), "area_m2": areas[result.id]}
+                    str(result.id): {"signature": result_signature(result), "area_m2": areas[result.id]}
                     for result in group
                 },
             )

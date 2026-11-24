@@ -6,6 +6,7 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from openpyxl import Workbook
 from sqlalchemy import bindparam, text
@@ -14,6 +15,13 @@ from sqlalchemy.orm import load_only
 from applications.extensions import db
 from applications.models.classification_result import ClassificationResult
 from applications.models.inference_job import InferenceJob
+from applications.project_hub.derived_cache import (
+    cache_path,
+    job_signature,
+    load_cache,
+    result_signature,
+    save_cache,
+)
 
 VECTOR_STATUS_LABELS = {
     "ready": "已出矢量",
@@ -28,6 +36,9 @@ LEDGER_EXTRACT_WORKERS = max(1, int(os.getenv("LEDGER_EXTRACT_WORKERS", "4")))
 _MYSQL_INVALID_JSON_ERROR = 3141
 # MySQL "Query execution was interrupted, maximum statement execution time exceeded"
 _MYSQL_STATEMENT_TIMEOUT_ERROR = 3024
+# 抽取结果的派生缓存文件（约定与签名见 applications/project_hub/derived_cache.py）
+_JOB_TIMINGS_CACHE_FILE = "ledger_job_timings.json"
+_CLASS_COUNTS_CACHE_FILE = "ledger_class_counts.json"
 
 
 def _mysql_budget_hint(deadline):
@@ -147,23 +158,19 @@ def _timings_from_extracted(extracted):
     return inference, total
 
 
-def _prefetch_job_timings(job_ids, deadline=None):
-    """批量预取推理计时：{job_id: (推理秒数, 总秒数)}，缺失为 None。
-
-    deadline(time.monotonic 口径)给出时，MySQL 语句带剩余预算的执行时限，超时抛
-    LedgerBudgetExceeded(见 _mysql_budget_hint)。
+def _extract_job_timings(job_ids, deadline):
+    """不带缓存的抽取：{job_id: (推理秒数, 总秒数)}，没有可解析计时的任务不出现。
 
     result_json 单条均值 2.4MB、项目 10 关联 585 个任务共 1.42GB——逐任务 Query.get 是
     GB 级传输（曾实测 389 秒）。此前改成服务端抽取后仍要 38 秒：WHERE 里的 JSON_VALID
-    加两次 JSON_EXTRACT 把每篇文本解析了三遍；现在一遍、四路并行。
+    加两次 JSON_EXTRACT 把每篇文本解析了三遍；现在一遍、四路并行（原因见 _query_in_shards）。
     非 MySQL 方言（测试环境）逐个读取后解析。
     """
     timings = {}
-    unique_ids = [job_id for job_id in dict.fromkeys(job_ids) if job_id]
-    if not unique_ids:
+    if not job_ids:
         return timings
     if db.engine.dialect.name != "mysql":
-        for job_id in unique_ids:
+        for job_id in job_ids:
             job = InferenceJob.query.get(job_id)
             if job is None or not job.result_json:
                 continue
@@ -190,10 +197,72 @@ def _prefetch_job_timings(job_ids, deadline=None):
         return statement, {"ids": shard}
 
     # engine 在有应用上下文的调用线程里解析，线程内只认引擎对象
-    rows = _extract_with_json_fallback(db.engine, build_query, unique_ids)
+    rows = _extract_with_json_fallback(db.engine, build_query, job_ids)
     for job_id, extracted in rows:
         timings[str(job_id)] = _timings_from_extracted(extracted)
     return timings
+
+
+def _prefetch_job_timings(job_ids, deadline=None, cache_file=None):
+    """批量预取推理计时：{job_id: (推理秒数, 总秒数)}，缺失为 None。
+
+    deadline(time.monotonic 口径)给出时，MySQL 语句带剩余预算的执行时限，超时抛
+    LedgerBudgetExceeded(见 _mysql_budget_hint)。
+
+    cache_file 给出时启用派生缓存：按任务签名只抽取新增或有变化的任务。项目 10 的 585 个任务
+    要让 MySQL 解析 1.42GB 文本（四个核满载约 8 秒，期间拖慢所有走数据库的请求），而任务一结束
+    result_json 就不再变。没有可解析计时的任务（无结果、坏 JSON、任务已不存在）也记下来，
+    否则每次都要再试一遍。"""
+    timings = {}
+    unique_ids = [job_id for job_id in dict.fromkeys(job_ids) if job_id]
+    if not unique_ids:
+        return timings
+    signatures = {}
+    pending = unique_ids
+    if cache_file is not None:
+        jobs = (
+            InferenceJob.query.filter(InferenceJob.id.in_(unique_ids))
+            .options(
+                load_only(
+                    InferenceJob.id,
+                    InferenceJob.status,
+                    InferenceJob.finished_at,
+                    InferenceJob.update_time,
+                )
+            )
+            .all()
+        )
+        signatures = {str(job.id): job_signature(job) for job in jobs}
+        cache = load_cache(cache_file)
+        pending = []
+        for job_id in unique_ids:
+            entry = cache.get(str(job_id))
+            if (
+                entry
+                and entry.get("signature") == signatures.get(str(job_id), "")
+                and _is_number_or_none(entry.get("inference"))
+                and _is_number_or_none(entry.get("total"))
+            ):
+                if entry.get("present"):
+                    timings[str(job_id)] = (entry["inference"], entry["total"])
+            else:
+                pending.append(job_id)
+    timings.update(_extract_job_timings(pending, deadline))
+    if cache_file is not None:
+        save_cache(cache_file, {
+            str(job_id): {
+                "signature": signatures.get(str(job_id), ""),
+                "present": str(job_id) in timings,
+                "inference": timings.get(str(job_id), (None, None))[0],
+                "total": timings.get(str(job_id), (None, None))[1],
+            }
+            for job_id in unique_ids
+        })
+    return timings
+
+
+def _is_number_or_none(value):
+    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
 
 
 def _job_timings(inference_job_id, _timings_cache=None):
@@ -309,22 +378,10 @@ def _pairs_from_codes(codes):
     return [(code, _class_name_of(code)) for code in values]
 
 
-def _prefetch_class_counts(project_id, deadline=None):
-    """逐成果的地类图斑计数：{result_id: {(class_code, class_name): count}}（按首次出现排序）。
-
-    deadline 语义同 _prefetch_job_timings。
-
-    台账慢的真正来源：逐成果计数只需要每个图斑的类别码，此前却把成果整行（含矢量
-    MEDIUMTEXT）拉回应用侧解析；改成数据库侧抽取后仍要 14 秒，因为校验加两次抽取把
-    每篇解析了三遍。现在只抽类别码、一遍、四路并行（原因见 _query_in_shards）。
-    非 MySQL 方言（测试环境）只取所需两列后在应用侧解析。
-    """
-    counts = {}
-    result_ids = [
-        row_id for (row_id,) in db.session.query(ClassificationResult.id).filter_by(project_id=project_id).all()
-    ]
+def _extract_class_counts(result_ids, deadline, counts):
+    """不带缓存的抽取，结果并入 counts。"""
     if not result_ids:
-        return counts
+        return
     if db.engine.dialect.name != "mysql":
         rows = (
             db.session.query(ClassificationResult.id, ClassificationResult.current_feature_collection_json)
@@ -335,7 +392,7 @@ def _prefetch_class_counts(project_id, deadline=None):
             # 与 MySQL 路径同源：类别名由类别码按固定类别表推出，不取矢量里存的名称
             codes = [class_code for class_code, _stored_name in _iter_class_counts(collection_json)]
             _tally(counts, result_id, _pairs_from_codes(codes))
-        return counts
+        return
 
     def build_query(shard, guarded):
         guard = "AND JSON_VALID(current_feature_collection_json)" if guarded else ""
@@ -351,13 +408,81 @@ def _prefetch_class_counts(project_id, deadline=None):
     rows = _extract_with_json_fallback(db.engine, build_query, result_ids)
     for result_id, codes in rows:
         _tally(counts, result_id, _pairs_from_codes(codes))
+
+
+def _prefetch_class_counts(project_id, deadline=None, cache_file=None):
+    """逐成果的地类图斑计数：{result_id: {(class_code, class_name): count}}（按首次出现排序）。
+
+    deadline 语义同 _prefetch_job_timings。
+
+    台账慢的真正来源：逐成果计数只需要每个图斑的类别码，此前却把成果整行（含矢量
+    MEDIUMTEXT）拉回应用侧解析；改成数据库侧抽取后仍要 14 秒，因为校验加两次抽取把
+    每篇解析了三遍。现在只抽类别码、一遍、四路并行（原因见 _query_in_shards）。
+    非 MySQL 方言（测试环境）只取所需两列后在应用侧解析。
+
+    cache_file 给出时启用派生缓存：按成果签名只抽取新增或有变化的成果。类别名不入缓存，
+    读的时候仍由类别码按固定类别表推出。"""
+    counts = {}
+    result_ids = [
+        row_id for (row_id,) in db.session.query(ClassificationResult.id).filter_by(project_id=project_id).all()
+    ]
+    if not result_ids:
+        return counts
+    signatures = {}
+    pending = result_ids
+    if cache_file is not None:
+        rows = (
+            ClassificationResult.query.filter(ClassificationResult.id.in_(result_ids))
+            .options(
+                load_only(
+                    ClassificationResult.id,
+                    ClassificationResult.current_revision_no,
+                    ClassificationResult.feature_count,
+                    ClassificationResult.vector_status,
+                    ClassificationResult.update_time,
+                )
+            )
+            .all()
+        )
+        signatures = {str(row.id): result_signature(row) for row in rows}
+        cache = load_cache(cache_file)
+        pending = []
+        for result_id in result_ids:
+            entry = cache.get(str(result_id))
+            if entry and entry.get("signature") == signatures.get(str(result_id), "") and isinstance(entry.get("counts"), list):
+                tally = {}
+                for pair in entry["counts"]:
+                    if isinstance(pair, list) and len(pair) == 2 and isinstance(pair[1], int) and not isinstance(pair[1], bool):
+                        tally[(pair[0], _class_name_of(pair[0]))] = pair[1]
+                if tally:
+                    counts[result_id] = tally
+            else:
+                pending.append(result_id)
+    _extract_class_counts(pending, deadline, counts)
+    if cache_file is not None:
+        save_cache(cache_file, {
+            str(result_id): {
+                "signature": signatures.get(str(result_id), ""),
+                "counts": [[class_code, number] for (class_code, _name), number in counts.get(result_id, {}).items()],
+            }
+            for result_id in result_ids
+        })
     return counts
 
 
-def build_project_ledger_workbook(project, results=None, class_counts=None):
+def build_project_ledger_workbook(project, results=None, class_counts=None, use_cache=False):
+    """use_cache=True 时两项抽取走项目派生缓存（导出请求路径上由 _write_xlsx 决定，
+    测试环境默认关闭；测试可显式打开）。"""
     if results is None:
         results = collect_project_results(project)
     started = time.monotonic()
+    job_timings_cache_file = class_counts_cache_file = None
+    if use_cache:
+        from applications.project_hub.spatial_storage import get_storage_root, resolve_storage_path
+
+        project_root = resolve_storage_path(get_storage_root(), Path("projects") / str(project.id))
+        job_timings_cache_file = cache_path(project_root, _JOB_TIMINGS_CACHE_FILE)
+        class_counts_cache_file = cache_path(project_root, _CLASS_COUNTS_CACHE_FILE)
 
     workbook = Workbook()
     sheet = workbook.active
@@ -369,9 +494,13 @@ def build_project_ledger_workbook(project, results=None, class_counts=None):
 
     # 时间预算对两个阶段都生效：两条大 JSON 抽取由数据库按剩余时限自行中断，写表循环逐段检查
     deadline = started + LEDGER_TIME_BUDGET_SECONDS
-    timings_cache = _prefetch_job_timings([result.inference_job_id for result in results], deadline=deadline)
+    timings_cache = _prefetch_job_timings(
+        [result.inference_job_id for result in results],
+        deadline=deadline,
+        cache_file=job_timings_cache_file,
+    )
     if class_counts is None:
-        class_counts = _prefetch_class_counts(project.id, deadline=deadline)
+        class_counts = _prefetch_class_counts(project.id, deadline=deadline, cache_file=class_counts_cache_file)
     for index, result in enumerate(results):
         if index % 200 == 0 and time.monotonic() > deadline:
             raise LedgerBudgetExceeded(

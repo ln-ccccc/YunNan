@@ -8,6 +8,7 @@ MySQL 侧的并行抽取无法在 SQLite 测试环境里执行，生产库上的
 - 按 id 均分切片、结果按原顺序合并、只有一片时不启线程；
 - 只有 3141（非法 JSON 文本）才退回带校验的慢路径，其余异常原样抛出。
 """
+import io
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +27,7 @@ from applications.extensions import db
 from applications.models.classification_result import ClassificationResult
 from applications.models.inference_job import InferenceJob
 from applications.models.project import Project
-from applications.project_hub import ledger
+from applications.project_hub import derived_cache, ledger
 
 
 def _fc(*class_codes):
@@ -254,6 +256,188 @@ class SqliteFallbackPathTests(unittest.TestCase):
             self.assertTrue(sql.startswith("SELECT /*+ MAX_EXECUTION_TIME("), sql[:60])
             result_id = ClassificationResult.query.one().id
             self.assertEqual(counts, {result_id: {(0, "grassland"): 1, (1, "forest"): 1}})
+
+
+class LedgerDerivedCacheTests(unittest.TestCase):
+    """台账抽取结果的派生缓存（2026-11-24）：项目 10 的 585 个任务要让 MySQL 解析 1.42GB 文本、
+    四个核满载约 8 秒，成果和任务一结束就不再变，不该每次导出都重来。关闭缓存时两个预取的
+    行为与此前完全一致（上面的用例即是）；这里验证打开缓存后结果相同、且只重算变过的。"""
+
+    def setUp(self):
+        self.previous = os.environ.get("PROJECT_STORAGE_ROOT")
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="ledger-cache-")
+        self.addCleanup(self.temp_dir.cleanup)
+        os.environ["PROJECT_STORAGE_ROOT"] = self.temp_dir.name
+        self.addCleanup(self._restore)
+        self.app = create_app("testing")
+        self.ctx = self.app.app_context()
+        self.ctx.push()
+        self.addCleanup(self.ctx.pop)
+        self.addCleanup(db.drop_all)
+        self.addCleanup(db.session.remove)
+        db.create_all()
+
+    def _restore(self):
+        if self.previous is None:
+            os.environ.pop("PROJECT_STORAGE_ROOT", None)
+        else:
+            os.environ["PROJECT_STORAGE_ROOT"] = self.previous
+
+    def _cache_file(self, project, filename):
+        return Path(self.temp_dir.name) / "projects" / str(project.id) / "outputs" / "stats" / filename
+
+    def _seed(self):
+        project = Project(name="台账缓存", region="昆明")
+        db.session.add(project)
+        db.session.flush()
+        first = ClassificationResult(
+            project_id=project.id, mine_fid=1, year=2024, inference_job_id="job-first", model_id="m",
+            mine_resource_id=1, current_feature_collection_json=_fc(1, 2, 2), auto_feature_collection_json=_fc(1),
+            current_revision_no=0, feature_count=3, vector_status="ready",
+        )
+        second = ClassificationResult(
+            project_id=project.id, mine_fid=2, year=2024, inference_job_id="job-second", model_id="m",
+            mine_resource_id=1, current_feature_collection_json=_fc(0), auto_feature_collection_json=_fc(0),
+            current_revision_no=0, feature_count=1, vector_status="ready",
+        )
+        failed = ClassificationResult(
+            project_id=project.id, mine_fid=3, year=2024, inference_job_id="job-running", model_id="m",
+            mine_resource_id=1, current_feature_collection_json=None, auto_feature_collection_json=None,
+            current_revision_no=0, feature_count=0, vector_status="vector_failed",
+        )
+        done = InferenceJob(
+            id="job-first", project_id=project.id, status="succeeded", request_payload_json="{}",
+            result_json=json.dumps({"stage_durations": {"inference": 2.5, "cut": 0.2}, "total_seconds": 3.0}),
+            finished_at=datetime(2026, 11, 1, 10, 0, 0),
+        )
+        no_result = InferenceJob(
+            id="job-second", project_id=project.id, status="failed", request_payload_json="{}",
+            result_json=None, finished_at=datetime(2026, 11, 1, 10, 0, 0),
+        )
+        running = InferenceJob(id="job-running", project_id=project.id, status="running", request_payload_json="{}")
+        db.session.add_all([first, second, failed, done, no_result, running])
+        db.session.commit()
+        return project, first, second, failed, done, no_result, running
+
+    def _track_extractions(self):
+        return (
+            patch.object(ledger, "_extract_class_counts", wraps=ledger._extract_class_counts),
+            patch.object(ledger, "_extract_job_timings", wraps=ledger._extract_job_timings),
+        )
+
+    def test_cached_result_equals_uncached_and_unchanged_inputs_are_not_extracted_again(self):
+        project, first, second, failed, done, no_result, running = self._seed()
+        job_ids = [done.id, no_result.id, running.id]
+        full_counts = ledger._prefetch_class_counts(project.id)
+        full_timings = ledger._prefetch_job_timings(job_ids)
+        self.assertEqual(full_timings, {done.id: (2.5, 3.0)})
+        counts_file = self._cache_file(project, ledger._CLASS_COUNTS_CACHE_FILE)
+        timings_file = self._cache_file(project, ledger._JOB_TIMINGS_CACHE_FILE)
+
+        counts_patch, timings_patch = self._track_extractions()
+        with counts_patch as extract_counts, timings_patch as extract_timings:
+            self.assertEqual(ledger._prefetch_class_counts(project.id, cache_file=counts_file), full_counts)
+            self.assertEqual(ledger._prefetch_job_timings(job_ids, cache_file=timings_file), full_timings)
+            # 首次没有缓存：全部抽取
+            self.assertEqual(sorted(extract_counts.call_args_list[-1].args[0]), sorted([first.id, second.id, failed.id]))
+            self.assertEqual(extract_timings.call_args_list[-1].args[0], job_ids)
+            again_counts = ledger._prefetch_class_counts(project.id, cache_file=counts_file)
+            again_timings = ledger._prefetch_job_timings(job_ids, cache_file=timings_file)
+        self.assertEqual((again_counts, again_timings), (full_counts, full_timings))
+        self.assertEqual(extract_counts.call_args_list[-1].args[0], [], "成果没变：没有需要抽取的")
+        # 没有结果的任务也记下了，不会被一次又一次地取回
+        self.assertEqual(extract_timings.call_args_list[-1].args[0], [])
+
+    def test_only_changed_inputs_are_extracted_again(self):
+        project, first, second, failed, done, no_result, running = self._seed()
+        job_ids = [done.id, no_result.id, running.id]
+        counts_file = self._cache_file(project, ledger._CLASS_COUNTS_CACHE_FILE)
+        timings_file = self._cache_file(project, ledger._JOB_TIMINGS_CACHE_FILE)
+        ledger._prefetch_class_counts(project.id, cache_file=counts_file)
+        ledger._prefetch_job_timings(job_ids, cache_file=timings_file)
+
+        # 第二条成果保存了新修订；运行中的任务结束并写入结果（finish_job 的写法：状态、结果、完成时间一起变）
+        second.current_feature_collection_json = _fc(0, 0, 5)
+        second.current_revision_no = 1
+        second.feature_count = 3
+        running.status = "succeeded"
+        running.result_json = json.dumps({"stage_durations": {"inference": 7.0}, "total_seconds": 8.5})
+        running.finished_at = datetime(2026, 11, 1, 11, 0, 0)
+        db.session.commit()
+        db.session.expire_all()
+
+        counts_patch, timings_patch = self._track_extractions()
+        with counts_patch as extract_counts, timings_patch as extract_timings:
+            counts = ledger._prefetch_class_counts(project.id, cache_file=counts_file)
+            timings = ledger._prefetch_job_timings(job_ids, cache_file=timings_file)
+        self.assertEqual(extract_counts.call_args_list[-1].args[0], [second.id], "只重算变过的那条成果")
+        self.assertEqual(extract_timings.call_args_list[-1].args[0], [running.id], "只重算变过的那个任务")
+        self.assertEqual(counts, ledger._prefetch_class_counts(project.id), "与不用缓存的结果一致")
+        self.assertEqual(timings, ledger._prefetch_job_timings(job_ids))
+        self.assertEqual(timings[running.id], (7.0, 8.5))
+
+    def test_cache_keeps_exactly_the_project_current_results(self):
+        project, first, second, failed, *_ = self._seed()
+        counts_file = self._cache_file(project, ledger._CLASS_COUNTS_CACHE_FILE)
+        ledger._prefetch_class_counts(project.id, cache_file=counts_file)
+        self.assertEqual(sorted(derived_cache.load_cache(counts_file)), sorted(str(row.id) for row in (first, second, failed)))
+        third = ClassificationResult(
+            project_id=project.id, mine_fid=4, year=2025, inference_job_id="job-fourth", model_id="m",
+            mine_resource_id=1, current_feature_collection_json=_fc(3), auto_feature_collection_json=_fc(3),
+            current_revision_no=0, feature_count=1, vector_status="ready",
+        )
+        other_project = Project(name="别的项目", region="昆明")
+        db.session.add_all([third, other_project])
+        db.session.flush()
+        db.session.add(ClassificationResult(
+            project_id=other_project.id, mine_fid=1, year=2024, inference_job_id="job-other", model_id="m",
+            mine_resource_id=1, current_feature_collection_json=_fc(4), auto_feature_collection_json=_fc(4),
+            current_revision_no=0, feature_count=1, vector_status="ready",
+        ))
+        db.session.commit()
+        db.session.expire_all()
+        counts = ledger._prefetch_class_counts(project.id, cache_file=counts_file)
+        current_ids = sorted(str(row_id) for (row_id,) in db.session.query(ClassificationResult.id).filter_by(project_id=project.id).all())
+        self.assertEqual(sorted(derived_cache.load_cache(counts_file)), current_ids)
+        self.assertEqual(sorted(counts), sorted([first.id, second.id, third.id]), "没有图斑的成果照旧不留条目")
+
+    def test_unreadable_or_foreign_cache_is_ignored_and_rewritten(self):
+        project, first, *_ = self._seed()
+        counts_file = self._cache_file(project, ledger._CLASS_COUNTS_CACHE_FILE)
+        counts_file.parent.mkdir(parents=True)
+        full = ledger._prefetch_class_counts(project.id)
+        for content in ("not json", json.dumps({"version": 0, "entries": {"1": {"signature": "x", "counts": [[1, 9]]}}}), json.dumps([1])):
+            counts_file.write_text(content, encoding="utf-8")
+            self.assertEqual(ledger._prefetch_class_counts(project.id, cache_file=counts_file), full)
+            self.assertEqual(derived_cache.load_cache(counts_file)[str(first.id)]["counts"], [[1, 1], [2, 2]])
+
+    def test_cache_write_failure_does_not_change_the_result(self):
+        project, *_ = self._seed()
+        full = ledger._prefetch_class_counts(project.id)
+        blocker = self._cache_file(project, ledger._CLASS_COUNTS_CACHE_FILE).parent
+        blocker.parent.mkdir(parents=True)
+        blocker.write_text("占位", encoding="utf-8")
+        with self.assertLogs(derived_cache.LOGGER, level="WARNING") as logs:
+            self.assertEqual(ledger._prefetch_class_counts(project.id, cache_file=blocker / ledger._CLASS_COUNTS_CACHE_FILE), full)
+        self.assertTrue(any("派生缓存写入失败" in line for line in logs.output))
+
+    def test_workbook_with_cache_equals_workbook_without(self):
+        from openpyxl import load_workbook
+
+        project, *_ = self._seed()
+        plain = ledger.build_project_ledger_workbook(project, use_cache=False).read()
+
+        def cells(stream):
+            workbook = load_workbook(io.BytesIO(stream))
+            return {sheet.title: [tuple(row) for row in sheet.iter_rows(values_only=True)] for sheet in workbook}
+
+        first_pass = cells(ledger.build_project_ledger_workbook(project, use_cache=True).read())
+        second_pass = cells(ledger.build_project_ledger_workbook(project, use_cache=True).read())
+        self.assertEqual(first_pass, cells(plain))
+        self.assertEqual(second_pass, cells(plain))
+        # 图斑统计：表头 + 第一条成果两个类别 + 第二条成果一个类别（没有图斑的成果不留行）；主表每条成果一行
+        self.assertEqual(len(second_pass["地类图斑统计"]), 1 + 3)
+        self.assertEqual(len(second_pass["推理成果台账"]), 1 + 3)
 
 
 if __name__ == "__main__":
