@@ -11,6 +11,11 @@ const source = fs.readFileSync(
   fileURLToPath(new URL('../src/views/mainfun/ClassificationResultEditor.vue', import.meta.url)),
   'utf8',
 );
+// 编辑期几何接口的客户端（2026-11-24）：合法性、简化、合并都在后端几何引擎里做
+const apiSource = fs.readFileSync(
+  fileURLToPath(new URL('../src/api/classificationResults.js', import.meta.url)),
+  'utf8',
+);
 
 // 把注释替换成等长空白：注释里的示例写法不应被当成调用
 function stripComments(text) {
@@ -207,9 +212,11 @@ test('raster source applies the manifest zoom range via resolveTileZoomRange', (
 });
 
 // ─── 2026-11-23 缺陷修复的源码形状守护 ────────────────────────────────────────
-// 以上既有守护在本次改造后原样通过，未做任何调整；下面是新增项。
+// 以上既有守护在历次改造后原样通过，未做任何调整。
 // 组件依赖 maplibre-gl / DOM，无法在 node:test 里实例化，组件侧沿用"源码形状守护"；
 // 可脱离 DOM 的判定逻辑都在 utils/*.mjs 里，行为断言见对应的 *.test.mjs。
+// 2026-11-24 的改造（合法性 / 简化 / 合并交给后端几何引擎）改写了下面三条与"前端自行
+// 判定几何"有关的守护——E2-b 里的结构校验、E2-c、ROI 容差——断言标准不降；新增项在文件末尾。
 
 /** 取 [startMarker, endMarker) 之间的源码片段，任一标记缺失即失败 */
 function sliceBetween(startMarker, endMarker) {
@@ -398,10 +405,12 @@ test('focus bounds fall back from features to ROI to manifest (E1)', () => {
   );
   const fit = sliceBetween('fitToCurrentFeatures(manifestBounds = null) {', 'resetDrawing() {');
   assert.match(fit, /resolveFocusBounds\(featureCollection, this\.result\?\.roi_geometry, null\)/);
+  // 图斑与 ROI 用 64/20，manifest 保持 64/15。上限 20 级是 2026-11-24 在真实数据上改的：封顶 16 级时
+  // 60 ~ 320 米的生产矿山在画布上只占几十个像素
   assert.match(
     fit,
-    /contentBounds \? \{ padding: 64, maxZoom: 16, duration: 0 \} : \{ padding: 64, maxZoom: 15, duration: 0 \}/,
-    '图斑与 ROI 用 64/16，manifest 保持 64/15',
+    /contentBounds \? \{ padding: 64, maxZoom: 20, duration: 0 \} : \{ padding: 64, maxZoom: 15, duration: 0 \}/,
+    '图斑与 ROI 用 64/20，manifest 保持 64/15',
   );
   assert.doesNotMatch(source, /featureBounds\(|LngLatBounds/, '旧的"无图斑即回退整张底图"定位已移除');
 });
@@ -427,9 +436,10 @@ test('discarding all edits asks for confirmation first (E2-a)', () => {
 });
 
 test('merge button is disabled for mixed-class selections (E2-b)', () => {
+  // 2026-11-24 起合并是网络请求：在途期间按钮转圈并禁用
   assert.match(
     source,
-    /<el-button\s*:disabled="selectedDrawIds\.length < 2 \|\| mixedClassSelection \|\| saving"\s*:title="mixedClassSelection \? '仅支持合并同地类的面' : '[^']*'"\s*plain\s*@click="mergeSelectedFeatures"\s*>\s*合并选中\s*<\/el-button>/,
+    /<el-button\s*:loading="merging"\s*:disabled="selectedDrawIds\.length < 2 \|\| mixedClassSelection \|\| saving \|\| merging"\s*:title="mixedClassSelection \? '仅支持合并同地类的面' : '[^']*'"\s*plain\s*@click="mergeSelectedFeatures"\s*>\s*合并选中\s*<\/el-button>/,
   );
   assert.match(source, /mixedClassSelection\(\) \{\s*return this\.selectedClassCodes\.length > 1;/);
   // selectedDrawIds 只有一个写入口，写入口同步刷新地类集合（不会出现过期地类）
@@ -437,7 +447,7 @@ test('merge button is disabled for mixed-class selections (E2-b)', () => {
   assert.equal(writers.length, 1, 'this.selectedDrawIds 只能在 setSelectedDrawIds 里赋值');
   const writer = sliceBetween('setSelectedDrawIds(drawIds) {', 'setSelectedDrawIds([]);');
   assert.match(writer, /this\.selectedDrawIds = drawIds;\s*this\.syncSelectionClassCodes\(\);/);
-  assert.match(sliceBetween('handleSelectionChange(event) {', 'mergeSelectedFeatures() {'), /this\.setSelectedDrawIds\(/);
+  assert.match(sliceBetween('handleSelectionChange(event) {', 'async mergeSelectedFeatures() {'), /this\.setSelectedDrawIds\(/);
   // 批量改类后同步刷新，解除置灰
   assert.match(
     sliceBetween('selectClass(classCode) {', 'handleDrawCreate(event) {'),
@@ -448,27 +458,59 @@ test('merge button is disabled for mixed-class selections (E2-b)', () => {
   assert.match(sync, /try \{\s*feature = this\.draw\?\.get\(drawId\) \|\| null;\s*\} catch \(_\) \{/);
   assert.match(sync, /feature\?\.properties\?\.class_code/);
 
-  // 运行时守卫保留；union 结果的结构校验发生在替换画布之前
-  const merge = sliceBetween('mergeSelectedFeatures() {', 'simplifySelectedFeatures() {');
+  // 运行时守卫保留。合并结果的结构 / 有效性 / 是否越界不再由前端判定：原先这里是对 turf union
+  // 的结果做 polygonStructureProblem 结构校验，现在合并请求的返回值一定通过了保存同款校验，
+  // 画布上只套用后端返回的几何
+  const merge = sliceBetween('async mergeSelectedFeatures() {', 'async simplifySelectedFeatures() {');
   assert.match(merge, /if \(classCodes\.size > 1\) \{/, '异类运行时守卫不得移除');
-  const structure = merge.indexOf('polygonStructureProblem(geometry)');
-  assert.ok(structure > 0 && structure < merge.indexOf('this.draw.add('), '结构校验必须先于 draw.add');
-  assert.match(merge, /合并失败：几何无效或边界过于复杂，可手动调整后重试/);
-});
-
-test('simplify validates geometry and skips faces that would become invalid (E2-c)', () => {
+  const mixedGuard = merge.indexOf('if (classCodes.size > 1) {');
+  const unionCall = merge.indexOf('await unionClassificationGeometries(');
+  const drawAdd = merge.indexOf('this.draw.add(');
+  assert.ok(mixedGuard > 0 && mixedGuard < unionCall, '同地类守卫必须先于发出合并请求');
+  assert.ok(unionCall > 0 && unionCall < drawAdd, '合并结果必须来自后端请求，且请求先于替换画布');
+  assert.match(merge, /geometry: merged\.geometry,/, '画布上套用的必须是后端返回的几何，前端不得再加工或校验');
+  assert.doesNotMatch(withoutComments(merge), /polygonStructureProblem|polygonGeometryProblems/, '结构校验已由后端几何引擎承担');
+  // 失败文案：有具体原因用后端的，没有就沿用原来这句
+  assert.match(merge, /合并失败：\$\{requestFailureReason\(error, MERGE_FAILURE_FALLBACK\)\}/);
+  assert.match(source, /const MERGE_FAILURE_FALLBACK = '几何无效或边界过于复杂，可手动调整后重试';/);
   assert.match(
     source,
-    /import \{ polygonStructureProblem, simplifyPolygonSafely \} from '@\/utils\/classificationEditorGeometry\.mjs'/,
+    /function requestFailureReason\(error, fallback\) \{\s*return error\?\.details\?\.reason \|\| error\?\.message \|\| fallback;\s*\}/,
+    '原因优先级：后端 details.reason → 拦截器 message → 兜底文案',
   );
-  const body = sliceBetween('simplifySelectedFeatures() {', 'async saveDrawing()');
-  const safe = body.indexOf('simplifyPolygonSafely(feature.geometry, {');
-  assert.ok(safe > 0 && safe < body.indexOf('this.draw.add('), '带校验的简化必须先于替换画布');
-  assert.match(body, /if \(!outcome\) \{\s*skippedCount \+= 1;\s*return;\s*\}/, '三次都不通过 → 跳过，原面不动');
-  assert.match(body, /个面简化后会产生无效几何，已跳过，原面保持不变/);
-  assert.doesNotMatch(body, /几何退化/, '旧的"无法简化（几何退化）"文案已替换');
-  // 有面被跳过时不再同时提示"边缘已足够平滑"
-  assert.match(body, /\} else if \(!skippedCount\) \{\s*\n\s*(?:\/\/[^\n]*\n\s*)*this\.\$message\.info\('选中面的边缘已足够平滑'\);/);
+});
+
+test('simplify takes every verdict from the backend and leaves rejected faces untouched (E2-c)', () => {
+  // 前端不再自带简化、有效性与越界判定（原 simplifyPolygonSafely + turf simplify + roiViolation）：
+  // 简化与「简化后是否仍合法」都在后端几何引擎里完成，changed 的结果一定通过了保存同款校验
+  const code = withoutComments(sliceBetween('async simplifySelectedFeatures() {', 'async saveDrawing()'));
+  const simplifyCall = code.indexOf('await simplifyClassificationGeometries(');
+  assert.ok(simplifyCall > 0 && simplifyCall < code.indexOf('this.draw.add('), '简化结果必须来自后端请求，且请求先于替换画布');
+  assert.doesNotMatch(code, /tolerance/, '容差用后端默认，前端不得传 tolerance');
+  // 只有 changed 才替换画布；rejected（简化后会越界或几何无效）计入跳过、原面不动；unchanged 不动
+  assert.match(
+    code,
+    /if \(!target \|\| item\?\.outcome !== 'changed'\) \{\s*if \(item\?\.outcome === 'rejected'\) skippedCount \+= 1;\s*return;\s*\}/,
+  );
+  assert.match(code, /geometry: item\.geometry,/, '替换画布的几何逐项取自后端返回');
+  assert.match(code, /properties: live\.properties,/, '原面的属性原样保留');
+  assert.doesNotMatch(code, /roi_geometry/, '越界与否由后端判定，前端不得再拿 ROI 做几何运算');
+  assert.match(code, /个面简化后会超出矿山边界或几何无效，已跳过，原面保持不变/);
+  assert.doesNotMatch(code, /几何退化/, '旧的"无法简化（几何退化）"文案已替换');
+  // 有面被跳过、或在请求期间被改动时，不再同时提示"边缘已足够平滑"
+  assert.match(
+    code,
+    /\} else if \(!skippedCount && !changedMeanwhileCount\) \{\s*this\.\$message\.info\('选中面的边缘已足够平滑'\);/,
+  );
+  assert.match(code, /if \(!live\) \{\s*changedMeanwhileCount \+= 1;\s*return;\s*\}/, '请求期间被改动的面不套用简化结果，单独计数');
+  // 只有真的改动画布才清选中、记历史
+  assert.match(code, /if \(simplifiedCount\) \{\s*this\.setSelectedDrawIds\(\[\]\);\s*this\.recordMutation\('simplify'\);/);
+  // 逐面「先 add 后 delete」并各自包在 try/catch 里：单面失败只跳过这一面，不中断整批
+  assert.match(
+    code,
+    /try \{\s*this\.draw\.add\(\{\s*type: 'Feature',\s*id: createClientFeatureId\(\),\s*properties: live\.properties,\s*geometry: item\.geometry,\s*\}\);\s*this\.draw\.delete\(target\.id\);\s*simplifiedCount \+= 1;\s*\} catch \(_\) \{\s*skippedCount \+= 1;\s*\}/,
+  );
+  assert.match(source, /title="轻度简化选中面边缘（≈1m 容差）"/, '按钮说明不变');
 });
 
 test('save 422 selects and locates the offending feature (E2-d)', () => {
@@ -508,7 +550,11 @@ test('draft export downloads the unsaved canvas instead of the saved revision (E
     'exporting 复位要过归属检查',
   );
   // 上下文被接管后 exporting 由 reloadResult 复位，否则新成果的导出按钮会一直转圈
-  assert.match(sliceBetween('async reloadResult()', 'initializeMap() {'), /this\.saving = false;\s*this\.exporting = false;/);
+  // （合并 / 简化从同步计算变成网络请求后，2026-11-24，它们的标志一并在这里复位）
+  assert.match(
+    withoutComments(sliceBetween('async reloadResult()', 'initializeMap() {')),
+    /this\.saving = false;\s*this\.exporting = false;\s*this\.merging = false;\s*this\.simplifying = false;/,
+  );
 
   const draft = sliceBetween('exportDraft(resultId) {', 'classColor(definition) {');
   assert.match(draft, /buildEditableFeatureCollection\(this\.draw\.getAll\(\)\)/, '草稿与保存提交用同一套规范化');
@@ -627,5 +673,207 @@ test('click targets are resolved by the corrected rule in both selection modes (
     modes,
     /\.\.\.MapboxDraw\.modes,\s*direct_select: createGuardedDirectSelect\(\s*MapboxDraw\.modes\.direct_select,/,
     '其余模式仍原样保留，顶点模式用带防护的工厂',
+  );
+});
+
+// ─── 2026-11-24：合法性、简化、合并全部交给后端几何引擎 ──────────────────────
+// 前端此前自带三套几何判定（turf booleanWithin 无容差判定、采样式 roiViolation、手写的有效性
+// 镜像），与后端 Shapely/GEOS 的结论对不上：真实数据上 33% 的图斑被误报越界，简化后的面要到
+// 保存才被 422 拒绝。现在保存、编辑期校验、简化、合并共用后端同一个判定函数，前端只做渲染、
+// 交互与撤销重做。下面守护两件事：前端不再自行判定几何；每个结论都来自后端。
+// 调度器本身的行为（合并请求、过期丢弃、cancel、失败静默）见 classificationEditorValidation.test.mjs。
+
+test('the editor no longer judges geometry itself (2026-11-24)', () => {
+  const code = withoutComments(source);
+  assert.doesNotMatch(code, /@turf\//, '不得再引入任何 turf 几何库');
+  assert.doesNotMatch(code, /classificationEditorGeometry/, '本地几何模块已被后端引擎取代并删除');
+  for (const name of [
+    'roiContainsGeometry', 'warnFeaturesOutsideRoi', 'roiViolation', 'restoreBoundaryVertices',
+    'simplifyPolygonSafely', 'booleanWithin', 'polygonStructureProblem', 'polygonGeometryProblems',
+  ]) {
+    assert.doesNotMatch(code, new RegExp(name), `${name} 已被后端几何引擎取代`);
+  }
+  // 逐值相等比较只用来确认「请求期间这个面没被改过」，不是几何算法
+  const compare = withoutComments(sliceBetween('function sameGeometry(left, right) {', 'function requestFailureReason('));
+  assert.match(compare, /JSON\.stringify\(left\.coordinates\) === JSON\.stringify\(right\.coordinates\)/);
+  assert.doesNotMatch(compare, /Math\.|orient|segment|intersects|within|contains/i, '不得借比较之名重写几何运算');
+
+  // 三个接口都经同一个客户端发出
+  assert.match(
+    source,
+    /import \{[^}]*simplifyClassificationGeometries,[^}]*unionClassificationGeometries,[^}]*validateClassificationGeometries,[^}]*\} from '@\/api\/classificationResults';/,
+    '编辑器必须引入后端的校验 / 简化 / 合并接口',
+  );
+});
+
+test('draw.create / draw.update queue the edited faces for backend validation (2026-11-24)', () => {
+  const handlers = withoutComments(sliceBetween('handleDrawCreate(event) {', 'queueGeometryValidation(features, action) {'));
+  // create：地类 / ID 赋值、suppressDrawEvents 守卫、历史记录全部保留，只是把本地判定换成排队送审
+  assert.match(
+    handlers,
+    /handleDrawCreate\(event\) \{\s*if \(this\.suppressDrawEvents\) return;\s*event\.features\.forEach\(\(feature\) => \{\s*this\.draw\.setFeatureProperty\(feature\.id, 'class_code', this\.activeClassCode\);\s*this\.draw\.setFeatureProperty\(feature\.id, 'feature_id', createClientFeatureId\(\)\);\s*\}\);\s*this\.recordMutation\('create'\);\s*this\.queueGeometryValidation\(event\.features, VALIDATION_ACTION_CREATE\);/,
+  );
+  assert.match(
+    handlers,
+    /handleDrawUpdate\(event\) \{\s*if \(this\.suppressDrawEvents\) return;\s*this\.recordMutation\('vertex'\);\s*this\.queueGeometryValidation\(event\?\.features, VALIDATION_ACTION_UPDATE\);/,
+  );
+  assert.doesNotMatch(handlers, /\$message|roi_geometry/, '事件处理里不弹提示、不读 ROI：越界与否要等后端的结论');
+
+  const queue = withoutComments(sliceBetween('queueGeometryValidation(features, action) {', 'async validateDrawGeometries(drawIds) {'));
+  assert.match(queue, /this\.validationScheduler\.request\(drawIds, action\);/, '只把 draw id 记入待校验集合');
+
+  // 防抖 200ms；取几何发请求与中文提示由组件注入。mapbox-gl-draw 的 draw.update 只在鼠标释放、
+  // 增删顶点时各发一次，不需要再挂鼠标事件
+  assert.match(source, /import \{ createValidationScheduler, matchVerdicts \} from '@\/utils\/classificationEditorValidation\.mjs';/);
+  assert.match(source, /const VALIDATION_DEBOUNCE_MS = 200;/);
+  assert.match(
+    withoutComments(sliceBetween('created() {', 'mounted() {')),
+    /delayMs: VALIDATION_DEBOUNCE_MS,\s*validate: \(drawIds\) => this\.validateDrawGeometries\(drawIds\),\s*onVerdicts: \(verdicts\) => this\.reportGeometryVerdicts\(verdicts\),/,
+  );
+  assert.doesNotMatch(withoutComments(sliceBetween('data() {', 'computed: {')), /validationScheduler/, '调度器不进 data()：它不需要响应式');
+  assert.doesNotMatch(withoutComments(sliceBetween('this.map.on(\'load\'', 'destroyMap() {')), /mousedown|mouseup|mousemove/, '不得另加鼠标事件');
+});
+
+test('the validation request belongs to the editing session and fails silently (2026-11-24)', () => {
+  const validate = withoutComments(sliceBetween('async validateDrawGeometries(drawIds) {', 'reportGeometryVerdicts('));
+  const awaitAt = validate.indexOf('await validateClassificationGeometries(projectId, resultId, geometries)');
+  assert.ok(awaitAt > 0, '应调用后端校验接口');
+  // 发出之前捕获会话代次与成果（与 loadRevisions / saveDrawing 同构）
+  for (const capture of ['const sessionSeq = this.reloadSeq;', 'const { projectId, resultId } = this.context || {};']) {
+    const at = validate.indexOf(capture);
+    assert.ok(at >= 0 && at < awaitAt, `必须在 await 之前捕获：${capture}`);
+  }
+  // 取不到几何的 id（期间已被删除）跳过；一个都不剩就不发请求
+  const empty = validate.indexOf('if (!ids.length) return null;');
+  assert.ok(empty > 0 && empty < awaitAt, '没有可校验的面时不发请求');
+  assert.match(validate, /if \(!geometry\) return;/);
+  assert.match(validate, /geometries\.push\(\{ type: geometry\.type, coordinates: geometry\.coordinates \}\);/, '请求体只带 type 与 coordinates');
+  // 返回之后、交付之前四项比对；任一不符即没有结论
+  const after = validate.slice(awaitAt);
+  assert.match(
+    after,
+    /if \(\s*sessionSeq !== this\.reloadSeq\s*\|\| sessionSeq === -1\s*\|\| this\.context\?\.projectId !== projectId\s*\|\| this\.context\?\.resultId !== resultId\s*\) \{\s*return null;\s*\}/,
+    '归属不符返回 null',
+  );
+  // 接口返回的是 { items } 对象，不是数组：必须经 matchVerdicts 对上号再交给调度器。
+  // 2026-11-24 的第一版把整个响应对象当成数组往下传，调度器静默丢弃，界面上一条提示都不出，
+  // 而当时的测试只数了「请求发出去了」——所以这里钉住对接方式，另由单测与浏览器夹具验证提示确实出现
+  assert.match(
+    validate,
+    /const payload = await validateClassificationGeometries\(projectId, resultId, geometries\);/,
+    '校验接口的返回值先落在 payload 上',
+  );
+  assert.match(
+    after,
+    /const items = matchVerdicts\(payload, ids\);\s*return items \? \{ ids, items \} : null;/,
+    '结论数组必须与送审的面一一对应才交付，否则视为没有结论',
+  );
+  assert.doesNotMatch(after, /items: payload|items: await|\{ ids, items: payload \}/, '不得把响应对象当成结论数组');
+  // 请求失败静默：不 catch、不提示——保存时后端仍会校验
+  assert.doesNotMatch(after, /\$message|\bcatch\b/, '请求失败不得弹提示');
+});
+
+test('backend verdicts are reported in two categories with the original wording (2026-11-24)', () => {
+  const report = withoutComments(sliceBetween('reportGeometryVerdicts({ items, contexts }) {', 'handleDrawDelete() {'));
+  assert.match(report, /if \(!item \|\| item\.ok\) return;/, '合法的面不提示');
+  assert.match(
+    report,
+    /if \(item\.code === 'OUTSIDE_ROI'\) \{\s*outsideActions\.push\(contexts\[index\]\);\s*\} else \{\s*invalidCount \+= 1;\s*\}/,
+    '越界按「下一步」计数，其余不合法项并成一类',
+  );
+  assert.match(
+    report,
+    /if \(outsideActions\.length\) \{[\s\S]*this\.\$message\.warning\(`\$\{outsideActions\.length\} 个面超出成果 ROI（矿山边界），保存时将被拒绝\$\{hint\}`\);\s*\}\s*if \(invalidCount\) \{\s*this\.\$message\.warning\(`\$\{invalidCount\} 个面几何无效（如自相交），保存时将被拒绝，请调整顶点位置`\);/,
+    '两类各有其提示，同一批里都有就各弹一条',
+  );
+  assert.match(
+    report,
+    /outsideActions\.every\(\(action\) => action === VALIDATION_ACTION_CREATE\);\s*const hint = allCreated \? '，请拖回界内或删除' : '，请调整顶点位置';/,
+    '新建的面：拖回界内或删除；改过顶点的：调整顶点位置（与改造前的文案一致）',
+  );
+});
+
+test('pending validations die with the canvas (2026-11-24)', () => {
+  const destroy = withoutComments(sliceBetween('destroyMap() {', 'fitToCurrentFeatures(manifestBounds = null) {'));
+  const cancel = destroy.indexOf('this.validationScheduler.cancel()');
+  assert.ok(cancel > 0 && cancel < destroy.indexOf('this.map.remove()'), '销毁地图时先作废待校验集合与在途响应');
+  // destroyMap 是 reloadResult 与 beforeUnmount 共用的清理点：切换成果、卸载组件都经它
+  assert.match(sliceBetween('async reloadResult()', 'initializeMap() {'), /this\.reloadSeq = \(this\.reloadSeq \|\| 0\) \+ 1\);\s*this\.destroyMap\(\);/);
+  assert.match(withoutComments(sliceBetween('beforeUnmount() {', 'async beforeRouteLeave(')), /this\.destroyMap\(\);\s*this\.reloadSeq = -1;/);
+  // 放弃全部修改把画布重置回已保存的状态：对着被丢弃的编辑做的校验同样作废，不得事后补弹提示
+  const reset = withoutComments(sliceBetween('resetDrawing() {', 'setSelectedDrawIds(drawIds) {'));
+  const resetCancel = reset.indexOf('this.validationScheduler.cancel()');
+  assert.ok(resetCancel > 0 && resetCancel < reset.indexOf('this.draw.set('), '重置画布前先作废待校验与在途的校验');
+});
+
+test('merge and simplify are backend requests guarded against re-entry and stale context (2026-11-24)', () => {
+  const cases = [
+    { method: 'mergeSelectedFeatures', flag: 'merging', request: 'await unionClassificationGeometries(', end: 'async simplifySelectedFeatures() {' },
+    { method: 'simplifySelectedFeatures', flag: 'simplifying', request: 'await simplifyClassificationGeometries(', end: 'async saveDrawing()' },
+  ];
+  for (const { method, flag, request, end } of cases) {
+    const code = withoutComments(sliceBetween(`async ${method}() {`, end));
+    const requestAt = code.indexOf(request);
+    assert.ok(requestAt > 0, `${method} 应请求后端`);
+    // 重入：在途期间再次触发直接返回
+    const entry = code.indexOf(`|| this.${flag}) return;`);
+    assert.ok(entry > 0 && entry < requestAt, `${method} 必须先拦重入`);
+    // 发出之前捕获会话代次与成果；返回后不是同一个成果就不动画布、不提示
+    const seqCapture = code.indexOf('const seq = this.reloadSeq;');
+    const resultCapture = code.slice(0, requestAt).search(/const \w+ = this\.context\?\.resultId;/);
+    assert.ok(seqCapture > 0 && seqCapture < requestAt, `${method} 必须在 await 之前捕获 reloadSeq`);
+    assert.ok(resultCapture >= 0, `${method} 必须在 await 之前捕获 resultId`);
+    const after = code.slice(requestAt);
+    const guard = after.indexOf('if (!stillOwnsState()) return;');
+    assert.ok(guard >= 0 && guard < after.indexOf('this.draw.add('), `${method}：await 之后的画布更新前必须先过 stillOwnsState 守卫`);
+    assert.match(code, /\} catch \(error\) \{\s*if \(!stillOwnsState\(\)\) return;\s*this\.\$message\.error\(/, `${method}：错误提示同样要过归属检查`);
+    const resetGuard = new RegExp(String.raw`if \(stillOwnsState\(\) \|\| this\.reloadSeq === -1\) \{\s*this\.${flag} = false;\s*\}`);
+    assert.match(code, resetGuard, `${method}：finally 复位标志前必须确认仍持有上下文`);
+    // 先 add 后 delete 的原子化写法与 suppressDrawEvents 包裹保留：add 与 delete 都必须落在包裹之内
+    const add = code.indexOf('this.draw.add(');
+    const remove = code.indexOf('this.draw.delete(');
+    const unsuppress = code.indexOf('this.suppressDrawEvents = false;', add);
+    assert.ok(add > 0 && remove > add, `${method}：先 add 后 delete`);
+    assert.ok(unsuppress > remove, `${method}：delete 也必须在 suppressDrawEvents 包裹之内`);
+    assert.match(code, /this\.suppressDrawEvents = true;\s*try \{[\s\S]*this\.draw\.add\([\s\S]*\} finally \{\s*this\.suppressDrawEvents = false;\s*\}/, `${method}：替换画布全程包在 suppressDrawEvents 里`);
+    // 请求期间画布没有冻结：被拖动、删除或被撤销 / 重做换掉的面不套用结果
+    assert.match(code, /this\.unchangedLiveFeature\(/, `${method}：套用结果前必须确认那个面没被改过`);
+    assert.match(source, new RegExp(String.raw`:loading="${flag}"\s*:disabled="[^"]*\|\| ${flag}"`), `${method}：请求期间按钮转圈并禁用`);
+  }
+  // 合并：同地类的前提对着画布现状再核一次，地类也取现状
+  const merge = withoutComments(sliceBetween('async mergeSelectedFeatures() {', 'async simplifySelectedFeatures() {'));
+  assert.match(merge, /const liveClassCodes = new Set\(live\.map\(\(feature\) => feature\.properties\?\.class_code\)\);\s*if \(liveClassCodes\.size > 1\) \{/);
+  assert.match(merge, /const classCode = live\[0\]\.properties\?\.class_code \?\? this\.activeClassCode;/);
+  assert.match(merge, /this\.recordMutation\('merge'\);\s*this\.\$message\.success\(`已合并为 1 个面（原 \$\{selected\.length\} 个）`\);/);
+  // 切换成果时一并复位（在途旧请求的 finally 不清理新上下文的标志）
+  assert.match(
+    withoutComments(sliceBetween('async reloadResult()', 'initializeMap() {')),
+    /this\.saving = false;\s*this\.exporting = false;\s*this\.merging = false;\s*this\.simplifying = false;/,
+  );
+});
+
+test('the three geometry endpoints post bare geometries under the result URL', () => {
+  for (const [name, suffix] of [
+    ['validateClassificationGeometries', '/geometry/validate'],
+    ['simplifyClassificationGeometries', '/geometry/simplify'],
+    ['unionClassificationGeometries', '/geometry/union'],
+  ]) {
+    const start = apiSource.indexOf(`export async function ${name}(`);
+    assert.ok(start > 0, `${name} 应存在`);
+    const body = withoutComments(apiSource.slice(start, apiSource.indexOf('\n}', start) + 2));
+    assert.match(body, new RegExp(`resultUrl\\(projectId, resultId, '${suffix}'\\)`), `${name} 必须挂在成果 URL 下`);
+    assert.match(
+      body,
+      /classificationClient\.post\(\s*resultUrl\([^)]*\),\s*geometriesPayload\(geometries\),\s*\{\s*timeout:\s*\d+\s*\},?\s*\);\s*return response\.data\.data;/,
+      `${name}：请求体只能是 geometries 数组，必须带超时（请求挂住不能让按钮一直转圈），返回 data`,
+    );
+    assert.doesNotMatch(body, /tolerance|base_revision_no|properties/, `${name}：请求里不得夹带容差、版本号或属性`);
+  }
+  const apiCode = withoutComments(apiSource);
+  assert.doesNotMatch(apiCode, /tolerance/, '前端不得传 tolerance：容差由后端决定');
+  assert.match(
+    apiCode,
+    /geometries\.map\(\(geometry\) => \(\{ type: geometry\?\.type, coordinates: geometry\?\.coordinates \}\)\)/,
+    '每个几何只带 type 与 coordinates（后端多一个键就 422）',
   );
 });

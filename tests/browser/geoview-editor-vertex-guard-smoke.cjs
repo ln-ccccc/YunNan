@@ -14,6 +14,9 @@
 // 引用。以前未完成就保存会报"class_code 必须为 0 到 5 的整数"；Ctrl+Z 把草稿变成幽灵（之后点击没反应、
 // 回车草稿凭空消失）；Delete/Backspace 直接丢掉整个草稿。库按"渲染在最上层的点要素"取按下目标，
 // 相邻顶点在屏幕上只隔几像素时点顶点会多出一个顶点。这些都只有真实浏览器能验证。
+// 第六个（2026-11-24）：面的合法性、简化、合并改走后端几何接口（与保存共用同一个判定函数），前端画完 /
+// 改完一个面会发 geometry/validate。脚本末尾核对：每次新建面、删顶点、加顶点之后确实发了校验请求，
+// 请求体只带几何本身——否则"合法删除不应有任何提示"可能是校验请求根本没发出去而假通过。
 //
 // HTTP fixture 只在测试浏览器内拦截：不登录真实账号、不写入真实项目、不访问真实后端。
 // 从仓库根目录运行（PowerShell；路径换成自己的独立安装/输出目录）：
@@ -46,11 +49,44 @@ const initialFeatureCollection = {
 };
 const roiGeometry = { type: 'Polygon', coordinates: [[[102.68, 25.03], [102.74, 25.03], [102.74, 25.09], [102.68, 25.09], [102.68, 25.03]]] };
 
+// ── 编辑期几何接口的 fixture（2026-11-24）─────────────────────────────────────
+// 面的合法性（越界 / 自相交）、简化、合并都在后端几何引擎里做，与保存共用同一个判定函数。前端
+// 画完、改完一个面会发 geometry/validate；合并、消除锯齿分别发 geometry/union、geometry/simplify。
+// fixture 里不实现任何几何算法：
+//  · validate 按事先知道的结论回答：这个夹具的地图定位在林地大图斑上（四边各留 64px），矿山边界
+//    比它大 3 倍，初始视野下整个画布都在界内；脚本里画的也都是简单的三角形 / 矩形 / 锯齿面。
+//    所以固定返回「全部合法」
+//  · union / simplify 返回预先写好的固定几何，不由输入算出。位置取无底图提示上方那两个面所在的
+//    地方（待合并的 p1 / p2 就画在那里）。现有检查只核对合并按钮的可用与置灰、不点「合并选中」
+//    和「消除锯齿」，这两条应答目前没有调用方；补点按钮的用例时直接可用
+const GEOMETRY_UNION_FIXTURE = {
+  type: 'Polygon',
+  coordinates: [[[102.709, 25.05], [102.721, 25.05], [102.721, 25.055], [102.709, 25.055], [102.709, 25.05]]],
+};
+const GEOMETRY_SIMPLIFY_FIXTURE = {
+  type: 'Polygon',
+  coordinates: [[[102.709, 25.05], [102.721, 25.05], [102.721, 25.054], [102.715, 25.055], [102.709, 25.054], [102.709, 25.05]]],
+};
+// 与后端应答同一形状的简化容差（度，≈1m）。前端不传 tolerance，由后端决定
+const GEOMETRY_SIMPLIFY_TOLERANCE = 0.00001;
+
+// 几何接口的请求体。解析不了时记下 null，由脚本末尾的形状核对报出来
+function geometryBody(request) {
+  try {
+    return JSON.parse(request.postData() || '{}');
+  } catch (_) {
+    return null;
+  }
+}
+
 async function main() {
   await fs.mkdir(out, { recursive: true });
   const checks = [];
   const missing = [];
   const pageErrors = [];
+  // 编辑期几何接口收到的请求体，按接口分开记（2026-11-24）
+  const geometryCalls = { validate: [], union: [], simplify: [] };
+  let validateVerdictOverride = null; // 下一次校验请求固定返回的结论（见 validate 分支）
   // 最后一页才把夹具成果标成"已被取代"：告警会把地图往下推约 85px，
   // 前面场景的落点都是按没有告警的版面算的
   let superseded = false;
@@ -84,6 +120,28 @@ async function main() {
       // 后端对 ROI 外的要素返回 422，details 带 feature_index（提交 FC 的 0 起下标）
       await route.fulfill({ status: 422, headers, json: { success: false, code: 1, msg: '分类成果保存数据不合法', data: { details: { field: 'geometry', reason: '几何必须完全位于成果 ROI 内', feature_index: 1 } } } });
       return;
+    } else if (request.method() === 'POST' && endpoint.endsWith(`/classification-results/${RESULT_ID}/geometry/validate`)) {
+      // 每个入参几何一条结论，与入参同序；这个夹具里面全在界内、全合法
+      const body = geometryBody(request);
+      geometryCalls.validate.push(body);
+      data = { items: (body?.geometries || []).map(() => ({ ok: true })) };
+      // 「越界结论 → 界面提示」这一跳的夹具：测试预先放一个结论，下一次校验就照它回（只生效一次）。
+      // fixture 不做任何几何判定，这里检验的只是「后端回了越界，界面是否真的提示」
+      if (validateVerdictOverride) {
+        data.items = data.items.map(() => validateVerdictOverride);
+        validateVerdictOverride = null;
+      }
+    } else if (request.method() === 'POST' && endpoint.endsWith(`/classification-results/${RESULT_ID}/geometry/union`)) {
+      geometryCalls.union.push(geometryBody(request));
+      data = { geometry: GEOMETRY_UNION_FIXTURE };
+    } else if (request.method() === 'POST' && endpoint.endsWith(`/classification-results/${RESULT_ID}/geometry/simplify`)) {
+      // 与后端同一形状：tolerance + 与入参同序的 items。每个入参都回一个 changed 的固定几何
+      const body = geometryBody(request);
+      geometryCalls.simplify.push(body);
+      data = {
+        tolerance: GEOMETRY_SIMPLIFY_TOLERANCE,
+        items: (body?.geometries || []).map(() => ({ outcome: 'changed', geometry: GEOMETRY_SIMPLIFY_FIXTURE })),
+      };
     } else { missing.push(endpoint); await route.fulfill({ status: 404, headers, json: { success: false, code: 1, msg: '未提供测试 fixture' } }); return; }
     await route.fulfill({ headers, json: { code: 0, success: true, data, count: Array.isArray(data) ? data.length : 0 } });
   });
@@ -411,6 +469,34 @@ async function main() {
     assert.equal(await featureCount(), cleanCount, '取消的草稿不得留下要素');
     checks.push('Esc 取消绘制');
 
+    // 编辑完成后的权威校验（2026-11-24 起走后端几何引擎）：后端回「越界」，画面一结束就应提示，不等保存。
+    // 这里检验的是「响应 → 提示」最后一跳：请求发出去、后端回了结论，界面必须真的弹出来。
+    // 2026-11-24 的第一版就是把 { items } 响应对象当成数组交给调度器、被静默丢弃，请求照发而提示全无
+    await waitToastsCleared();
+    validateVerdictOverride = { ok: false, code: 'OUTSIDE_ROI', field: 'geometry', reason: '几何必须完全位于成果 ROI 内', outside_area_m2: 3.2, outside_distance_m: 1.1 };
+    await drawPolygon(squareAt(s));
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('.el-message__content')].some((node) => node.textContent.includes('超出成果 ROI')),
+      null, { timeout: 4000 },
+    ).catch(() => {});
+    messages = await toasts();
+    assert.ok(
+      messages.some((text) => text.includes('1 个面超出成果 ROI（矿山边界），保存时将被拒绝，请拖回界内或删除')),
+      `后端回越界时，画面后应立即提示，实际：${JSON.stringify(messages)}`,
+    );
+    await shot('07-edit-time-outside-toast');
+    await undo();
+    assert.equal(await featureCount(), cleanCount, '撤回越界的面后图斑数应复原');
+    // 合法的面不提示：再画一个（接口照常回合法），不应有任何合法性提示
+    await waitToastsCleared();
+    await drawPolygon(squareAt(s));
+    await page.waitForTimeout(700);
+    messages = await toasts();
+    assert.ok(!messages.some((text) => text.includes('超出成果 ROI') || text.includes('几何无效')), `合法的面不应出现合法性提示，实际：${JSON.stringify(messages)}`);
+    await undo();
+    assert.equal(await featureCount(), cleanCount);
+    checks.push('编辑完成后的权威校验：后端回越界时画面后立即提示，合法时不提示');
+
     // 未完成绘制时保存 / 导出草稿：明确拦截并指引，不发请求、不动草稿
     await drawPolygon(squareAt(s));
     assert.equal(await featureCount(), cleanCount + 1);
@@ -611,6 +697,23 @@ async function main() {
     }
 
     assert.deepEqual(savePosts, [], `本轮不得发出任何保存请求：${savePosts.join(' | ')}`);
+
+    // ---- 编辑完成后确实把面送后端校验（2026-11-24）----
+    // 前端不再自己判定几何，合法性来自 geometry/validate。上面一共新建了 9 个面（三角面、四边形、
+    // 两个待合并面、回车完成的两个、撤销过又画完的那个、锯齿面、贴边小面），删顶点 1 次、加顶点 1 次；
+    // 每次之后都应发出一次校验请求——防抖只把 200ms 内的连续操作并成一次，这些操作之间都隔着几百毫秒。
+    // 请求发不出去时编辑器是静默的（约定如此），"合法删除不应有任何提示"会因此假通过，所以在这里核对
+    const validateCalls = geometryCalls.validate;
+    assert.ok(validateCalls.length >= 11, `新建面、删顶点、加顶点之后应各发出一次几何校验请求，实际 ${validateCalls.length} 次`);
+    for (const [index, body] of validateCalls.entries()) {
+      assert.deepEqual(Object.keys(body || {}), ['geometries'], `第 ${index + 1} 次校验请求体只能有 geometries`);
+      assert.ok(Array.isArray(body.geometries) && body.geometries.length >= 1, `第 ${index + 1} 次校验请求至少带一个几何`);
+      for (const geometry of body.geometries) {
+        assert.deepEqual(Object.keys(geometry).sort(), ['coordinates', 'type'], '每个几何只带 type 与 coordinates（后端多一个键就 422）');
+        assert.equal(geometry.type, 'Polygon');
+        assert.deepEqual(geometry.coordinates[0][0], geometry.coordinates[0].at(-1), '送审的是闭合的环');
+      }
+    }
 
     // ---- 被取代的成果要明说，且告警不得顶掉工具栏（v-if / v-else 链） ----
     // 概览、台账、变化矩阵、溯源只认"同矿山同年 id 最大"的那条成果；生产 3036 条可编辑成果里
