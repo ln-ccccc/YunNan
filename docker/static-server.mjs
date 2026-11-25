@@ -25,6 +25,40 @@ const types = new Map([
   ['.ico', 'image/x-icon'],
 ]);
 
+// GeoView 和 Miner 的路由页面是按需加载的代码块（GeoView：/js/<编号>.<哈希>.js，Miner：/assets/<名字>-<哈希>.js），
+// 文件名带内容哈希，发一次版本就换一批。上线或回滚之后，还开着旧页面的浏览器切到没打开过的页面时，会来要旧名字的代码块。
+// 此前它拿到的是回落出来的 index.html——一段 HTML 被当成脚本执行，报语法错误，页面卡住或白屏。
+// 现在回一小段脚本：问用户要不要刷新，刷新之后拿到的就是正在运行的那个版本。
+const staleScript = `(() => {
+  const now = Date.now();
+  let last;
+  try {
+    last = Number(sessionStorage.getItem('yunnan-stale-script-at') || 0);
+    sessionStorage.setItem('yunnan-stale-script-at', String(now));
+  } catch (error) {
+    return; // 用不了会话存储就防不了反复刷新，什么都不做
+  }
+  // 30 秒内只问一次：刷新之后新页面要的还是不存在的代码块（构建本身有问题），不能一遍一遍地问
+  if (now - last < 30000) return;
+  if (window.confirm('系统已更新到新版本，当前页面需要刷新后才能继续使用。\\n点“确定”立即刷新，尚未保存的内容会丢失；点“取消”留在本页，请先保存，再手动刷新。')) {
+    window.location.reload();
+  }
+})();`;
+
+// 只认两个站点放构建产物的目录；其它缺失文件照旧回落
+function isStaleScript(request, requestPath) {
+  return (request.method === 'GET' || request.method === 'HEAD') && /^\/(js|assets)\/[^/]+\.js$/.test(requestPath);
+}
+
+function sendStaleScript(request, response, requestPath) {
+  console.warn(`[static-server] 页面请求了已不存在的代码块，已回复刷新提示：${JSON.stringify(requestPath)}`);
+  response.writeHead(200, {
+    'content-type': 'text/javascript; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  response.end(request.method === 'HEAD' ? undefined : staleScript);
+}
+
 function sendFile(response, filePath) {
   fs.readFile(filePath, (error, data) => {
     if (error) {
@@ -90,6 +124,10 @@ http.createServer((request, response) => {
       filePath = path.join(filePath, 'index.html');
     }
     if (!fs.existsSync(filePath)) {
+      if (isStaleScript(request, requestPath)) {
+        sendStaleScript(request, response, requestPath);
+        return;
+      }
       filePath = path.join(root, fallback);
     }
     sendFile(response, filePath);
