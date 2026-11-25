@@ -486,6 +486,23 @@ class ManifestFlowTest(TempDirTestCase):
         self.assertEqual(len("weights of " + self.WEIGHTS), weights["bytes"])
         self.assertEqual("init", manifest["commit_subject"])
 
+    def test_an_unusable_asset_directory_is_reported_not_raised(self):
+        """资产目录被指到一个只剩空占位目录的位置：核对报出这一项并以非零退出，不带调用栈崩掉。"""
+        code, output = self.flow()
+        self.assertEqual(0, code, output)
+        broken = self.root / "broken-assets"
+        for relative, kind, _ in release_tool.ASSETS:
+            if kind == "file":
+                write(broken / relative, "weights")
+            elif relative.endswith("dinov3_swinV1"):
+                (broken / relative).mkdir(parents=True)      # 只有这一个目录是空的
+            else:
+                write(broken / relative / "part.bin", "weights")
+        code, output = self.tool(release_tool.cmd_check, release=str(self.release), asset_root=str(broken))
+        self.assertEqual(1, code, output)
+        self.assertIn("不符: 运行时资产目录读不了", output)
+        self.assertIn("空目录", output)
+
     def test_tampered_code_is_caught(self):
         self.flow()
         write(self.release / "backend" / "app.py", "print('tampered')\n")

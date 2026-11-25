@@ -384,7 +384,11 @@ def release_problems(release, asset_root):
         problems.extend([problem for problem in [tree_problem(release, relative, record)] if problem])
     problems.extend(node_modules_problems(release / "frontend"))
     problems.extend(placeholder_problems(release))
-    problems.extend(asset_problems(release, asset_root))
+    try:
+        problems.extend(asset_problems(release, asset_root))
+    except (OSError, ValueError) as error:
+        # 资产目录被指到了别处（例如那个位置上只有空的占位目录）：作为一项不符报出来，不带调用栈崩掉
+        problems.append("运行时资产目录读不了（看的是 %s）：%s" % (asset_root, error))
     return problems
 
 
