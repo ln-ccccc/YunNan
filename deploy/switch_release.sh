@@ -112,7 +112,7 @@ tool() { python "$NATIVE_TOOL" "$@"; }
 json_get() { python -c 'import json, sys; value = json.load(sys.stdin).get(sys.argv[1]); print("" if value is None else value)' "$1"; }
 quoted() { python -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"; }
 
-STATE_FILE=""         # 与发布目录放在一起：/<发布根>/.switch-state.json
+STATE_FILE=""         # 与发布目录放在一起：/<发布根>/.switch-state.json（见 state_file）
 PINNED=0              # 写过 .env 之后置 1：此后任何失败都要报出恢复命令
 TARGET_NAME=""        # 写过 .env 之后它指向哪里
 RESTORE_TARGET=""     # 出问题时应回到的发布目录；空串表示解除钉住、回到开发树
@@ -207,6 +207,12 @@ run_stages() {
   switch_stage "Miner 适配层与界面" miner-api miner-web || fail "Miner 阶段没有在 $TIMEOUT 秒内健康"
 }
 
+# 切换状态文件与发布目录放在一起（仓库之外）。生产（项目名 yunnan）用 .switch-state.json；
+# 别的栈（例如演练）带自己的项目名，互不干扰——否则演练留下的记录会让生产的 --rollback 回错版本
+state_file() {
+  if [ "$PROJECT" = yunnan ]; then echo "$1/.switch-state.json"; else echo "$1/.switch-state.$PROJECT.json"; fi
+}
+
 # 这次切换之前栈在哪一份发布目录上：先看 .env 钉住的，再看状态文件记的；都不是发布目录就输出空（开发树）
 running_release() {
   local candidate
@@ -228,7 +234,7 @@ restore_pin() {
 switch_to() {
   local release="$1" short left="" pinned_before old_sha
   [ -f "$release/RELEASE.json" ] || { echo "不是发布目录（没有 RELEASE.json）：$release" >&2; exit 2; }
-  STATE_FILE="$(dirname "$release")/.switch-state.json"
+  STATE_FILE="$(state_file "$(dirname "$release")")"
   TARGET_NAME="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["name"])' "$release/RELEASE.json")"
   short="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["commit_short"])' "$release/RELEASE.json")"
 
@@ -296,7 +302,7 @@ switch_to() {
 # 解除钉住、回到开发树。参数：这次要离开的发布目录（状态文件从它那里推断），没有就给空串
 unpin_and_up() {
   local leaving="${1:-}"
-  if [ -n "$leaving" ]; then STATE_FILE="$(dirname "$leaving")/.switch-state.json"; fi
+  if [ -n "$leaving" ]; then STATE_FILE="$(state_file "$(dirname "$leaving")")"; fi
   echo "[1/4] 查进行中的任务"
   check_jobs || { echo "有任务在跑或查不到任务数，什么都没有动。" >&2; exit 1; }
   echo "[2/4] 解除钉住（$PIN_FILE 只去掉那两行）"
@@ -330,14 +336,13 @@ fi
 pinned_root="$(tool pinned "$PIN_FILE" YUNNAN_SOURCE_ROOT | json_get YUNNAN_SOURCE_ROOT)"
 [ -n "$pinned_root" ] || {
   echo "当前没有钉住任何发布目录，没有可回滚的切换。要切到某一份请直接给出：deploy/switch_release.sh --rollback <发布目录>" >&2; exit 2; }
-STATE_FILE="$(dirname "$(native "$pinned_root")")/.switch-state.json"
-attempt="$(state_get last_attempt)"
+STATE_FILE="$(state_file "$(dirname "$(native "$pinned_root")")")"
 target=""
 case "$(state_get last_attempt_status)" in
   succeeded)
     target="$(state_get previous)"      # 上一次切换成功 → 回到它之前的那一份
     if [ -z "$target" ]; then
-      unpin_and_up "$attempt"
+      unpin_and_up "$pinned_root"       # 它之前没有别的发布目录（首次上线）→ 解除钉住、回到开发树
     else
       echo "回滚到：$target"
       switch_to "$target"

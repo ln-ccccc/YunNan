@@ -19,8 +19,8 @@ setup() {
   unset PYTHONUTF8 PYTHONIOENCODING
   eval "$(sed -n '/^set -Eeuo pipefail/,/^}/p' "$1/switch_release.sh")"
   eval "$(sed -n -e '/^tool() /p' -e '/^json_get() /p' -e '/^quoted() /p' -e '/^state_get() /p' \
-    -e '/^state_update() {/,/^}/p' -e '/^running_release() {/,/^}/p' -e '/^fail() {/,/^}/p' "$1/switch_release.sh")"
-  for name in tool json_get quoted state_get state_update running_release fail; do
+    -e '/^state_update() {/,/^}/p' -e '/^running_release() {/,/^}/p' -e '/^fail() {/,/^}/p' -e '/^state_file() {/,/^}/p' "$1/switch_release.sh")"
+  for name in tool json_get quoted state_get state_update running_release fail state_file; do
     [ "$(type -t "$name")" = function ] || { echo "脚本里找不到函数 $name（改名了？请同步本测试）" >&2; exit 2; }
   done
   NATIVE_TOOL="$(native "$1/release_tool.py")"
@@ -76,6 +76,13 @@ echo '{}' > "$RELEASES/候选-20261125T000000Z/RELEASE.json"
 check $? "两份都有效时取 .env 钉住的那一份"
 [ "$(running_release "" "$RELEASES/基线-20261124T191117Z")" = "$RELEASES/基线-20261124T191117Z" ]; check $? ".env 没钉住时取状态文件记的那一份"
 [ -z "$(running_release "" "")" ]; check $? "都没有就是空串（开发树）"
+
+echo "5. 状态文件按项目名分开：演练的记录不会让生产的 --rollback 回错版本"
+PROJECT=yunnan; production="$(state_file "$RELEASES")"
+PROJECT=yunnan-rehearsal; rehearsal="$(state_file "$RELEASES")"
+PROJECT=yunnan
+[ "$production" = "$RELEASES/.switch-state.json" ]; check $? "生产沿用 .switch-state.json（得到：$(basename "$production")）"
+[ "$rehearsal" = "$RELEASES/.switch-state.yunnan-rehearsal.json" ]; check $? "别的栈带自己的项目名（得到：$(basename "$rehearsal")）"
 
 echo
 if [ "$failures" -eq 0 ]; then echo "全部通过"; else echo "有 $failures 项没有通过"; fi
