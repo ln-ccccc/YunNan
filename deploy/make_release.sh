@@ -87,7 +87,6 @@ for key in APP_IMAGE INFERENCE_IMAGE MYSQL_IMAGE; do
     [ -n "$value" ] && export "$key=$value"
   fi
 done
-echo "[3/4] 记账"
 python "$NATIVE_TOOL" manifest "$STAGING" --commit "$COMMIT" --repo "$NATIVE_REPO" --data-dir "$DATA_DIR" --name "$NAME" \
   --asset-root "$ASSET_ROOT" --asset-cache "$RELEASES/.asset-fingerprints.json"
 

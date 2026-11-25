@@ -54,6 +54,9 @@ __pycache__/
 
 # 本地会话数据与临时探测/截图脚本（永不入库）
 .zcode/
+# .claude/ 里是本机的调试脚本与会话设置，其中有用到管理员口令的；test-results/ 是浏览器测试的运行结果
+.claude/
+test-results/
 tmp/
 
 # Local business samples and generated index workbooks in the migrated Miner

@@ -15,6 +15,7 @@
 #   --rollback-target <目录>  此前没有切换过（.env 还没有钉住任何发布目录）时，出问题或回滚应回到的那一份。
 #                           生产第一次切换用它指向上线前的那一份；不给的话出问题只能解除钉住、回到开发树
 #   --backend-url <地址>   核对用的后端地址，另有 --frontend-url、--miner-api-url、--miner-web-url
+#   --hash-assets          切完的核对里把运行时资产逐个重算 SHA256（读 10GB，多几分钟）；默认只比大小和文件数
 #
 # 顺序：核对发布目录 → 用目标目录渲染配置并对账 → 查进行中的任务 → 写 .env →
 #       后端与 worker → GeoView → Miner 适配层与界面 → 核对运行中的栈。
@@ -84,6 +85,7 @@ while [ $# -gt 0 ]; do
     --allow-running-jobs) ALLOW_JOBS=1; shift ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --backend-url|--frontend-url|--miner-api-url|--miner-web-url) VERIFY_ARGS+=("$1" "$2"); shift 2 ;;
+    --hash-assets) VERIFY_ARGS+=(--hash-assets); shift ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "未知选项：$1" >&2; usage >&2; exit 2 ;;
     *) [ -z "$RELEASE" ] || { echo "只能给一个发布目录" >&2; exit 2; }; RELEASE="$(absolute "$1")"; shift ;;
