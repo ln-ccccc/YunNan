@@ -18,7 +18,7 @@ setup() {
   local name
   unset PYTHONUTF8 PYTHONIOENCODING
   eval "$(sed -n '/^set -Eeuo pipefail/,/^}/p' "$1/switch_release.sh")"
-  eval "$(sed -n -e '/^tool() /p' -e '/^json_get() /p' -e '/^quoted() /p' -e '/^state_get() /p' \
+  eval "$(sed -n -e '/^tool() /p' -e '/^json_get() /p' -e '/^quoted() {/,/^}/p' -e '/^state_get() /p' \
     -e '/^state_update() {/,/^}/p' -e '/^running_release() {/,/^}/p' -e '/^fail() {/,/^}/p' -e '/^state_file() {/,/^}/p' "$1/switch_release.sh")"
   for name in tool json_get quoted state_get state_update running_release fail state_file; do
     [ "$(type -t "$name")" = function ] || { echo "脚本里找不到函数 $name（改名了？请同步本测试）" >&2; exit 2; }
@@ -51,7 +51,9 @@ state_update "current=$(quoted "$RELEASES/候选-20261125T000000Z")" "previous=$
 [ "$(state_get previous)" = "$RELEASES/基线-20261124T191117Z" ]; check $? "previous 是它之前的那一份"
 [ "$(state_get restore_to)" = "$RELEASES/基线-20261124T191117Z" ]; check $? "restore_to 是出事时该回到的那一份"
 state_update "current=null" "previous=$(quoted "")"
-[ -z "$(state_get current)" ] && [ -z "$(state_get previous)" ]; check $? "空值记成 null，读回来是空串"
+grep -q '"previous": null' "$STATE_FILE" && grep -q '"current": null' "$STATE_FILE"
+check $? "空值记成 null（不是空字符串），读回来是空串"
+[ -z "$(state_get current)" ] && [ -z "$(state_get previous)" ]; check $? "空值读回来是空串"
 
 echo "3. 写过 .env 之后失败：横幅报出现在指向哪里，恢复命令里的目录是一份真实的发布目录"
 # fail 只在主 shell 里打印（管道和命令替换里的失败交给外层统一报），所以放到一个独立的 bash 进程里跑

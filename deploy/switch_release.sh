@@ -110,7 +110,10 @@ STARTED="$SECONDS"
 tool() { python "$NATIVE_TOOL" "$@"; }
 # 取 JSON 输出的某个键；没有就是空串
 json_get() { python -c 'import json, sys; value = json.load(sys.stdin).get(sys.argv[1]); print("" if value is None else value)' "$1"; }
-quoted() { python -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"; }
+# 字符串转成 JSON 值；空串转成 null（不是空字符串的 JSON）
+quoted() {
+  if [ -n "$1" ]; then python -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"; else printf 'null\n'; fi
+}
 
 STATE_FILE=""         # 与发布目录放在一起：/<发布根>/.switch-state.json（见 state_file）
 PINNED=0              # 写过 .env 之后置 1：此后任何失败都要报出恢复命令
@@ -202,9 +205,9 @@ run_stages() {
   if [ "$WITH_MYSQL" = 1 ] && ! docker inspect "$PROJECT-mysql" >/dev/null 2>&1; then
     switch_stage "创建数据库" mysql || fail "数据库没有起来"
   fi
-  switch_stage "后端与 worker" backend ${WORKERS[@]+"${WORKERS[@]}"} || fail "后端阶段没有在 $TIMEOUT 秒内健康"
-  switch_stage "GeoView" frontend || fail "GeoView 阶段没有在 $TIMEOUT 秒内健康（冷构建要四五分钟，可以加大 --timeout）"
-  switch_stage "Miner 适配层与界面" miner-api miner-web || fail "Miner 阶段没有在 $TIMEOUT 秒内健康"
+  switch_stage "后端与 worker" backend ${WORKERS[@]+"${WORKERS[@]}"} || fail "后端阶段没有健康（容器退出了，或等了 $TIMEOUT 秒；见上面的容器状态与日志）"
+  switch_stage "GeoView" frontend || fail "GeoView 阶段没有健康（容器退出了，或等了 $TIMEOUT 秒；冷构建要四五分钟，可以加大 --timeout）"
+  switch_stage "Miner 适配层与界面" miner-api miner-web || fail "Miner 阶段没有健康（容器退出了，或等了 $TIMEOUT 秒；见上面的容器状态与日志）"
 }
 
 # 切换状态文件与发布目录放在一起（仓库之外）。生产（项目名 yunnan）用 .switch-state.json；
