@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import urllib.error
@@ -145,8 +146,22 @@ HTTP_TIMEOUT = 10
 
 # ---------- 通用 ----------
 
-def run(arguments, stdin=None):
-    return subprocess.run(arguments, input=stdin, capture_output=True)
+DOCKER = shlex.split(os.environ.get("RELEASE_TOOL_DOCKER", "docker"))   # 测试里换成假的 docker
+EXECUTE_TIMEOUT = 300          # 一次 docker 调用的上限（秒）
+ASSET_HASH_TIMEOUT = 3600      # 容器内重算运行时资产的 SHA256 要读 10GB，单独放宽
+
+
+def docker(*arguments, stdin=None, timeout=EXECUTE_TIMEOUT):
+    """调 docker。默认有上限：切换脚本靠它查状态、取指纹，不能被一个挂住的调用拖死。"""
+    return run(DOCKER + list(arguments), stdin=stdin, timeout=timeout)
+
+
+def run(arguments, stdin=None, timeout=EXECUTE_TIMEOUT):
+    try:
+        return subprocess.run(arguments, input=stdin, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as expired:
+        finished = subprocess.CompletedProcess(arguments, 124, expired.stdout or b"", expired.stderr or b"")
+        return finished
 
 
 def text(process):
@@ -517,7 +532,7 @@ def cmd_manifest(args):
     images = {}
     for key, variable, default in IMAGES:
         reference = os.environ.get(variable, default)
-        process = run(["docker", "image", "inspect", reference, "--format", "{{.Id}}"])
+        process = docker("image", "inspect", reference, "--format", "{{.Id}}")
         images[key] = {"reference": reference, "id": text(process) if process.returncode == 0 else None}
     data_files = {}
     for relative in DATA_FILES:
@@ -625,6 +640,70 @@ def cmd_pin(args):
     return 0
 
 
+def cmd_unpin(args):
+    """把版本从环境文件里拿掉：只删那两个键所在的行，其余字节一律不动。回到"没钉住"的状态。"""
+    raw = open(args.env_file, "rb").read()
+    output, removed = [], []
+    for line in raw.splitlines(keepends=True):
+        match = re.match(rb"[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=", line)
+        if match and match.group(1).decode("ascii") in PIN_KEYS:
+            removed.append(match.group(1).decode("ascii"))
+            continue
+        output.append(line)
+    if removed:
+        temporary = args.env_file + ".pin-tmp"
+        with open(temporary, "wb") as handle:
+            handle.write(b"".join(output))
+        os.replace(temporary, args.env_file)
+    print(json.dumps({"removed": removed}))
+    return 0
+
+
+JOBS_SQL = ("SELECT (SELECT COUNT(*) FROM inference_jobs WHERE status IN ('queued', 'running')), "
+            "(SELECT COUNT(*) FROM project_spatial_job WHERE status IN ('pending', 'queued', 'running'));")
+
+
+def cmd_jobs(args):
+    """排队或运行中的推理 / 切片任务数。查询限时；查不到就按"不能切"处理（返回 2），有任务返回 1。
+
+    口令不出数据库容器：客户端从容器的环境变量里取，SQL 走标准输入。"""
+    command = DOCKER + ["exec", "-i", "%s-mysql" % args.project, "sh", "-c",
+                        'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -u"$MYSQL_USER" -N -B "$MYSQL_DATABASE"']
+    try:
+        process = subprocess.run(command, input=JOBS_SQL.encode("utf-8"), capture_output=True, timeout=args.timeout)
+    except subprocess.TimeoutExpired:
+        process = subprocess.CompletedProcess(command, 124, b"", b"timeout")
+    counts = text(process).split()
+    if process.returncode != 0 or len(counts) != 2 or not all(item.isdigit() for item in counts):
+        print("查不到进行中的任务数（%s），不敢切。确认没有任务在跑可用 --allow-running-jobs。" % (
+            "查询超时" if process.returncode == 124 else "数据库返回了意料之外的结果"))
+        return 2
+    inference, spatial = int(counts[0]), int(counts[1])
+    print(json.dumps({"inference": inference, "spatial": spatial}))
+    if inference or spatial:
+        print("有任务在跑（推理 %d 个，切片 %d 个），现在切换会中断它们。等它们结束再切；"
+              "确认可以中断（例如残留的僵尸任务）用 --allow-running-jobs。" % (inference, spatial))
+        return 1
+    return 0
+
+
+def cmd_state(args):
+    """切换状态：{current, previous, last_attempt, last_attempt_status, updated_at}。
+    --rollback 据此决定回到哪一份：上一次切换成功 → 回 previous；失败或没切完 → 回 current。"""
+    path = Path(args.path)
+    state = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if args.action == "show":
+        print(json.dumps(state, ensure_ascii=False))
+        return 0
+    state.update(json.loads(args.patch))
+    state["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+    print(json.dumps(state, ensure_ascii=False))
+    return 0
+
+
 def cmd_rehearsal_config(args):
     source = (Path(args.release) / "config.yaml").read_bytes()
     ports = {"backend-port": args.backend_port, "frontend-port": args.frontend_port,
@@ -670,7 +749,7 @@ def cmd_render_check(args):
             if bool(volume.get("read_only")) != read_only:
                 problems.append("%s 的 %s 读写属性变了（应为%s）" % (service, target, "只读" if read_only else "可写"))
         container = config["services"][service].get("container_name")
-        process = run(["docker", "inspect", container])
+        process = docker("inspect", container)
         if process.returncode != 0:
             continue   # 这个容器还不存在（首次上线），没有可比的现有挂载
         existing = {mount["Destination"]: mount for mount in json.loads(text(process))[0].get("Mounts", [])}
@@ -755,7 +834,7 @@ def cmd_verify(args):
             print("[跳过] %s（--skip）" % service)
             continue
         container = "%s-%s" % (args.project, service)
-        process = run(["docker", "inspect", container])
+        process = docker("inspect", container)
         if process.returncode != 0:
             record(False, service, "容器 %s 不存在" % container)
             continue
@@ -783,7 +862,7 @@ def cmd_verify(args):
 
         relatives = [relative for _, relative, _ in mounts
                      if relative in manifest["trees"] and not (args.config_override and relative == "config.yaml")]
-        process = run(["docker", "exec", "-i", container, "python", "-"] + exclude_arguments + ["/app"] + relatives,
+        process = docker("exec", "-i", container, "python", "-", *exclude_arguments, "/app", *relatives,
                       stdin=fingerprint_script)
         if process.returncode != 0:
             record(False, "%s 容器内代码指纹" % service, text(process)[-300:] or "docker exec 失败")
@@ -795,7 +874,7 @@ def cmd_verify(args):
 
         asset_paths = [relative for _, relative, _ in mounts if relative in recorded_assets]
         if asset_paths:
-            process = run(["docker", "exec", "-i", container, "python", "-", "--stat", "/app"] + asset_paths, stdin=fingerprint_script)
+            process = docker("exec", "-i", container, "python", "-", "--stat", "/app", *asset_paths, stdin=fingerprint_script)
             if process.returncode != 0:
                 record(False, "%s 运行时资产" % service, text(process)[-300:] or "docker exec 失败")
             else:
@@ -808,10 +887,10 @@ def cmd_verify(args):
             if args.hash_assets:
                 for relative in asset_paths:
                     if ASSET_KIND[relative] == "file":
-                        process = run(["docker", "exec", container, "sha256sum", "/app/" + relative])
+                        process = docker("exec", container, "sha256sum", "/app/" + relative, timeout=ASSET_HASH_TIMEOUT)
                         digest = text(process).split()[0] if process.returncode == 0 else None
                     else:
-                        process = run(["docker", "exec", "-i", container, "python", "-", "/app", relative], stdin=fingerprint_script)
+                        process = docker("exec", "-i", container, "python", "-", "/app", relative, stdin=fingerprint_script, timeout=ASSET_HASH_TIMEOUT)
                         digest = json.loads(text(process)).get(relative, {}).get("sha256") if process.returncode == 0 else None
                     record(digest == recorded_assets[relative]["sha256"], "%s 资产 %s 的 SHA256" % (service, Path(relative).name))
 
@@ -851,7 +930,7 @@ def cmd_verify(args):
         else:
             status, _ = http(urllib.parse.urljoin(args.frontend_url + "/", app[0]))
             record(status == 200, "GeoView 入口脚本", "%s 返回 %s" % (app[0], status))
-    process = run(["docker", "exec", "%s-frontend" % args.project, "grep", "-rl", GEOVIEW_MARKER, "/app/frontend/dist/js"])
+    process = docker("exec", "%s-frontend" % args.project, "grep", "-rl", GEOVIEW_MARKER, "/app/frontend/dist/js")
     found = text(process).split()
     if geoview_validation:
         record(bool(found), "GeoView 已是带后端校验的构建",
@@ -915,6 +994,21 @@ def main(argv):
     pinned.add_argument("env_file")
     pinned.add_argument("keys", nargs="+")
     pinned.set_defaults(handler=cmd_pinned)
+
+    unpin = commands.add_parser("unpin", help="把版本从环境文件里拿掉")
+    unpin.add_argument("env_file")
+    unpin.set_defaults(handler=cmd_unpin)
+
+    jobs = commands.add_parser("jobs", help="排队或运行中的推理 / 切片任务数（0 = 可以切，1 = 有任务，2 = 查不到）")
+    jobs.add_argument("--project", default="yunnan")
+    jobs.add_argument("--timeout", type=float, default=30.0)
+    jobs.set_defaults(handler=cmd_jobs)
+
+    state = commands.add_parser("state", help="读或更新切换状态")
+    state.add_argument("action", choices=["show", "update"])
+    state.add_argument("path")
+    state.add_argument("patch", nargs="?", default="{}")
+    state.set_defaults(handler=cmd_state)
 
     config = commands.add_parser("rehearsal-config", help="由发布目录的 config.yaml 生成演练用的那一份（只改 4 个端口）")
     config.add_argument("release")
