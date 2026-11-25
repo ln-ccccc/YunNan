@@ -11,6 +11,15 @@ function connectionResetError() {
   return error;
 }
 
+function socketClosedError() {
+  // 线上真实形态（Node 18 自带 undici：gunicorn 关闭了被连接池复用的 keep-alive 连接）
+  const cause = new Error('other side closed');
+  cause.code = 'UND_ERR_SOCKET';
+  const error = new TypeError('fetch failed');
+  error.cause = cause;
+  return error;
+}
+
 function jsonResponse(payload) {
   return {
     status: 200,
@@ -25,6 +34,24 @@ test('瞬态连接错误（ECONNRESET）单次重试后成功', async () => {
   globalThis.fetch = async () => {
     calls += 1;
     if (calls === 1) throw connectionResetError();
+    return jsonResponse({ success: true });
+  };
+  try {
+    const result = await requestBackendAuth('GET', '/api/auth/session');
+    assert.equal(calls, 2);
+    assert.equal(result.body.success, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('UND_ERR_SOCKET（收到响应前连接被对端关闭）同样重试一次后成功', async () => {
+  // 此前不在瞬态集合里：连 300ms 的重试都不走，直接变成 502（2026-11-24，线上日志 9 次）
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) throw socketClosedError();
     return jsonResponse({ success: true });
   };
   try {

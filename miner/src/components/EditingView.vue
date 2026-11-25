@@ -4,7 +4,10 @@
       <div>
         <p class="workspace-kicker">图斑编辑</p>
         <h1>分类成果修订</h1>
-        <p class="muted-text">选择项目与成果年份，跳转 GeoView 编辑器完成矢量修订（保存为新修订版本）。</p>
+        <p class="muted-text">
+          选择项目与成果年份，跳转 GeoView 编辑器完成矢量修订（保存为新修订版本）。
+          同一矿山同年有多条成果时，概览、台账与溯源只认其中最新的一条；标有「已被取代」的成果改了不会体现在统计里。
+        </p>
       </div>
     </header>
 
@@ -26,7 +29,14 @@
       <div v-else class="result-list">
         <div v-for="row in results" :key="row.key" class="result-row">
           <div class="result-main">
-            <strong>矿山 {{ row.fid }} · {{ row.year ?? '未知年份' }}</strong>
+            <strong>
+              矿山 {{ row.fid }} · {{ row.year ?? '未知年份' }}
+              <span
+                v-if="row.effective === false"
+                class="superseded-tag"
+                title="这座矿山这一年之后又做过新的推理；概览、台账、变化矩阵与溯源只认最新的那一条成果"
+              >已被取代</span>
+            </strong>
             <span class="muted-text">
               图斑 {{ row.featureCount }} 个 · {{ statusText(row.vectorStatus) }} · 修订 v{{ row.currentRevisionNo ?? 0 }}
             </span>
@@ -35,7 +45,11 @@
             class="primary-btn"
             type="button"
             :disabled="!row.editable"
-            :title="row.editable ? '在 GeoView 编辑器中打开' : '矢量未就绪，不能编辑'"
+            :title="!row.editable
+              ? '矢量未就绪，不能编辑'
+              : (row.effective === false
+                ? '这条成果已被同矿山同年更新的成果取代：修订只留在它自己的版本记录里，不会体现在概览、台账、变化矩阵与溯源中'
+                : '在 GeoView 编辑器中打开')"
             @click="openEditor(row)"
           >
             {{ row.editable ? '编辑矢量' : '不可编辑' }}
@@ -104,6 +118,8 @@ const loadResults = async () => {
       vectorStatus: item.vector_status,
       currentRevisionNo: item.current_revision_no,
       editable: EDITABLE_STATUS.has(item.vector_status),
+      // 后端 2026-11-24 起给出；旧后端没有该字段时为 null，不显示标记
+      effective: typeof item.effective === 'boolean' ? item.effective : null,
     }));
   } catch (e) {
     if (seq !== resultsSeq) return;
@@ -168,6 +184,20 @@ loadProjects();
   border-radius: 8px; padding: 10px 14px;
 }
 .result-main { display: flex; flex-direction: column; gap: 2px; }
+
+.superseded-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border: 1px solid rgba(217, 119, 6, 0.45);
+  border-radius: 999px;
+  background: rgba(255, 251, 235, 0.9);
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  vertical-align: middle;
+}
 
 .primary-btn {
   background: #2f6f61; color: #fff; border: none; border-radius: 6px;

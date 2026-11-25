@@ -7,12 +7,10 @@
     "build": "vue-cli-service build",
     "test": "node --test",
     "test:api": "node --test test/backendUrl.test.mjs test/uploadGuards.test.mjs test/inferencePolling.test.mjs",
-    "test:workflow": "node --test test/tiffSelection.test.mjs test/classificationColors.test.mjs test/interpretationContext.test.mjs test/classificationResultContext.test.mjs test/classificationEditor.test.mjs test/classificationEditorLifecycle.test.mjs"
+    "test:workflow": "node --test test/tiffSelection.test.mjs test/classificationColors.test.mjs test/interpretationContext.test.mjs test/classificationResultContext.test.mjs test/classificationEditor.test.mjs test/classificationEditorValidation.test.mjs test/classificationEditorLifecycle.test.mjs"
   },
   "dependencies": {
     "@mapbox/mapbox-gl-draw": "^1.5.1",
-    "@turf/simplify": "^7.4.0",
-    "@turf/union": "^7.4.0",
     "@vueuse/core": "^8.5.0",
     "animate.css": "^4.1.1",
     "axios": "^0.26.1",

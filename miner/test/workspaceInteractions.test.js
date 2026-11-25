@@ -7,7 +7,13 @@ import * as Vue from 'vue';
 
 import { createProjectWorkspaceApi } from '../src/projectWorkspace/projectWorkspaceApi.js';
 import * as viewModel from '../src/projectWorkspace/projectWorkspaceViewModel.js';
+import {
+  exportOutcomePendingMessage,
+  isExportOutcomeUncertain,
+} from '../src/projectWorkspace/exportRequestFeedback.js';
 import { shouldUseChunkedUpload } from '../src/utils/basemapChunking.js';
+import { formatAreaKm2 } from '../src/utils/areaDisplay.js';
+import { saveBlobAsFile } from '../src/utils/blobDownload.js';
 import { sortInterpretationRecords } from '../src/utils/interpretationOrdering.js';
 
 function setupComponent(filename, axios, extras = {}) {
@@ -19,6 +25,11 @@ function setupComponent(filename, axios, extras = {}) {
     axios,
     createProjectWorkspaceApi,
     shouldUseChunkedUpload,
+    saveBlobAsFile,
+    formatAreaKm2,
+    // 组件 import 的绑定都要在这里注入：下方 script 会剥掉 import、靠 with (dependencies) 解析
+    isExportOutcomeUncertain,
+    exportOutcomePendingMessage,
     getSelectedProjectId: () => null,
     setSelectedProjectId: () => {},
     formatLifecycleStatus: (status) => status,
@@ -90,6 +101,54 @@ test('interpretation keeps editor targets current after paging then switching pr
   assert.equal(bindings.editorTargets.value.has('1:2026'), false);
 });
 
+test('interpretation rows say when their own result has been superseded (2026-11-24)', async () => {
+  // 概览、台账、变化矩阵、溯源只认"同矿山同年 id 最大"的那条成果。解译记录行各指向自己
+  // 那一次推理的成果，之后又推理过就已被取代——生产 3036 条可编辑成果里 2387 条如此，
+  // 此前行上看不出来：改完、保存成功，却哪里都不体现
+  const axios = { get: async (path) => {
+    if (path === '/api/projects') return { data: { data: { items: [] } } };
+    if (path.endsWith('/classification-results')) {
+      return { data: { data: { items: [
+        { result_id: 11, mine_fid: 1, year: 2026, vector_status: 'ready', effective: true },
+        { result_id: 10, mine_fid: 1, year: 2026, vector_status: 'ready', effective: false },
+        // 旧后端没有 effective 字段
+        { result_id: 12, mine_fid: 2, year: 2025, vector_status: 'ready' },
+      ] } } };
+    }
+    return { data: { data: [], count: 0 } };
+  } };
+  const harness = setupComponent('SmartInterpretationView.vue', axios);
+  const { bindings } = harness;
+  bindings.selectedProjectId.value = 1;
+  bindings.resetAndLoad();
+  await flushRequests();
+
+  const rowFor = (resultId, fid = 1, year = 2026) => ({ data: { fid, year, result_id: resultId, vector_status: 'ready' } });
+  assert.equal(bindings.resolveRowTarget(rowFor(11)).effective, true);
+  assert.equal(bindings.resolveRowTarget(rowFor(10)).effective, false, '行内 result_id 已被取代时必须识别出来');
+  assert.equal(bindings.resolveRowTarget(rowFor(12, 2, 2025)).effective, null, '后端没给 effective 时不臆断');
+  assert.equal(bindings.resolveRowTarget({ data: { fid: 1, year: 2026 } }).effective, true, '缺行内 id 时回退到有效成果');
+
+  // 标记只落在被取代的那一行；两条记录的可编辑性不受影响
+  bindings.records.value = [
+    { record_id: 'newer', type: '解译', data: { fid: 1, year: 2026, result_id: 11, vector_status: 'ready' } },
+    { record_id: 'older', type: '解译', data: { fid: 1, year: 2026, result_id: 10, vector_status: 'ready' } },
+  ];
+  const tagged = [];
+  const editButtons = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.props?.class === 'superseded-tag') tagged.push(node);
+    if (node.props?.class === 'edit-btn' && node.children === '编辑矢量') editButtons.push(node);
+    for (const child of Array.isArray(node.children) ? node.children : []) walk(child);
+  };
+  walk(harness.render());
+  assert.equal(tagged.length, 1, '只有被取代的那一行带标记');
+  assert.equal(editButtons.length, 2, '被取代的成果仍然可以编辑（契约允许保存任意 ready 成果）');
+  assert.match(editButtons[1].props.title, /已被同矿山同年更新的成果取代/, '按钮提示要说清修订不会体现在哪里');
+  assert.equal(editButtons[0].props.title, '在 GeoView 编辑器中打开');
+});
+
 test('interpretation map button emits the selected project id', () => {
   const harness = setupComponent('SmartInterpretationView.vue', {
     get: async () => ({ data: { data: { items: [] } } }),
@@ -102,53 +161,159 @@ test('interpretation map button emits the selected project id', () => {
   assert.deepEqual(harness.emissions, [['go-map', 7]]);
 });
 
+// 工作台下载经 saveBlobAsFile 触发。它只认浏览器全局（URL / document / setTimeout），且在
+// 自己的模块作用域里解析，所以替身要装到 globalThis 上，不能走 setupComponent 的 extras；
+// 真实定时器会把测试进程拖满 60 秒，一并替身掉。
+function installDownloadFakes() {
+  const downloads = [];
+  const revoked = [];
+  const timers = [];
+  const originals = {
+    createObjectURL: URL.createObjectURL,
+    revokeObjectURL: URL.revokeObjectURL,
+    document: globalThis.document,
+    setTimeout: globalThis.setTimeout,
+  };
+  URL.createObjectURL = () => 'blob:audit';
+  URL.revokeObjectURL = (url) => revoked.push(url);
+  globalThis.document = {
+    createElement: () => ({ click() { downloads.push(this.download); }, remove() {} }),
+    body: { appendChild() {} },
+  };
+  globalThis.setTimeout = (callback, delay) => {
+    timers.push({ callback, delay });
+    return timers.length;
+  };
+  return {
+    downloads,
+    revoked,
+    timers,
+    restore: () => {
+      URL.createObjectURL = originals.createObjectURL;
+      URL.revokeObjectURL = originals.revokeObjectURL;
+      globalThis.document = originals.document;
+      globalThis.setTimeout = originals.setTimeout;
+    },
+  };
+}
+
 for (const kind of ['export', 'snapshot']) {
   test(`workspace ${kind} download event fetches and saves the project artifact`, async () => {
-    const requests = [];
-    const downloads = [];
-    const axios = { get: async (path, options) => {
-      requests.push({ path, options });
-      return { data: new Blob(['test artifact']) };
-    } };
-    const harness = setupComponent('ProjectWorkspace.vue', axios, {
-      document: {
-        createElement: () => ({ click() { downloads.push(this.download); }, remove() {} }),
-        body: { appendChild() {} },
-      },
-      URL: { createObjectURL: () => 'blob:audit', revokeObjectURL() {} },
-    });
-    harness.bindings.currentProjectId.value = 7;
-    harness.bindings.slices.overview.data = { project_id: 7, summary: { id: 7 }, capabilities: {} };
-    const panel = findNode(harness.render(), (node) => node.type === 'ProjectExportSnapshotPanel');
-    assert.ok(panel);
-    const listener = panel.props[kind === 'export' ? 'onDownloadExport' : 'onDownloadSnapshot'];
-    assert.equal(typeof listener, 'function', '工作台必须处理子组件下载事件');
-    await listener({ id: 4, artifact_name: 'project-export.geojson' });
-    assert.deepEqual(requests, [{
-      path: kind === 'export' ? '/api/projects/7/exports/4/artifact' : '/api/projects/7/backups/4/manifest',
-      options: { responseType: 'blob' },
-    }]);
-    assert.deepEqual(downloads, [kind === 'export' ? 'project-export.geojson' : 'snapshot-4-manifest.json']);
+    const fakes = installDownloadFakes();
+    try {
+      const requests = [];
+      const axios = { get: async (path, options) => {
+        requests.push({ path, options });
+        return { data: new Blob(['test artifact']) };
+      } };
+      const harness = setupComponent('ProjectWorkspace.vue', axios);
+      harness.bindings.currentProjectId.value = 7;
+      harness.bindings.slices.overview.data = { project_id: 7, summary: { id: 7 }, capabilities: {} };
+      const panel = findNode(harness.render(), (node) => node.type === 'ProjectExportSnapshotPanel');
+      assert.ok(panel);
+      const listener = panel.props[kind === 'export' ? 'onDownloadExport' : 'onDownloadSnapshot'];
+      assert.equal(typeof listener, 'function', '工作台必须处理子组件下载事件');
+      await listener({ id: 4, artifact_name: 'project-export.geojson' });
+      assert.deepEqual(requests, [{
+        path: kind === 'export' ? '/api/projects/7/exports/4/artifact' : '/api/projects/7/backups/4/manifest',
+        options: { responseType: 'blob' },
+      }]);
+      assert.deepEqual(fakes.downloads, [kind === 'export' ? 'project-export.geojson' : 'snapshot-4-manifest.json']);
+      // object URL 延迟释放：下载刚发起时不能释放，60 秒后才释放
+      // （同步释放会截断尚未开始的下载，导出成果下载此前就是这么写的）
+      assert.deepEqual(fakes.revoked, [], '下载发起后不得立刻释放 object URL');
+      assert.equal(fakes.timers.length, 1);
+      assert.equal(fakes.timers[0].delay, 60000);
+      fakes.timers[0].callback();
+      assert.deepEqual(fakes.revoked, ['blob:audit'], '到点释放本次下载的 object URL');
+    } finally {
+      fakes.restore();
+    }
   });
 }
 
 test('workspace clears a failed download message when retry succeeds', async () => {
-  let fails = true;
-  const harness = setupComponent('ProjectWorkspace.vue', {
-    get: async () => {
-      if (fails) throw new Error('下载暂不可用');
-      return { data: new Blob(['retry artifact']) };
-    },
-  }, {
-    document: { createElement: () => ({ click() {}, remove() {} }), body: { appendChild() {} } },
-    URL: { createObjectURL: () => 'blob:audit', revokeObjectURL() {} },
+  const fakes = installDownloadFakes();
+  try {
+    let fails = true;
+    const harness = setupComponent('ProjectWorkspace.vue', {
+      get: async () => {
+        if (fails) throw new Error('下载暂不可用');
+        return { data: new Blob(['retry artifact']) };
+      },
+    });
+    harness.bindings.currentProjectId.value = 7;
+    await harness.bindings.downloadExport({ id: 4 });
+    assert.equal(harness.bindings.slices.exports.error, '下载暂不可用');
+    assert.equal(harness.bindings.projectOperationBusy.value, false);
+    assert.deepEqual(fakes.timers, [], '失败的下载没有创建 object URL，也就没有待释放的定时器');
+    fails = false;
+    await harness.bindings.downloadExport({ id: 4 });
+    assert.equal(harness.bindings.slices.exports.error, '');
+    assert.equal(harness.bindings.projectOperationBusy.value, false);
+  } finally {
+    fakes.restore();
+  }
+});
+
+// ---- 看板概览：同一时刻只发一个请求（2026-11-24）----
+// 后端概览在缓存过期时要重算（2026-11-24 修复时约 9 秒，随后后端降到约 0.5 秒），重算期间
+// 同一 worker 上的其它接口会被拖慢。工作台首屏此前同一刻发两个相同请求（看板组件 onMounted +
+// 工作台 loadProjects 各一次），等于让两个 worker 同时重算。真实浏览器实测：同一毫秒发出两个
+// 请求各约 8.8 秒，其间其它接口最慢约 670ms（平时约 27ms）。
+test('stats panel keeps a single overview request in flight and refetches once for calls that arrived meanwhile', async () => {
+  const pending = [];
+  const harness = setupComponent('StatsOverviewPanel.vue', {
+    get: () => new Promise((resolve) => pending.push(resolve)),
   });
-  harness.bindings.currentProjectId.value = 7;
-  await harness.bindings.downloadExport({ id: 4 });
-  assert.equal(harness.bindings.slices.exports.error, '下载暂不可用');
-  assert.equal(harness.bindings.projectOperationBusy.value, false);
-  fails = false;
-  await harness.bindings.downloadExport({ id: 4 });
-  assert.equal(harness.bindings.slices.exports.error, '');
-  assert.equal(harness.bindings.projectOperationBusy.value, false);
+  const first = harness.bindings.fetchOverview();
+  const second = harness.bindings.fetchOverview();   // 在途期间又被调了一次
+  await flushRequests();
+  assert.equal(pending.length, 1, '在途请求未回来前不得再发第二个');
+  assert.equal(harness.bindings.loading.value, true);
+  pending[0]({ data: { data: { project_total: 5 } } });
+  await flushRequests();
+  assert.equal(pending.length, 2, '在途期间到达的调用（新建/归档后的刷新）不能被吞掉：补发一次');
+  pending[1]({ data: { data: { project_total: 6 } } });
+  await Promise.all([first, second]);
+  await flushRequests();
+  assert.equal(harness.bindings.overview.value.project_total, 6, '最终展示的是补发那次的数据');
+  assert.equal(harness.bindings.loading.value, false);
+  assert.equal(pending.length, 2, '补发一次即可，不得连锁再发');
+});
+
+test('stats panel sends a real request again once the previous one has returned', async () => {
+  const responses = [{ data: { data: { project_total: 1 } } }, { data: { data: { project_total: 2 } } }];
+  let calls = 0;
+  const harness = setupComponent('StatsOverviewPanel.vue', {
+    get: async () => { calls += 1; return responses[calls - 1]; },
+  });
+  await harness.bindings.fetchOverview();
+  assert.equal(harness.bindings.overview.value.project_total, 1);
+  await harness.bindings.fetchOverview();
+  assert.equal(calls, 2, '上一个请求已回来，新的刷新必须真的发出去');
+  assert.equal(harness.bindings.overview.value.project_total, 2);
+});
+
+test('stats panel shows the failure and recovers on the next call', async () => {
+  let failing = true;
+  const harness = setupComponent('StatsOverviewPanel.vue', {
+    get: async () => {
+      if (failing) throw new Error('502');
+      return { data: { data: { project_total: 3 } } };
+    },
+  });
+  await harness.bindings.fetchOverview();
+  assert.equal(harness.bindings.error.value, '统计读取失败，请稍后刷新');
+  assert.equal(harness.bindings.loading.value, false, '失败后加载态必须复位');
+  failing = false;
+  await harness.bindings.fetchOverview();
+  assert.equal(harness.bindings.error.value, '');
+  assert.equal(harness.bindings.overview.value.project_total, 3);
+});
+
+test('workspace first screen leaves the overview request to the stats panel', () => {
+  const source = fs.readFileSync(new URL('../src/components/ProjectWorkspace.vue', import.meta.url), 'utf8');
+  assert.match(source, /onMounted\(\(\) => loadProjects\(null, \{ refreshStats: false \}\)\)/, '首屏由看板组件自己拉，工作台不得再调一次');
+  assert.match(source, /if \(refreshStats\) statsPanelRef\.value\?\.fetchOverview\?\.\(\)/, '新建/归档/手动刷新后的看板刷新必须保留');
 });

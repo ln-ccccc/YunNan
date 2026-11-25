@@ -123,6 +123,23 @@ export function formatRatioClass(name) {
   return RATIO_CLASS_LABELS[name] || name || '';
 }
 
+/**
+ * 变化矩阵相对"当前有效成果"的状态说明（2026-11-24）。
+ * 溯源接口的 change_matrix_state：revised（已按人工修订重算）/ inference（没有人工修订，
+ * 推理矩阵即正确口径）/ revised_empty（有一期图斑为空）/ unavailable（结构性无法计算）/
+ * pending（后台重算中）。前两者不需要提示；其余三类把后端给的 change_matrix_note 原样
+ * 显示。pending 而页面上还挂着一张旧矩阵时，明确说明下表是重算前的内容——此前矩阵
+ * 文件里是什么就显示什么，用户无从知道它是否反映了人工修订。
+ * 返回 { state, note }，note 为空串表示不提示。
+ */
+export function changeMatrixStateNote(traceability, changeMatrixData) {
+  const state = traceability?.change_matrix_state || null;
+  const note = String(traceability?.change_matrix_note || '').trim();
+  if (!note) return { state, note: '' };
+  const showsStaleMatrix = state === 'pending' && Boolean(changeMatrixData?.has_change_matrix);
+  return { state, note: showsStaleMatrix ? `${note}。下表是重算前的内容，仅供参考。` : note };
+}
+
 /** 占比序列 → 堆叠时序数据行（每类一行，按年取值），供简单条形/表格渲染 */
 export function buildRatioSeriesRows(traceability) {
   const series = traceability?.ratio_series;

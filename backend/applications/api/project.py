@@ -14,6 +14,7 @@ from applications.common.utils.http import fail_api, success_api
 from applications.models.project import Project
 from applications.models.project_spatial import ProjectSpatialResource
 from applications.project_hub.classification_results import (
+    MAX_SAVE_BODY_BYTES,
     ClassificationConflictError,
     ClassificationValidationError,
     export_current_classification_result,
@@ -22,9 +23,12 @@ from applications.project_hub.classification_results import (
     save_classification_revision,
 )
 from applications.project_hub.assets import ProjectAssetFilterError
+from applications.project_hub._foundation import ProjectNotFoundError
 from applications.project_hub.project_storage import ProjectStorageValidationError
 from applications.project_hub.service import (
+    DatasetDeleteNotAllowed,
     ProjectDeleteNotAllowed,
+    ProjectUndeleteNotAllowed,
     archive_project,
     batch_archive_projects,
     batch_delete_projects,
@@ -34,6 +38,7 @@ from applications.project_hub.service import (
     resolve_project_export_artifact,
     create_export,
     create_project,
+    delete_dataset,
     delete_project,
     get_project_assets,
     get_project_detail,
@@ -46,6 +51,7 @@ from applications.project_hub.service import (
     replace_project_mines,
     restore_backup,
     restore_project,
+    undelete_project,
     update_project,
 )
 from applications.project_hub.spatial_service import (
@@ -90,8 +96,10 @@ def _request_actor():
 
 
 def _spatial_failure_response(error, message, project_id):
+    if isinstance(error, ProjectNotFoundError):
+        return fail_api(str(error), status=404)
     if isinstance(error, ValueError):
-        return fail_api(str(error))
+        return fail_api(str(error), status=400)
     if isinstance(error, HTTPException):
         # 客户端请求体问题（非法 JSON 400 / Content-Type 415）按原状态码收口，
         # 不吞成 500 + 服务端堆栈日志
@@ -101,8 +109,10 @@ def _spatial_failure_response(error, message, project_id):
 
 
 def _project_hub_failure_response(error, message, project_id=None):
+    if isinstance(error, ProjectNotFoundError):
+        return fail_api(str(error), status=404)
     if isinstance(error, ValueError):
-        return fail_api(str(error))
+        return fail_api(str(error), status=400)
     if isinstance(error, HTTPException):
         return fail_api(msg="请求数据不合法，请提交正确的 JSON", status=error.code or 400)
     if project_id is None:
@@ -290,10 +300,18 @@ def project_update_api(project_id):
 @login_required
 def project_replace_mines_api(project_id):
     try:
+        payload = request.json
+        # 请求体形状校验（2026-11-22 回归 P3-1）：裸数组/非对象载荷此前在
+        # .get("mines") 上抛 AttributeError 落 500，按 400 客户端错误收口
+        if payload is not None and not isinstance(payload, dict):
+            return fail_api("请求体必须是包含 mines 数组的 JSON 对象"), 400
+        mines = (payload or {}).get("mines")
+        if mines is not None and not isinstance(mines, list):
+            return fail_api("mines 必须是数组"), 400
         return success_api(
             data=replace_project_mines(
                 project_id,
-                (request.json or {}).get("mines") or [],
+                mines or [],
                 actor=_request_actor(),
             )
         )
@@ -574,12 +592,78 @@ def classification_result_quality_review_api(project_id, result_id):
         return _classification_error_response(error)
 
 
+def _read_json_body(limit):
+    """读 JSON 请求体，超过 limit 字节的不再往下读。返回 (payload, 字节数, 是否超限)。
+
+    全局的 MAX_CONTENT_LENGTH 是 GB 级（给影像上传用的），而保存与三个几何接口只收几十 KB 到几 MB 的 JSON。
+    此前它们先把整个请求体读进内存再判断是否超过 10 MiB（2026-11-24 核查）。现在：请求声明了
+    Content-Length 且超限的，读都不读就拒绝；没声明（分块传输）的最多读到 limit + 1 字节。
+    payload 的判定与 request.get_json(silent=True) 相同：不是 JSON、或解析不了，都是 None。
+    """
+    if request.content_length is not None and request.content_length > limit:
+        return None, request.content_length, True
+    raw_body = request.stream.read(limit + 1)
+    if len(raw_body) > limit:
+        return None, len(raw_body), True
+    payload = None
+    if raw_body and request.is_json:
+        try:
+            payload = json.loads(raw_body)
+        except ValueError:
+            payload = None
+    return payload, len(raw_body), False
+
+
+def _classification_geometry_request(project_id, result_id, handler):
+    """编辑期几何接口（校验 / 简化 / 合并）的公共外壳：读请求体、限大小、统一错误映射。
+
+    超限的请求体交给处理函数，由它按「请求 JSON 超过 10 MiB」拒绝（与保存接口同一条规则）。
+    """
+    payload, body_size, oversized = _read_json_body(MAX_SAVE_BODY_BYTES)
+    if payload is None and not oversized:
+        return fail_api(
+            "几何请求不合法",
+            status=422,
+            details={"field": "body", "reason": "必须提交 JSON"},
+        )
+    try:
+        return success_api(data=handler(project_id, result_id, payload, body_size=body_size))
+    except Exception as error:
+        return _classification_error_response(error)
+
+
+@project_api.post("/<int:project_id>/classification-results/<int:result_id>/geometry/validate")
+@login_required
+def classification_geometry_validate_api(project_id, result_id):
+    """编辑操作完成后校验改动的面：结论与保存完全相同，只读。"""
+    from applications.project_hub.classification_results import validate_result_geometries
+
+    return _classification_geometry_request(project_id, result_id, validate_result_geometries)
+
+
+@project_api.post("/<int:project_id>/classification-results/<int:result_id>/geometry/simplify")
+@login_required
+def classification_geometry_simplify_api(project_id, result_id):
+    """消除锯齿：GEOS 拓扑保持简化，容差按成果的像元与图斑面积自适应，结果必须通过保存同款判定与精度门槛。只读。"""
+    from applications.project_hub.classification_results import simplify_result_geometries
+
+    return _classification_geometry_request(project_id, result_id, simplify_result_geometries)
+
+
+@project_api.post("/<int:project_id>/classification-results/<int:result_id>/geometry/union")
+@login_required
+def classification_geometry_union_api(project_id, result_id):
+    """合并面：GEOS unary_union，结果必须通过保存同款判定。只读。"""
+    from applications.project_hub.classification_results import union_result_geometries
+
+    return _classification_geometry_request(project_id, result_id, union_result_geometries)
+
+
 @project_api.post("/<int:project_id>/classification-results/<int:result_id>/revisions")
 @login_required
 def classification_revision_save_api(project_id, result_id):
-    raw_body = request.get_data(cache=True)
-    payload = request.get_json(silent=True)
-    if payload is None:
+    payload, body_size, oversized = _read_json_body(MAX_SAVE_BODY_BYTES)
+    if payload is None and not oversized:
         return fail_api(
             "分类成果保存数据不合法",
             status=422,
@@ -593,7 +677,7 @@ def classification_revision_save_api(project_id, result_id):
                 payload,
                 # actor 语义统一为用户名（与其余活动记录一致），混用 user_id 会导致审计无法按人追溯
                 actor=_request_actor(),
-                body_size=len(raw_body),
+                body_size=body_size,
             )
         )
     except Exception as error:
@@ -603,7 +687,8 @@ def classification_revision_save_api(project_id, result_id):
 @project_api.post("/<int:project_id>/classification-results/<int:result_id>/export")
 @login_required
 def classification_result_export_api(project_id, result_id):
-    if request.get_data(cache=False):
+    # 只读 1 个字节判断有没有请求体：不为拒绝一个大请求体而把它整个读进内存
+    if (request.content_length or 0) > 0 or request.stream.read(1):
         return fail_api(
             "分类成果导出不接受请求体",
             status=422,
@@ -829,10 +914,45 @@ def project_dataset_create_api(project_id):
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
+    except ProjectNotFoundError as exc:
+        return fail_api(str(exc), status=404)
     except ValueError as exc:
-        return fail_api(str(exc))
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         return _project_hub_failure_response(exc, "影像登记失败", project_id)
+
+
+@project_api.delete("/<int:project_id>/datasets/<int:dataset_id>")
+@login_required
+def project_dataset_delete_api(project_id, dataset_id):
+    """删除影像登记（2026-11 验收遗留项）：被推理任务引用或成果目录 409。"""
+    try:
+        return success_api(
+            data=delete_dataset(project_id, dataset_id, actor=_request_actor())
+        )
+    except DatasetDeleteNotAllowed as exc:
+        return fail_api(str(exc), status=409)
+    except ValueError as exc:
+        return fail_api(str(exc), status=404)
+    except Exception as exc:
+        return business_or_server_failure(exc, "数据集删除失败", logger=LOGGER)
+
+
+@project_api.post("/<int:project_id>/undelete")
+@login_required
+def project_undelete_api(project_id):
+    """从回收站恢复已删除项目（trash 目录移回 + 软删位清除）。
+
+    与 POST /restore（归档→active）是不同通道：undelete 只回到 archived。
+    """
+    try:
+        return success_api(data=undelete_project(project_id, actor=_request_actor()))
+    except ProjectUndeleteNotAllowed as exc:
+        return fail_api(str(exc), status=409)
+    except ValueError as exc:
+        return fail_api(str(exc), status=404)
+    except Exception as exc:
+        return business_or_server_failure(exc, "项目恢复失败", logger=LOGGER)
 
 
 @project_api.get("/<int:project_id>/timeline")
@@ -916,8 +1036,10 @@ def project_export_create_api(project_id):
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
+    except ProjectNotFoundError as exc:
+        return fail_api(str(exc), status=404)
     except ValueError as exc:
-        return fail_api(str(exc))
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         # 保持既有 500 响应文案"项目导出失败，请检查服务日志"不变
         return _project_hub_failure_response(exc, "项目导出失败", project_id)
@@ -944,8 +1066,10 @@ def project_backup_create_api(project_id):
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
+    except ProjectNotFoundError as exc:
+        return fail_api(str(exc), status=404)
     except ValueError as exc:
-        return fail_api(str(exc))
+        return fail_api(str(exc), status=400)
     except Exception as exc:
         return _project_hub_failure_response(exc, "项目配置快照创建失败", project_id)
 
@@ -1019,8 +1143,10 @@ def project_backup_restore_api(project_id, backup_id):
         )
     except ProjectStorageValidationError as exc:
         return fail_api(str(exc), status=422)
+    except ProjectNotFoundError as exc:
+        return fail_api(str(exc), status=404)
     except ValueError as exc:
-        return fail_api(str(exc))
+        return fail_api(str(exc), status=400)
     except Exception:
         LOGGER.exception(
             "项目配置快照恢复失败 project_id=%s backup_id=%s", project_id, backup_id

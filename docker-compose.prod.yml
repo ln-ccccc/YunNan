@@ -1,5 +1,12 @@
 name: yunnan
 
+# 源码根目录（2026-11-25 发布隔离）：应用代码一律从 YUNNAN_SOURCE_ROOT 指向的目录挂载。
+#   不设置 → "."，即本文件所在的开发树（与改造前完全相同）。
+#   发布时 → deploy/make_release.sh <commit> 导出的发布目录（只含这一个提交的文件），
+#            切换与回滚只改这个变量再 up -d，见 docs/deployment-release-isolation.md。
+# 只影响源码：project_storage、离线底图、miner/yunnan.kml 与 miner/*.xlsx 是数据，
+# 不属于任何提交（后两类被 .gitignore 忽略），仍相对本文件所在目录解析。
+
 x-app-env: &app-env
   MYSQL_HOST: mysql
   MYSQL_PORT: 3306
@@ -52,8 +59,8 @@ x-app-env: &app-env
 x-runtime-base: &runtime-base
   image: ${APP_IMAGE:-yunnan-runtime:current}
   volumes:
-    - ./config.yaml:/app/config.yaml:ro
-    - ./docker:/app/docker:ro
+    - ${YUNNAN_SOURCE_ROOT:-.}/./config.yaml:/app/config.yaml:ro
+    - ${YUNNAN_SOURCE_ROOT:-.}/./docker:/app/docker:ro
   restart: unless-stopped
   # 日志轮转（2026-11-05 生产化检查）：json-file 默认无上限，7 容器长跑会
   # 静默吃满磁盘后所有写入类功能失败；20m×3 = 每容器上限 60MB
@@ -78,9 +85,20 @@ services:
     depends_on:
       - mysql
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./docker:/app/docker:ro
-      - ./backend:/app/backend:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./config.yaml:/app/config.yaml:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./docker:/app/docker:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./backend:/app/backend:ro
+      # 运行时资产（2026-11-25 发布隔离）：推理权重、预训练骨干权重和随附的 mmseg / dinov3 源码不入库
+      # （见 .gitignore），由 YUNNAN_ASSET_ROOT 指向的目录提供（不设置即本目录，与改造前相同）。
+      # 源码改从发布目录挂载后，这些必须单独挂进来，否则容器能起来但推理找不到权重。
+      # 发布目录里对应的路径只是空挂载点，见 deploy/release_tool.py。
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/model.inference.pth:/app/backend/model/mmseg_config/model.inference.pth:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/model.pth:/app/backend/model/mmseg_config/model.pth:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/dinov3_swinV1:/app/backend/model/mmseg_config/dinov3_swinV1:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/change_detection:/app/backend/model/change_detection:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/classification:/app/backend/model/classification:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/object_detection:/app/backend/model/object_detection:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/semantic_segmentation:/app/backend/model/semantic_segmentation:ro
       - ./miner/yunnan.kml:/app/miner/yunnan.kml:ro
       - ./miner/NDVI_2year.xlsx:/app/miner/NDVI_2year.xlsx
       - ./miner/NDBI_by_fid_2year_avg.xlsx:/app/miner/NDBI_by_fid_2year_avg.xlsx
@@ -114,16 +132,16 @@ services:
     depends_on:
       - backend
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./docker:/app/docker:ro
-      - ./frontend/src:/app/frontend/src:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./config.yaml:/app/config.yaml:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./docker:/app/docker:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./frontend/src:/app/frontend/src:ro
       # 依赖与源码同源（2026-11-05 迁移审查 P1-5 真身）：镜像基座的 package.json/
       # node_modules 停留在构建时点，src 引用新包时启动构建必炸 MODULE_NOT_FOUND
       # （此前靠 compose 之外的手工整目录挂载漂移掩盖，recreate 后即显形）。
       # node_modules 挂 rw：vue-cli 的 cache-loader 需写 node_modules/.cache；
       # 已核实 frontend 依赖树无 native 二进制（零 .node），Windows 主树可安全共享。
-      - ./frontend/package.json:/app/frontend/package.json:ro
-      - ./frontend/node_modules:/app/frontend/node_modules
+      - ${YUNNAN_SOURCE_ROOT:-.}/./frontend/package.json:/app/frontend/package.json:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./frontend/node_modules:/app/frontend/node_modules
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/ >/dev/null || exit 1"]
       interval: 30s
@@ -150,11 +168,11 @@ services:
       backend:
         condition: service_healthy
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./docker:/app/docker:ro
-      - ./miner/server.js:/app/miner/server.js:ro
-      - ./miner/routes:/app/miner/routes:ro
-      - ./miner/services:/app/miner/services:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./config.yaml:/app/config.yaml:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./docker:/app/docker:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./miner/server.js:/app/miner/server.js:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./miner/routes:/app/miner/routes:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./miner/services:/app/miner/services:ro
       - ./miner/yunnan.kml:/app/miner/yunnan.kml:ro
       - ./miner/NDVI_2year.xlsx:/app/miner/NDVI_2year.xlsx:ro
       - ./miner/NDBI_by_fid_2year_avg.xlsx:/app/miner/NDBI_by_fid_2year_avg.xlsx:ro
@@ -186,9 +204,20 @@ services:
     depends_on:
       - mysql
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./docker:/app/docker:ro
-      - ./backend:/app/backend:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./config.yaml:/app/config.yaml:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./docker:/app/docker:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./backend:/app/backend:ro
+      # 运行时资产（2026-11-25 发布隔离）：推理权重、预训练骨干权重和随附的 mmseg / dinov3 源码不入库
+      # （见 .gitignore），由 YUNNAN_ASSET_ROOT 指向的目录提供（不设置即本目录，与改造前相同）。
+      # 源码改从发布目录挂载后，这些必须单独挂进来，否则容器能起来但推理找不到权重。
+      # 发布目录里对应的路径只是空挂载点，见 deploy/release_tool.py。
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/model.inference.pth:/app/backend/model/mmseg_config/model.inference.pth:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/model.pth:/app/backend/model/mmseg_config/model.pth:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/dinov3_swinV1:/app/backend/model/mmseg_config/dinov3_swinV1:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/change_detection:/app/backend/model/change_detection:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/classification:/app/backend/model/classification:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/object_detection:/app/backend/model/object_detection:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/semantic_segmentation:/app/backend/model/semantic_segmentation:ro
       - ./miner/yunnan.kml:/app/miner/yunnan.kml:ro
       - backend-static:/app/backend/static:ro
       - miner-uploads:/app/miner/uploads:ro
@@ -210,15 +239,30 @@ services:
     <<: *runtime-base
     container_name: yunnan-spatial-worker
     mem_limit: 2048m
+    # 僵尸回收（2026-11-13 风险复盘）：_terminate killpg 整组杀 gdal2tiles 的
+    # multiprocessing 池后，被杀子进程重挂到 PID 1；入口是 exec python，不
+    # reap 孤儿，反复取消任务会积累 Z 状态进程。init 让 tini 任 PID 1 收尸。
+    init: true
     entrypoint: ["/bin/bash", "/app/docker/start-spatial-worker.sh"]
     environment:
       <<: *app-env
     depends_on:
       - mysql
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./docker:/app/docker:ro
-      - ./backend:/app/backend:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./config.yaml:/app/config.yaml:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./docker:/app/docker:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./backend:/app/backend:ro
+      # 运行时资产（2026-11-25 发布隔离）：推理权重、预训练骨干权重和随附的 mmseg / dinov3 源码不入库
+      # （见 .gitignore），由 YUNNAN_ASSET_ROOT 指向的目录提供（不设置即本目录，与改造前相同）。
+      # 源码改从发布目录挂载后，这些必须单独挂进来，否则容器能起来但推理找不到权重。
+      # 发布目录里对应的路径只是空挂载点，见 deploy/release_tool.py。
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/model.inference.pth:/app/backend/model/mmseg_config/model.inference.pth:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/model.pth:/app/backend/model/mmseg_config/model.pth:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/mmseg_config/dinov3_swinV1:/app/backend/model/mmseg_config/dinov3_swinV1:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/change_detection:/app/backend/model/change_detection:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/classification:/app/backend/model/classification:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/object_detection:/app/backend/model/object_detection:ro
+      - ${YUNNAN_ASSET_ROOT:-.}/backend/model/semantic_segmentation:/app/backend/model/semantic_segmentation:ro
       - ./project_storage:/project_storage
       - ${OFFLINE_MAP_DIR:-./maps/dali}:/project_storage/incoming/dali:ro
     # 判活依据（2026-10-24 审查 P2-12）：DB 的 heartbeat_at 仅任务运行中存在，
@@ -244,10 +288,10 @@ services:
     depends_on:
       - miner-api
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./docker:/app/docker:ro
-      - ./miner/src:/app/miner/src:ro
-      - ./miner/vite.config.js:/app/miner/vite.config.js:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./config.yaml:/app/config.yaml:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./docker:/app/docker:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./miner/src:/app/miner/src:ro
+      - ${YUNNAN_SOURCE_ROOT:-.}/./miner/vite.config.js:/app/miner/vite.config.js:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4000/ >/dev/null || exit 1"]
       interval: 30s

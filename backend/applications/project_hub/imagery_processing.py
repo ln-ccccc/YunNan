@@ -9,10 +9,12 @@
 口径：外扩距离（米）按影像中心纬度换算为度，再换算像素窗口外扩。
 """
 import base64
+import contextlib
 import io
 import logging
 import math
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -43,6 +45,28 @@ _METERS_PER_DEG_LAT = 111320.0
 
 class ImageryProcessingError(ValueError):
     """面向客户端的裁剪/切片错误（400 语义）。"""
+
+
+# 重计算资源槽位（2026-11-24 自 main 分支移植，统计链移植的一部分）：设施本体在
+# applications/common/utils/resource_slots.py（容器级跨进程文件锁信号量，满载排队、
+# 超时拒绝）。这里保留兼容包装——超时翻译为 400 语义的 ImageryProcessingError。
+# 当前消费者是审校矩阵栅格化（classification_stats.compute_revised_change_matrix）；
+# clip/slice 入槽与预览/分析两池随 main 分支合并一并到位，不在本次移植范围。
+from applications.common.utils.resource_slots import (  # noqa: E401
+    _RECOMPUTE_QUEUE_TIMEOUT_SECONDS,
+    SlotTimeoutError,
+    recompute_budget_slot,
+)
+
+
+@contextlib.contextmanager
+def _recompute_budget_slot(timeout=_RECOMPUTE_QUEUE_TIMEOUT_SECONDS):
+    """重计算池兼容包装：超时翻译为 400 语义的 ImageryProcessingError。"""
+    try:
+        with recompute_budget_slot(timeout):
+            yield
+    except SlotTimeoutError as exc:
+        raise ImageryProcessingError(str(exc)) from None
 
 
 def _project_or_404(project_id):
@@ -101,7 +125,10 @@ def _resolve_source(project, source_key):
 
 def list_imagery_candidates(project_id):
     project = _project_or_404(project_id)
-    items = []
+    # 串行收集（DB 查询 + 目录列举），栅格头读取（is_file/open/stat/resolve，
+    # 9p 挂载单文件 ~20ms）放线程池：项目 10 实测 581 个候选串行 11.5s，
+    # 把影像候选清单拖过 BFF 15 秒超时线（2026-11-22，同 assets.py 修法）
+    dataset_entries = []
     for dataset in ProjectDataset.query.filter_by(project_id=project.id, dataset_kind="imagery"):
         path = None
         if dataset.file_path:
@@ -109,20 +136,44 @@ def list_imagery_candidates(project_id):
                 path = resolve_stored_file(get_storage_root(), dataset.file_path)
             except ValueError:
                 path = None
+        dataset_entries.append((dataset, path))
+    input_entries = []
+    # 项目影像输入目录（裁剪/切片产物与登记影像）：与 interpretation 输入同级
+    for sub in ("imagery", "interpretation"):
+        input_entries.extend(_iter_input_candidates(project.id, sub))
+
+    def dataset_item(entry):
+        dataset, path = entry
         summary = _raster_summary(path)
-        items.append({
+        return {
             "dataset_id": dataset.id,
             "display_name": dataset.display_name,
             "year": dataset.year_start,
             **(summary or {"width": None, "height": None, "count": None, "crs": None, "size_bytes": None}),
-        })
-    # 项目影像输入目录（裁剪/切片产物与登记影像）：与 interpretation 输入同级
-    for sub in ("imagery", "interpretation"):
-        _append_input_candidates(items, project.id, sub)
+        }
+
+    def input_item(entry):
+        raster, year = entry
+        summary = _raster_summary(raster)
+        if summary is None:
+            return None
+        return {
+            "dataset_id": None,
+            "display_name": raster.name,
+            # 相对 storage 根的 key（不向浏览器下发服务器绝对路径，AGENTS §6）
+            "storage_key": _storage_key(raster),
+            "year": year,
+            **summary,
+        }
+
+    # 独立文件、独立 dataset 句柄的栅格头读取，GDAL 线程安全
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        items = list(pool.map(dataset_item, dataset_entries))
+        items += [item for item in pool.map(input_item, input_entries) if item is not None]
     return {"items": items, "count": len(items)}
 
 
-def _append_input_candidates(items, project_id, subdir):
+def _iter_input_candidates(project_id, subdir):
     """扫描 inputs/<subdir>/ 下各年份目录的栅格文件（.hdr 伴生跳过）。
 
     imagery 子目录（裁剪/切片产物）无年份分层，文件直接平铺——两种布局都认。
@@ -131,34 +182,22 @@ def _append_input_candidates(items, project_id, subdir):
         get_storage_root(), Path("projects") / str(project_id) / "inputs" / subdir
     )
     if not inputs_root.is_dir():
-        return
+        return []
     # 布局 A：年份子目录（interpretation）
     year_dirs = [d for d in inputs_root.iterdir() if d.is_dir() and d.name.isdigit()]
     if year_dirs:
-        for year_dir in sorted(year_dirs, reverse=True):
-            for raster in sorted(year_dir.iterdir()):
-                _append_one_input(items, raster, int(year_dir.name))
-        return
+        return [
+            (raster, int(year_dir.name))
+            for year_dir in sorted(year_dirs, reverse=True)
+            for raster in sorted(year_dir.iterdir())
+            if raster.suffix.lstrip(".").lower() != "hdr"
+        ]
     # 布局 B：平铺（imagery 裁剪/切片产物）
-    for raster in sorted(inputs_root.iterdir()):
-        if raster.is_file():
-            _append_one_input(items, raster, None)
-
-
-def _append_one_input(items, raster, year):
-    if raster.suffix.lstrip(".").lower() in ("hdr",):
-        return
-    summary = _raster_summary(raster)
-    if summary is None:
-        return
-    items.append({
-        "dataset_id": None,
-        "display_name": raster.name,
-        # 相对 storage 根的 key（不向浏览器下发服务器绝对路径，AGENTS §6）
-        "storage_key": _storage_key(raster),
-        "year": year,
-        **summary,
-    })
+    return [
+        (raster, None)
+        for raster in sorted(inputs_root.iterdir())
+        if raster.is_file() and raster.suffix.lstrip(".").lower() != "hdr"
+    ]
 
 
 def _storage_key(path):

@@ -439,6 +439,13 @@ class TestInitDbFailureReporting(unittest.TestCase):
         self.init_db_module = importlib.import_module(
             "applications.common.scripts.init_db"
         )
+        # init_db 在读不到 MYSQL_PASSWORD 时直接跳过、不回退默认口令；这个值是模块加载时就固定下来的常量
+        # PASSWORD，不是调用时才读环境变量。此前下面两条用例只有在开发主树里才能通过——靠的是本机那份
+        # 被 .gitignore 忽略、含库口令的 backend/.flaskenv，干净检出里必然失败（2026-11-25 在独立
+        # 工作树上跑全量回归时发现）。用例自己把常量换成一个哑口令；连接已被替换成假对象，这个值不会被用到
+        password = patch.object(self.init_db_module, "PASSWORD", "test-only-password")
+        password.start()
+        self.addCleanup(password.stop)
         self.tmp = tempfile.mkdtemp()
         self.sql_path = os.path.join(self.tmp, "init_fixture.sql")
 
@@ -543,7 +550,8 @@ class TestPaginationAndJsonTolerance(SecurityRecheckBase):
         type_utils 命名空间内的整型常量，历史调用方均已退役。）"""
         self.login_as_admin()
         response = self.client.get("/api/analysis/show/anything?page=abc&limit=xyz")
-        self.assertEqual(response.status_code, 200)
+        # 类型白名单拒绝按 P2-2 契约返回 400（仍保持 JSON 包络，不进全局 500）
+        self.assertEqual(response.status_code, 400)
         body = self._json(response)
         self.assertIn("success", body)
         self.assertIn("msg", body)
@@ -561,7 +569,7 @@ class TestPaginationAndJsonTolerance(SecurityRecheckBase):
         """回归：show/type_map 曾因 hasattr 放行非标量属性导致 filter_by(type=list) 500。"""
         self.login_as_admin()
         response = self.client.get("/api/analysis/show/type_map")
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         body = self._json(response)
         self.assertFalse(body.get("success"))
         self.assertIn("暂未开放", body.get("msg", ""))
@@ -573,7 +581,7 @@ class TestPaginationAndJsonTolerance(SecurityRecheckBase):
             data="null",
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         body = self._json(response)
         self.assertFalse(body.get("success"))
         # 消息前缀契约保持"参数异常"，后接具体原因（ids 必须是整型列表）

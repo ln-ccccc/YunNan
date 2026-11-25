@@ -29,6 +29,30 @@
     <el-skeleton v-else-if="loading" :rows="8" animated />
 
     <template v-else-if="result">
+      <!-- 底图覆盖提示独立于 vector_failed 的 v-if/v-else 链：必须放在其前，
+           否则工具栏的 v-else 会改绑到本告警，有提示时隐藏整个编辑工具栏 -->
+      <el-alert
+        v-if="coverageNotice"
+        class="editor-alert"
+        :type="coverageNotice.level"
+        :closable="false"
+        :title="coverageNotice.message"
+        show-icon
+      />
+
+      <!-- 被取代提示（2026-11-24）：概览、台账、变化矩阵、溯源只认"同矿山同年 id 最大的
+           那条"成果。生产 3036 条可编辑成果里 2387 条已被更新的推理成果取代，此前编辑它们
+           没有任何提示，保存成功却哪里都不体现。与上面的覆盖提示一样独立成链 -->
+      <el-alert
+        v-if="result.effective === false"
+        class="editor-alert"
+        type="warning"
+        :closable="false"
+        title="该成果已被同矿山同年更新的成果取代"
+        description="这里保存的修订只保留在本成果自己的版本记录里，不会体现在概览、台账、变化矩阵与溯源中。要修正统计口径，请编辑同一矿山同年里没有“已被取代”标记的那一条成果。"
+        show-icon
+      />
+
       <el-alert
         v-if="result.vector_status === 'vector_failed'"
         class="editor-alert"
@@ -44,14 +68,45 @@
           <span class="state-dot" :class="{ dirty: isDirty }" />
           {{ isDirty ? '存在未保存编辑' : '当前版本已保存' }}
           <span v-if="selectedDrawIds.length" class="selection-count">已选择 {{ selectedDrawIds.length }} 个面</span>
+          <!-- 编辑期校验的状态（2026-11-25）：校验中 / 未通过 / 未确认。什么都不显示表示没有需要用户知道的状态 -->
+          <span
+            v-if="validationNotice.text"
+            class="validation-state"
+            :class="`is-${validationNotice.tone}`"
+            :title="validationNotice.hint"
+            data-testid="validation-state"
+          >{{ validationNotice.text }}</span>
         </div>
         <div class="toolbar-actions">
-          <el-button :disabled="!canUndo || saving" plain title="Ctrl+Z" @click="undoLastEdit">撤销</el-button>
+          <el-button :disabled="(!canUndo && !sketching) || saving" plain title="Ctrl+Z" @click="undoLastEdit">撤销</el-button>
           <el-button :disabled="!canRedo || saving" plain title="Ctrl+Y" @click="redoLastEdit">重做</el-button>
-          <el-button :disabled="!isDirty || saving" plain @click="resetDrawing">放弃全部修改</el-button>
-          <el-button :disabled="selectedDrawIds.length < 2 || saving" plain title="合并同地类的相邻选中面" @click="mergeSelectedFeatures">合并选中</el-button>
-          <el-button :disabled="!selectedDrawIds.length || saving" plain title="轻度简化选中面边缘（≈1m 容差）" @click="simplifySelectedFeatures">消除锯齿</el-button>
-          <el-button :loading="exporting" plain @click="downloadCurrent">导出当前 GeoJSON</el-button>
+          <el-button :disabled="!isDirty || saving" plain @click="discardAllEdits">放弃全部修改</el-button>
+          <el-button
+            :loading="merging"
+            :disabled="selectedDrawIds.length < 2 || mixedClassSelection || saving || merging"
+            :title="mixedClassSelection ? '仅支持合并同地类的面' : '合并同地类的相邻选中面'"
+            plain
+            @click="mergeSelectedFeatures"
+          >
+            合并选中
+          </el-button>
+          <el-button
+            :loading="simplifying"
+            :disabled="!selectedDrawIds.length || saving || simplifying"
+            plain
+            title="按影像分辨率与图斑大小轻度简化选中面边缘（偏离不超过 1 个像元，面积变化不超过 3%）"
+            @click="simplifySelectedFeatures"
+          >
+            消除锯齿
+          </el-button>
+          <el-button
+            :loading="exporting"
+            :title="isDirty ? '导出当前画布（含未保存修改）的 GeoJSON 草稿' : '导出已保存版本的 GeoJSON'"
+            plain
+            @click="downloadCurrent"
+          >
+            {{ isDirty ? '导出草稿 GeoJSON' : '导出已保存 GeoJSON' }}
+          </el-button>
           <el-button type="primary" :disabled="!isDirty" :loading="saving" @click="saveDrawing">保存新版本</el-button>
         </div>
       </div>
@@ -93,7 +148,9 @@
             <span>版本记录</span>
             <small>仅查看，不支持回滚</small>
           </div>
-          <el-empty v-if="!revisions.length" description="暂无版本记录" :image-size="72" />
+          <!-- 版本列表不阻塞首屏（2026-11-23 P1）：加载中不得显示"暂无版本记录"误导用户 -->
+          <div v-if="revisionsLoading" class="revision-loading">版本记录加载中…</div>
+          <el-empty v-else-if="!revisions.length" description="暂无版本记录" :image-size="72" />
           <ol v-else class="revision-list">
             <li v-for="revision in revisions" :key="revision.revision_no">
               <div>
@@ -103,6 +160,17 @@
               <small>{{ revision.feature_count }} 个面 · {{ formatTime(revision.created_at) }}</small>
             </li>
           </ol>
+          <!-- 键盘操作说明（2026-11-24）：此前的说明一个键都没提。放在版本记录下方——
+               那里有整块空白；放进左侧地类面板会被面板高度裁掉、要在面板里滚动才看得到 -->
+          <details class="key-hints">
+            <summary>键盘操作</summary>
+            <ul>
+              <li><kbd>回车</kbd> / <kbd>双击</kbd> / 单击起点：完成绘制；<kbd>Esc</kbd>：取消绘制、退出顶点编辑或取消选中</li>
+              <li>绘制中 <kbd>Backspace</kbd> / <kbd>Delete</kbd> / <kbd>Ctrl</kbd>+<kbd>Z</kbd>：退回上一个点</li>
+              <li>顶点模式下：单击顶点后拖动，<kbd>Delete</kbd> 删除该顶点；点边上的小圆点可加顶点</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>：撤销 / 重做</li>
+            </ul>
+          </details>
         </aside>
       </div>
     </template>
@@ -110,10 +178,8 @@
 </template>
 
 <script>
-import { LngLatBounds, Map, NavigationControl } from 'maplibre-gl';
+import { Map, NavigationControl } from 'maplibre-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
-import union from '@turf/union';
-import simplify from '@turf/simplify';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 
@@ -122,17 +188,43 @@ import {
   getClassificationResult,
   getClassificationRevisions,
   saveClassificationRevision,
+  simplifyClassificationGeometries,
+  unionClassificationGeometries,
+  validateClassificationGeometries,
 } from '@/api/classificationResults';
 import global from '@/global';
 import {
+  DRAW_POINT_STYLES,
+  SKETCH_MODE,
+  basemapCoverageNotice,
   buildAssignedFeatureIdMap,
   buildEditableFeatureCollection,
+  createGuardedDirectSelect,
+  createGuardedSimpleSelect,
+  createStepBackDrawPolygon,
+  describeVertexDeletionBlockers,
+  draftExportFilename,
   isEditableVectorStatus,
+  resolveFocusBounds,
   resolveSecureTileTemplate,
   resolveTileZoomRange,
   rewriteFeatureCollectionJson,
 } from '@/utils/classificationEditor.mjs';
 import { createEditorHistory } from '@/utils/classificationEditorHistory.mjs';
+import {
+  createSimplifiedRegistry,
+  createValidationCoordinator,
+  createValidationScheduler,
+  describeValidationSummary,
+  geometryKey,
+  geometryKeysOf,
+  matchVerdicts,
+  parseSimplifyResponse,
+  parseUnionResponse,
+  simplifyMessages,
+  summarizeSimplify,
+} from '@/utils/classificationEditorValidation.mjs';
+import { saveBlobAsFile } from '@/utils/blobDownload.mjs';
 import {
   classColor as resolveClassColor,
   classColorExpression,
@@ -142,6 +234,15 @@ import { readClassificationResultContext } from '@/utils/classificationResultCon
 
 const FALLBACK_CENTER = [104.2, 25.1];
 const FALLBACK_ZOOM = 5;
+// 编辑完成后多久，把这段时间内新建或改动过的面一次性送去后端校验。mapbox-gl-draw 的
+// draw.update 只在鼠标释放、增删顶点时各发一次，拖动过程中没有事件，不需要再按鼠标事件节流
+const VALIDATION_DEBOUNCE_MS = 200;
+// 待校验的面是刚画出来的，还是改过顶点 / 拖动过的——决定越界提示里的下一步
+const VALIDATION_ACTION_CREATE = 'create';
+const VALIDATION_ACTION_UPDATE = 'update';
+const POLYGON_GEOMETRY_TYPES = new Set(['Polygon', 'MultiPolygon']);
+// 合并请求失败、且后端没有给出具体原因时的兜底文案
+const MERGE_FAILURE_FALLBACK = '几何无效或边界过于复杂，可手动调整后重试';
 
 function emptyFeatureCollection() {
   return { type: 'FeatureCollection', features: [] };
@@ -185,10 +286,10 @@ function drawStyles() {
       paint: { 'circle-radius': 4, 'circle-color': classColorExpression() },
     },
     {
-      id: 'gl-draw-vertex-outer',
+      id: DRAW_POINT_STYLES.vertex.id,
       type: 'circle',
       filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'vertex'], ['!=', 'mode', 'simple_select']],
-      paint: { 'circle-radius': 7, 'circle-color': '#ffffff' },
+      paint: { 'circle-radius': DRAW_POINT_STYLES.vertex.radius, 'circle-color': '#ffffff' },
     },
     {
       id: 'gl-draw-vertex-inner',
@@ -197,10 +298,10 @@ function drawStyles() {
       paint: { 'circle-radius': 5, 'circle-color': '#f59e0b' },
     },
     {
-      id: 'gl-draw-midpoint',
+      id: DRAW_POINT_STYLES.midpoint.id,
       type: 'circle',
       filter: ['all', ['==', 'meta', 'midpoint']],
-      paint: { 'circle-radius': 3, 'circle-color': '#f59e0b' },
+      paint: { 'circle-radius': DRAW_POINT_STYLES.midpoint.radius, 'circle-color': '#f59e0b' },
     },
   ];
 }
@@ -212,27 +313,29 @@ function validBounds(value) {
   return value;
 }
 
-function featureBounds(featureCollection) {
-  const bounds = new LngLatBounds();
-  let found = false;
-  const visit = (value) => {
-    if (!Array.isArray(value)) return;
-    if (value.length >= 2 && Number.isFinite(value[0]) && Number.isFinite(value[1])) {
-      bounds.extend([value[0], value[1]]);
-      found = true;
-      return;
-    }
-    value.forEach(visit);
-  };
-  (featureCollection?.features || []).forEach((feature) => visit(feature?.geometry?.coordinates));
-  return found ? bounds : null;
-}
-
 function createClientFeatureId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `client-${crypto.randomUUID()}`;
   }
   return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// 两个几何的坐标是否逐一相同。合并 / 简化从同步计算变成网络请求后（2026-11-24），
+// 画布在请求期间仍可编辑：某个面被拖动、删除或被撤销 / 重做换掉时，响应对应的是旧几何，
+// 不能套用到新画布上（否则刚做的修改被悄悄覆盖）。这里只做逐值相等比较，不做几何判定
+function sameGeometry(left, right) {
+  const key = geometryKey(left);
+  return key !== null && key === geometryKey(right);
+}
+
+function protocolError(message) {
+  return Object.assign(new Error(message), { kind: 'protocol' });
+}
+
+// 请求失败时给用户看的原因：优先后端 details.reason（422 时说明是哪个面、为什么），
+// 其次是响应拦截器给出的 message
+function requestFailureReason(error, fallback) {
+  return error?.details?.reason || error?.message || fallback;
 }
 
 function filenameFromContentDisposition(value) {
@@ -247,19 +350,34 @@ export default {
       context: null,
       result: null,
       revisions: [],
+      // 版本列表加载中（不阻塞首屏，A2）：为真时版本面板显示"版本记录加载中…"
+      revisionsLoading: false,
       loading: true,
       loadError: '',
+      // 底图覆盖提示（2026-11-23 处置 B）：null=不提示
+      coverageNotice: null,
       saving: false,
       exporting: false,
+      // 合并 / 简化是网络请求（2026-11-24）：在途期间按钮禁用并阻止重入
+      merging: false,
+      simplifying: false,
       isDirty: false,
       activeClassCode: 0,
       selectedDrawIds: [],
+      // 选中面的地类集合（合并按钮置灰依据，E2-b）：与 selectedDrawIds 同步维护，
+      // 只经 setSelectedDrawIds 写入
+      selectedClassCodes: [],
+      // 绘制库当前模式（draw.modechange 同步）：为 draw_polygon 时表示"有画到一半的草稿"。
+      // 撤销按钮据此保持可用（绘制中撤销=退回上一个顶点），保存/导出据此拦截
+      drawMode: 'simple_select',
       // 撤销/重做历史（纯逻辑在 utils/classificationEditorHistory.mjs），
       // canUndo/canRedo 以 data 字段同步供模板响应
       history: null,
       canUndo: false,
       canRedo: false,
       suppressDrawEvents: false,
+      // 编辑期校验的状态汇总（校验中 / 未通过 / 未确认的面各有多少），只经协调器的 onChange 写入
+      validationSummary: { pending: 0, invalid: 0, unknown: 0 },
       // 编辑代次：所有经 recordMutation 的修改递增。保存响应据此识别"保存
       // 期间又发生的新编辑"（配合提交快照比对兜底未结束手势，见 saveDrawing）
       editGeneration: 0,
@@ -272,11 +390,48 @@ export default {
     hasBasemap() {
       return Boolean(this.tileTemplate);
     },
+    // 选中面地类不一致（E2-b）：合并按钮置灰并用 title 说明，
+    // 不再等用户点了才报"仅支持合并同地类的面"
+    mixedClassSelection() {
+      return this.selectedClassCodes.length > 1;
+    },
+    // 绘制进行中（响应式，供模板用；判定口径同 isSketching）
+    sketching() {
+      return this.drawMode === SKETCH_MODE;
+    },
+    // 工具区里那一句校验状态：文案、色调（校验中 / 未通过 / 未确认）与悬停说明
+    validationNotice() {
+      return describeValidationSummary(this.validationSummary);
+    },
   },
   watch: {
     '$route.fullPath'() {
       this.reloadResult();
     },
+  },
+  created() {
+    // 编辑完成后的权威校验（2026-11-24）：面的合法性由后端几何引擎判定，与保存共用同一个
+    // 判定函数。此前前端自带三套几何判定（turf booleanWithin、采样式越界检测、手写的有效性
+    // 镜像），真实数据上 33% 的图斑被误报越界。
+    // 收集 + 防抖、逐面状态（校验中 / 合法 / 不合法 / 未确认）、过期结论的判定、提示文案，
+    // 都在 utils/classificationEditorValidation.mjs 里（纯逻辑，有行为测试）；这里只注入取几何、
+    // 发请求与弹提示。不放进 data()：它们不需要响应式，放进去反而会让 Vue 把内部的集合包成响应式代理
+    this.validationScheduler = createValidationScheduler({
+      delayMs: VALIDATION_DEBOUNCE_MS,
+      validate: (drawIds) => this.validateDrawGeometries(drawIds),
+      onVerdicts: (verdicts) => this.validationCoordinator.verdicts(verdicts),
+      onFailure: (failure) => this.reportValidationFailure(failure),
+    });
+    this.validationCoordinator = createValidationCoordinator({
+      readGeometryKey: (drawId) => this.liveGeometryKey(drawId),
+      requestValidation: (ids, action) => this.validationScheduler.request(ids, action),
+      onChange: (summary) => { this.validationSummary = summary; },
+      warn: (text) => this.$message.warning(text),
+      // 「未确认」会连续出现（断网时每改一笔就一次）：同样内容的提示合并成一条
+      warnMerged: (text) => this.$message.warning({ message: text, grouping: true }),
+    });
+    // 已是消除锯齿结果的面：接口不保证幂等，对没再改过的面不重复简化
+    this.simplifiedResults = createSimplifiedRegistry();
   },
   mounted() {
     document.addEventListener('keydown', this.handleKeydown);
@@ -326,30 +481,45 @@ export default {
       this.context = readClassificationResultContext(window.location.search);
       this.result = null;
       this.revisions = [];
+      this.revisionsLoading = false;
       this.loadError = '';
       this.isDirty = false;
-      this.selectedDrawIds = [];
+      this.setSelectedDrawIds([]);
       this.loading = true;
-      // 切换成果时复位：在途旧保存的 finally 不再清理新上下文的 saving 标志
+      // 切换成果时复位：在途旧保存/导出/合并/简化的 finally 不再清理新上下文的标志
       this.saving = false;
+      this.exporting = false;
+      this.merging = false;
+      this.simplifying = false;
       if (!this.context) {
         this.loading = false;
         this.loadError = '缺少有效的 project_id 或 result_id，无法打开分类成果。';
         return;
       }
       try {
-        const [result, revisionPayload] = await Promise.all([
-          getClassificationResult(this.context.projectId, this.context.resultId),
-          getClassificationRevisions(this.context.projectId, this.context.resultId),
-        ]);
+        // 首屏只等成果详情（2026-11-23 P1）：详情才是画布的门控数据。此前
+        // Promise.all 把详情与版本列表绑死，版本接口慢时骨架屏一直挂着
+        const result = await getClassificationResult(this.context.projectId, this.context.resultId);
         if (seq !== this.reloadSeq || seq === -1) {
           // 过期响应（已被更新的 reload 或卸载取代）：丢弃，不覆盖新状态
           return;
         }
         this.result = result;
-        this.revisions = revisionPayload?.revisions || [];
         this.activeClassCode = Number(result?.classes?.[0]?.class_code ?? 0);
         this.tileTemplate = resolveSecureTileTemplate(result?.map_manifest?.api_tile_url, global.BASEURL);
+        // 关注范围（E1）：图斑 → ROI → manifest。ready_empty 成果没有图斑时按
+        // ROI 判定覆盖，不再因"无图斑"直接不提示
+        const manifestBounds = validBounds(result?.map_manifest?.bounds);
+        this.coverageNotice = basemapCoverageNotice(
+          resolveFocusBounds(result?.current_feature_collection, result?.roi_geometry, manifestBounds),
+          manifestBounds,
+        );
+        // 版本列表 best-effort：不阻塞画布，失败单独提示。提示要过会话归属——
+        // A 成果的失败提示不得弹到已切换的 B 成果上
+        this.loadRevisions().catch(() => {
+          if (seq !== this.reloadSeq || seq === -1) return;
+          this.$message.warning('版本列表读取失败，可点击"重新加载"重试；不影响画布编辑。');
+        });
       } catch (error) {
         if (seq !== this.reloadSeq) {
           return;
@@ -391,6 +561,10 @@ export default {
           tiles: [this.tileTemplate],
           tileSize: 256,
           ...resolveTileZoomRange(mapManifest),
+          // 底图的覆盖范围（清单 bounds = 底图资源登记的范围）同样交给 source：视野里超出覆盖
+          // 的那部分不再逐格请求不存在的瓦片。地图渲染本来正常，但浏览器控制台每次打开都刷
+          // 几十条 404（真实编辑测试一轮 192 条，2026-11-24 记录），范围里的瓦片照常请求
+          ...(bounds ? { bounds } : {}),
         };
         layers.push({ id: 'project-basemap', type: 'raster', source: 'project_basemap', paint: { 'raster-opacity': 0.92 } });
       }
@@ -408,14 +582,113 @@ export default {
       this.map.on('load', () => {
         if (!this.map) return;
         this.map.addControl(new NavigationControl(), 'top-left');
+        // 顶点删除防护挂在真实入口（2026-11-23 P1）：工具栏删除按钮与画布上的 Delete/Backspace
+        // （2026-11-24 起经容器 keydown 转到同一个 draw.trash()，见下）都汇到 direct_select.onTrash。
+        // 此前只在地图容器 click 捕获阶段拦截：键盘完全绕过；且只判"面当前是否 ≤3 顶点"，四边形
+        // Shift 选两个顶点再删除会整面被删；对 MultiPolygon 把环数当顶点数，合法删除被误拦
         this.draw = new MapboxDraw({
           displayControlsDefault: false,
           controls: { polygon: true, trash: true },
           userProperties: true,
           styles: drawStyles(),
+          modes: {
+            ...MapboxDraw.modes,
+            direct_select: createGuardedDirectSelect(
+              MapboxDraw.modes.direct_select,
+              (blockers, geometry) => {
+                // 选项必须放在第一个对象参数里：Element Plus 的 $message.warning(text, X)
+                // 第二个参数是应用上下文(appContext)，传 { grouping } 会被当成上下文，
+                // 消息组件渲染时抛 "Object prototype may only be an Object or null"——
+                // 面被保住了，提示却弹不出来，看起来像删除按钮坏了
+                // （2026-11-24 真实浏览器验收抓到；Node 单测用假处理器碰不到真实消息组件）。
+                // grouping：连按 Delete 时同文案合并，不堆叠
+                this.$message.warning({
+                  message: describeVertexDeletionBlockers(blockers, geometry),
+                  grouping: true,
+                });
+              },
+            ),
+            // 命中规则修正（2026-11-24）：库的"小面优先命中"从未生效，叠在一起或贴着边的
+            // 图斑里点小图斑选中的常常是大图斑；真实成果默认视野下 57 个图斑只有 31 个能单独点中
+            simple_select: createGuardedSimpleSelect(MapboxDraw.modes.simple_select),
+            // 绘制中的删除按钮 / Delete / Backspace / Ctrl+Z 退回上一个顶点，而不是丢弃整个草稿
+            draw_polygon: createStepBackDrawPolygon(MapboxDraw.modes.draw_polygon),
+          },
         });
         this.map.addControl(this.draw, 'top-right');
+        // 顶点模式下没有选中顶点时，删除按钮与 Delete/Backspace 都是无操作（mapbox-gl-draw 1.5
+        // 行为，2026-11 验收遗留）：没有效果也没有提示，用户以为删除坏了。这里给出引导。
+        const guideTrashWithoutVertex = () => {
+          if (!this.draw || this.draw.getMode() !== 'direct_select') return;
+          const selectedPoints = this.draw.getSelectedPoints?.();
+          const hasSelectedVertex = !!(selectedPoints && selectedPoints.features && selectedPoints.features.length);
+          if (!hasSelectedVertex) {
+            this.$message.info(
+              '当前处于顶点编辑模式：请先点击选中某个顶点，删除按钮或 Delete 键才会移除该顶点；要删除整个面，请按 Esc 退出顶点编辑后单击选中面再删除',
+            );
+          }
+        };
+        // 注意必须挂容器捕获阶段：draw 控件自身的按钮 click 监听会拦截同元素上
+        // 后注册的监听（浏览器实测 click 探针不触发），按钮上 addEventListener 是死代码。
+        // 顶点删除防护在 direct_select.onTrash（见上），这里只负责引导提示。
+        this.map.getContainer().addEventListener(
+          'click',
+          (e) => {
+            if (!(e.target instanceof Element) || !e.target.closest('.mapbox-gl-draw_trash')) return;
+            guideTrashWithoutVertex();
+          },
+          true,
+        );
+        // 画布上的按键统一在这里补齐。mapbox-gl-draw 自己的键盘处理只认 class 含 mapboxgl-canvas
+        // 的目标，而这里是 MapLibre 的 maplibregl-canvas——Esc、Delete、Backspace 在画布上从来没
+        // 有效果。Esc 于 2026-11-23 补齐；Delete/Backspace 于 2026-11-24 在真实成果上测出（此前
+        // "Delete 键删除被拦且有说明"的验收结论是上一步按钮提示残留造成的假阳性）。
+        // 删除走 draw.trash()：与工具栏删除按钮汇合到同一条入口，顶点删除防护对按键同样生效。
+        // 只认以画布为目标的事件：焦点在按钮等处时按键不做删除。
+        const TRASH_KEYS = new Set(['Delete', 'Backspace']);
+        this.map.getContainer().addEventListener(
+          'keydown',
+          (e) => {
+            if (!this.draw) return;
+            if (e.key === 'Escape' && this.draw.getMode() === 'direct_select') {
+              const selectedId = this.draw.getSelected?.()?.features?.[0]?.id;
+              this.draw.changeMode('simple_select', selectedId != null ? { featureIds: [selectedId] } : {});
+              return;
+            }
+            // 普通选择下 Esc 清除选中（库自带的键盘处理同样到不了这里）。必须传空对象：
+            // 上游 onSetup 直接读 opts.featureIds，不传会抛 TypeError。
+            // 已处于 simple_select 时库只静默改选中、不发 draw.selectionchange
+            // （api.changeMode 的就近分支），本地选中态必须自己同步——否则地图上的高亮
+            // 已经消失，工具栏仍显示"已选择"，点地类会改到一个不再选中的面
+            if (e.key === 'Escape' && this.draw.getMode() === 'simple_select' && this.selectedDrawIds.length) {
+              this.draw.changeMode('simple_select', {});
+              this.setSelectedDrawIds(this.draw.getSelectedIds());
+              return;
+            }
+            if (!TRASH_KEYS.has(e.key) || !(e.target instanceof HTMLCanvasElement)) return;
+            e.preventDefault();
+            guideTrashWithoutVertex();
+            this.draw.trash();
+          },
+        );
+        // ROI 边界叠加（2026-11-13 风险复盘）：此前绘制越界只能等保存 422 才暴露，现把矿山
+        // 边界画在画布上；画完 / 拖完顶点后由后端校验并即时提示（见 handleDrawCreate）
+        const roiGeometry = this.result?.roi_geometry;
+        this.map.addSource('result-roi', {
+          type: 'geojson',
+          data: roiGeometry
+            ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: roiGeometry }] }
+            : emptyFeatureCollection(),
+        });
+        this.map.addLayer({
+          id: 'result-roi-outline',
+          type: 'line',
+          source: 'result-roi',
+          paint: { 'line-color': '#f43f5e', 'line-width': 1.5, 'line-dasharray': [3, 2] },
+        });
         this.resetDrawing();
+        this.drawMode = this.draw.getMode();
+        this.map.on('draw.modechange', (event) => { this.drawMode = event.mode; });
         this.map.on('draw.create', this.handleDrawCreate);
         this.map.on('draw.update', this.handleDrawUpdate);
         this.map.on('draw.delete', this.handleDrawDelete);
@@ -424,34 +697,104 @@ export default {
       });
     },
     destroyMap() {
+      // 待校验的 draw id 随画布一起作废，逐面的校验状态清空：切换成果或卸载后，
+      // 旧成果的"超出 ROI"提示不得弹到新成果上（在途的响应回来时指纹对不上，自然判为过期）
+      if (this.validationScheduler) this.validationScheduler.cancel();
+      if (this.validationCoordinator) this.validationCoordinator.reset();
+      if (this.simplifiedResults) this.simplifiedResults.clear();
       if (this.map) {
         this.map.remove();
       }
       this.map = null;
       this.draw = null;
       this.tileTemplate = null;
+      this.drawMode = 'simple_select';
     },
     fitToCurrentFeatures(manifestBounds = null) {
       if (!this.map) return;
       const featureCollection = this.result?.current_feature_collection || emptyFeatureCollection();
-      const currentBounds = featureBounds(featureCollection);
-      if (currentBounds) {
-        this.map.fitBounds(currentBounds, { padding: 64, maxZoom: 16, duration: 0 });
-        return;
-      }
-      if (manifestBounds) {
-        this.map.fitBounds([[manifestBounds[0], manifestBounds[1]], [manifestBounds[2], manifestBounds[3]]], {
-          padding: 64,
-          maxZoom: 15,
-          duration: 0,
-        });
-      }
+      // 定位优先级与底图覆盖提示共用 resolveFocusBounds（E1）：图斑范围 → ROI 范围 →
+      // manifest 范围。ready_empty 成果没有图斑时按 ROI（矿山边界）定位，
+      // 不再回退到整张底图范围（看到整个云南，找不到矿山在哪）
+      const contentBounds = resolveFocusBounds(featureCollection, this.result?.roi_geometry, null);
+      const focus = contentBounds || (validBounds(manifestBounds) ? manifestBounds : null);
+      if (!focus) return;
+      // 图斑与 ROI 是"要看的内容"：打开时让它铺满画布，最多放大到 20 级（约 0.13 米/像素，
+      // 已高于生产影像的最高分辨率 0.1 米）。此前封顶 16 级——那是按合成的大矿山定的；
+      // 生产的矿山只有 60 ~ 320 米，16 级下整座矿在画布上只占几十个像素（2026-11-24 真实数据），
+      // 用户要先手动放大十来格才能编辑。manifest 只是底图范围，保持原参数
+      this.map.fitBounds(
+        [[focus[0], focus[1]], [focus[2], focus[3]]],
+        contentBounds ? { padding: 64, maxZoom: 20, duration: 0 } : { padding: 64, maxZoom: 15, duration: 0 },
+      );
     },
     resetDrawing() {
       if (!this.draw || !this.result) return;
+      // 画到一半的草稿也在重置之列。必须先结束绘制模式再 draw.set：直接 set 会把草稿
+      // 从库里删掉，而绘制模式仍在引用它——之后点击没有反应、回车时草稿凭空消失
+      // （2026-11-24 通读绘制库发现）。结束时够三个点的草稿会先成为新面，随即被下面的
+      // 重置清掉；suppressDrawEvents 让这一步不弹提示、不记历史
+      if (this.draw.getMode() === SKETCH_MODE) {
+        this.suppressDrawEvents = true;
+        try {
+          this.draw.changeMode('simple_select', {});
+        } finally {
+          this.suppressDrawEvents = false;
+        }
+      }
+      // 画布即将回到已保存的状态：之前排上、在途的校验都是对着被丢弃的编辑做的，一并作废，
+      // 免得放弃修改之后才弹"超出 ROI"
+      if (this.validationScheduler) this.validationScheduler.cancel();
+      this.validationCoordinator.reset();
+      this.simplifiedResults.clear();
       this.draw.set(this.result.current_feature_collection || emptyFeatureCollection());
       this.resetEditHistory();
-      this.selectedDrawIds = [];
+      this.setSelectedDrawIds([]);
+    },
+    // 是否有画到一半的草稿（绘制模式进行中）
+    isSketching() {
+      return Boolean(this.draw) && this.draw.getMode() === SKETCH_MODE;
+    },
+    // 草稿没有地类、环也不闭合：读整幅画布（保存、导出草稿）之前必须先完成或取消绘制
+    warnSketchInProgress() {
+      this.$message.warning('有正在绘制、还没完成的面：按回车或双击完成绘制，按 Esc 取消，然后再保存或导出');
+    },
+    setSelectedDrawIds(drawIds) {
+      /* selectedDrawIds 的唯一写入口：同步刷新选中面的地类集合（合并按钮置灰依据） */
+      this.selectedDrawIds = drawIds;
+      this.syncSelectionClassCodes();
+    },
+    syncSelectionClassCodes() {
+      // draw.get 对已不存在的要素会抛错，逐个安全读取
+      const codes = new Set();
+      this.selectedDrawIds.forEach((drawId) => {
+        let feature = null;
+        try {
+          feature = this.draw?.get(drawId) || null;
+        } catch (_) {
+          feature = null;
+        }
+        const classCode = feature?.properties?.class_code;
+        if (classCode !== undefined && classCode !== null) codes.add(classCode);
+      });
+      this.selectedClassCodes = [...codes];
+    },
+    // 「放弃全部修改」二次确认（E2-a，2026-11-23）：此前点按钮直接 resetDrawing()，
+    // 无提示丢弃全部编辑。脏检查与按钮禁用条件不变，取消则不动。
+    async discardAllEdits() {
+      if (!this.isDirty || !this.draw) return;
+      const seq = this.reloadSeq;
+      const confirmed = await this.$confirm(
+        '将丢弃当前全部未保存的编辑（撤销栈也会一并清空），此操作无法恢复。',
+        '放弃修改',
+        { confirmButtonText: '放弃修改', cancelButtonText: '继续编辑', type: 'warning' },
+      )
+        .then(() => true)
+        .catch(() => false);
+      if (!confirmed) return;
+      // 确认框打开期间可能已切换成果、或已不再有未保存修改：不得重置新上下文
+      if (seq !== this.reloadSeq || !this.isDirty) return;
+      this.resetDrawing();
     },
     currentDrawJson() {
       if (!this.draw) return '';
@@ -474,20 +817,42 @@ export default {
       this.syncHistoryState();
     },
     undoLastEdit() {
-      if (!this.draw || !this.history?.canUndo) return;
+      if (!this.draw) return;
+      // 绘制进行中：撤销 = 退回刚放置的顶点（GIS 惯例），草稿已空则退出绘制。
+      // 这里绝不能 draw.set()：草稿会被删出库而绘制模式仍在引用它（见 resetDrawing）
+      if (this.draw.getMode() === SKETCH_MODE) {
+        this.draw.trash();
+        return;
+      }
+      if (!this.history?.canUndo) return;
       const previous = this.history.undo(this.currentDrawJson());
       if (!previous) return;
-      this.draw.set(JSON.parse(previous));
-      this.selectedDrawIds = [];
+      this.replaceCanvas(JSON.parse(previous));
+      this.setSelectedDrawIds([]);
       this.syncHistoryState();
     },
     redoLastEdit() {
-      if (!this.draw || !this.history?.canRedo) return;
+      // 绘制进行中重做没有意义，也不能 draw.set()（同撤销）
+      if (!this.draw || this.draw.getMode() === SKETCH_MODE || !this.history?.canRedo) return;
       const next = this.history.redo(this.currentDrawJson());
       if (!next) return;
-      this.draw.set(JSON.parse(next));
-      this.selectedDrawIds = [];
+      this.replaceCanvas(JSON.parse(next));
+      this.setSelectedDrawIds([]);
       this.syncHistoryState();
+    },
+    // 程序化替换整幅画布（撤销 / 重做）。draw.set() 不发 draw 事件，所以在这里对比替换前后：
+    // 几何变了的面重新送后端校验，已经不在画布上的面不再跟踪
+    replaceCanvas(featureCollection) {
+      const before = this.canvasGeometryKeys();
+      this.suppressDrawEvents = true;
+      try {
+        this.draw.set(featureCollection);
+      } finally {
+        this.suppressDrawEvents = false;
+      }
+      const after = this.canvasGeometryKeys();
+      this.simplifiedResults.retainOnly(new Set(after.keys()));
+      this.validationCoordinator.canvasReplaced(before, after);
     },
     handleKeydown(event) {
       if (!this.draw || this.saving) return;
@@ -512,6 +877,8 @@ export default {
       this.selectedDrawIds.forEach((drawId) => {
         this.draw.setFeatureProperty(drawId, 'class_code', classCode);
       });
+      // 批量改类后选中面地类必然一致：同步刷新，解除合并按钮的"异类置灰"
+      this.syncSelectionClassCodes();
       this.recordMutation('properties');
     },
     handleDrawCreate(event) {
@@ -523,21 +890,137 @@ export default {
         this.draw.setFeatureProperty(feature.id, 'feature_id', createClientFeatureId());
       });
       this.recordMutation('create');
+      this.queueGeometryValidation(event.features, VALIDATION_ACTION_CREATE);
     },
-    handleDrawUpdate() {
+    handleDrawUpdate(event) {
+      // 事件参数必须接收（2026-11-23 修复）：此前缺参，body 引用 event 抛
+      // ReferenceError，顶点拖动的 ROI 即时警告从未生效（P2-1）
       if (this.suppressDrawEvents) return;
       this.recordMutation('vertex');
+      this.queueGeometryValidation(event?.features, VALIDATION_ACTION_UPDATE);
     },
-    handleDrawDelete() {
+    // 此刻画布上这个面的几何指纹；面已不在（或取不到）时为 null
+    liveGeometryKey(drawId) {
+      try {
+        return geometryKey(this.draw?.get(drawId)?.geometry || null);
+      } catch (_) {
+        return null;
+      }
+    },
+    // 画布上每个面的几何指纹（draw id → 指纹）
+    canvasGeometryKeys() {
+      return geometryKeysOf(this.draw?.getAll?.());
+    },
+    // 编辑完成后的权威校验：合法性（是否超出矿山边界、几何是否有效）由后端几何引擎判定，
+    // 与保存共用同一个判定函数，前端不再自带任何几何算法。这里只把本次事件里的面记为「校验中」，
+    // 防抖后一次性送出
+    queueGeometryValidation(features, action) {
+      const drawIds = (Array.isArray(features) ? features : [])
+        .map((feature) => feature?.id)
+        .filter((drawId) => drawId !== undefined && drawId !== null);
+      this.validationCoordinator.edited(drawIds, action);
+    },
+    // 调度器的 validate：按 draw id 取此刻的几何发请求。期间已被删除的 id 跳过；一个都不剩就不发
+    // 请求（返回 null）。返回 { ids, items, snapshots }：snapshots 是每个面送审时的几何指纹，
+    // 协调器据此判断结论是否过期。请求失败不在这里吞掉：把送审的面挂在错误上原样抛出，
+    // 由 onFailure 记为「未确认」
+    async validateDrawGeometries(drawIds) {
+      // 归属检查的参照（与 loadRevisions / saveDrawing 同构）：发出瞬间捕获会话代次与成果，
+      // 返回后不一致即没有结论——A 成果的提示不得弹到已切换的 B 成果上
+      const sessionSeq = this.reloadSeq;
+      const { projectId, resultId } = this.context || {};
+      const ids = [];
+      const geometries = [];
+      const snapshots = [];
+      (drawIds || []).forEach((drawId) => {
+        let geometry = null;
+        try {
+          geometry = this.draw?.get(drawId)?.geometry || null;
+        } catch (_) {
+          geometry = null;
+        }
+        const key = geometryKey(geometry);
+        if (key === null) return;
+        ids.push(drawId);
+        snapshots.push(key);
+        geometries.push({ type: geometry.type, coordinates: geometry.coordinates });
+      });
+      if (!ids.length) return null;
+      const sent = { ids, snapshots, sessionSeq };
+      try {
+        const payload = await validateClassificationGeometries(projectId, resultId, geometries);
+        if (
+          sessionSeq !== this.reloadSeq
+          || sessionSeq === -1
+          || this.context?.projectId !== projectId
+          || this.context?.resultId !== resultId
+        ) {
+          return null;
+        }
+        // 接口返回的是 { items } 而不是数组；结论必须与送审的面一一对应、每一项都是后端结论的形状才采用
+        // （见 matchVerdicts）。对不上是「没有取得结论」，不是合法也不是非法——按失败上报，记为未确认
+        const items = matchVerdicts(payload, ids);
+        if (!items) throw protocolError('校验服务返回的数据与送审的面对不上');
+        return { ids, items, snapshots };
+      } catch (error) {
+        error.validation = sent;
+        throw error;
+      }
+    },
+    // 调度器的 onFailure：这一批没取得结论（断网、超时、后端 404 / 500、响应格式异常）。
+    // 切换成果后旧成果的失败不提示；送审之后又被改过的面，协调器按指纹判为过期、不记「未确认」
+    // （它的新一次校验已经在路上）
+    reportValidationFailure({ ids, snapshots, error }) {
+      const sessionSeq = error?.validation?.sessionSeq ?? this.reloadSeq;
+      if (sessionSeq !== this.reloadSeq || this.reloadSeq === -1) return;
+      // 发请求之前就出错时没有送审指纹：按此刻的几何记
+      const sent = snapshots.every((key) => key !== undefined) ? snapshots : ids.map((id) => this.liveGeometryKey(id));
+      this.validationCoordinator.failed({ ids, snapshots: sent, error });
+    },
+    handleDrawDelete(event) {
       if (this.suppressDrawEvents) return;
-      this.selectedDrawIds = [];
+      // 被删掉的面不再跟踪校验状态，也不再到「已是简化结果」里找
+      this.validationCoordinator.removed((event?.features || []).map((feature) => feature.id));
+      this.simplifiedResults.retainOnly(new Set(this.canvasGeometryKeys().keys()));
+      this.setSelectedDrawIds([]);
       this.recordMutation('delete');
     },
     handleSelectionChange(event) {
-      this.selectedDrawIds = (event.features || []).map((feature) => feature.id);
+      this.setSelectedDrawIds((event.features || []).map((feature) => feature.id));
     },
-    mergeSelectedFeatures() {
-      if (!this.draw || this.selectedDrawIds.length < 2) return;
+    // 请求发出时记下的那个面，此刻是否还在画布上且几何没变：在则返回画布上的现状，否则 null
+    unchangedLiveFeature(feature) {
+      let live = null;
+      try {
+        live = this.draw?.get(feature.id) || null;
+      } catch (_) {
+        live = null;
+      }
+      return live && sameGeometry(live.geometry, feature.geometry) ? live : null;
+    },
+    // 在不发 draw 事件的前提下改动画布（合并、简化）。改动过程中抛错就把画布恢复成改动前的样子：
+    // 不留「新面加上了、旧面还没删」这种半完成状态，撤销栈与画布保持一致。
+    // mutate 收到一个函数，用它取改动之后的画布指纹
+    applyCanvasChange(mutate) {
+      const before = this.currentDrawJson();
+      this.suppressDrawEvents = true;
+      try {
+        mutate(() => this.canvasGeometryKeys());
+      } catch (error) {
+        try {
+          this.draw.set(JSON.parse(before));
+        } catch (_) {
+          // 恢复也失败了就不再二次抛出：原始错误更要让用户看到
+        }
+        throw error;
+      } finally {
+        this.suppressDrawEvents = false;
+      }
+    },
+    // 合并（2026-11-24 起走后端）：合并由后端几何引擎完成，结果一定通过了保存同款校验，
+    // 前端不再做结构 / 有效性判定
+    async mergeSelectedFeatures() {
+      if (!this.draw || this.selectedDrawIds.length < 2 || this.merging) return;
       const selected = this.selectedDrawIds
         .map((id) => {
           try {
@@ -546,7 +1029,7 @@ export default {
             return null;
           }
         })
-        .filter((feature) => feature && ['Polygon', 'MultiPolygon'].includes(feature.geometry?.type));
+        .filter((feature) => feature && POLYGON_GEOMETRY_TYPES.has(feature.geometry?.type));
       if (selected.length < 2) {
         this.$message.warning('选中的可合并面不足两个');
         return;
@@ -556,85 +1039,148 @@ export default {
         this.$message.warning('仅支持合并同地类的面；不同地类请分别合并');
         return;
       }
+      // 合并腿上下文守卫（与保存 / 导出腿同构）：请求期间切换成果，旧成果的响应不得动画布、不提示
+      const seq = this.reloadSeq;
+      const mergeResultId = this.context?.resultId;
+      const stillOwnsState = () => this.reloadSeq === seq && this.context?.resultId === mergeResultId;
+      this.merging = true;
       try {
-        const merged = union({
-          type: 'FeatureCollection',
-          features: selected.map((feature) => ({ type: 'Feature', properties: {}, geometry: feature.geometry })),
-        });
-        const geometry = merged?.type === 'Feature' ? merged.geometry : merged?.features?.[0]?.geometry;
-        if (!geometry) throw new Error('union 返回空几何');
-        const classCode = selected[0].properties?.class_code ?? this.activeClassCode;
-        this.suppressDrawEvents = true;
-        try {
-          // 先 add 后 delete：add 失败（无效几何）时原图不被破坏，catch 提示与实际一致
+        // 响应必须带一个结构正确的面：被代理改写或截断的响应按失败处理，画布一个面都不动
+        const merged = parseUnionResponse(await unionClassificationGeometries(
+          this.context.projectId,
+          mergeResultId,
+          selected.map((feature) => feature.geometry),
+        ));
+        if (!stillOwnsState()) return;
+        // 请求期间画布没有冻结：所选的面里任何一个被拖动、删除或被撤销 / 重做换掉，
+        // 合并结果对应的都是旧几何——不套用，免得覆盖刚做的修改
+        const live = selected.map((feature) => this.unchangedLiveFeature(feature));
+        if (live.some((feature) => !feature)) {
+          this.$message.warning('合并期间所选的面已被修改，本次没有合并；请确认后重试');
+          return;
+        }
+        // 地类取此刻画布上的值（请求期间可能改过类），同地类的前提对着现状再核一次
+        const liveClassCodes = new Set(live.map((feature) => feature.properties?.class_code));
+        if (liveClassCodes.size > 1) {
+          this.$message.warning('仅支持合并同地类的面；不同地类请分别合并');
+          return;
+        }
+        const classCode = live[0].properties?.class_code ?? this.activeClassCode;
+        this.applyCanvasChange((afterKeys) => {
+          // 先 add 后 delete：add 失败（无效几何）时原图不被破坏
+          const mergedDrawId = createClientFeatureId();
           this.draw.add({
             type: 'Feature',
-            id: createClientFeatureId(),
+            id: mergedDrawId,
             properties: { class_code: classCode, feature_id: createClientFeatureId() },
-            geometry,
+            geometry: merged,
           });
           this.draw.delete(selected.map((feature) => feature.id));
-        } finally {
-          this.suppressDrawEvents = false;
-        }
-        this.selectedDrawIds = [];
+          // 被合并掉的面不再跟踪；合并出来的面后端已经校验过
+          this.simplifiedResults.retainOnly(new Set(afterKeys().keys()));
+          this.validationCoordinator.removed(selected.map((feature) => feature.id));
+          this.validationCoordinator.backendValidated([mergedDrawId]);
+        });
+        this.setSelectedDrawIds([]);
         this.recordMutation('merge');
         this.$message.success(`已合并为 1 个面（原 ${selected.length} 个）`);
-      } catch (_) {
-        this.$message.error('合并失败：几何无效或边界过于复杂，可手动调整后重试');
+      } catch (error) {
+        if (!stillOwnsState()) return;
+        this.$message.error(`合并失败：${requestFailureReason(error, MERGE_FAILURE_FALLBACK)}`);
+      } finally {
+        // 上下文已被更新的 reload 接管时 merging 由该 reload 复位，这里不动
+        if (stillOwnsState() || this.reloadSeq === -1) {
+          this.merging = false;
+        }
       }
     },
-    simplifySelectedFeatures() {
-      if (!this.draw || !this.selectedDrawIds.length) return;
-      // 容差 ≈1.1m（0.00001°）：消除栅格掩膜边缘锯齿而不明显改变地物形状
-      const tolerance = 0.00001;
-      let simplifiedCount = 0;
-      let skippedCount = 0;
-      const ids = [...this.selectedDrawIds];
-      this.suppressDrawEvents = true;
-      try {
-        ids.forEach((id) => {
+    // 消除锯齿（2026-11-24 起走后端）：简化与「简化后是否仍合法、面积和形态变化是否在精度门槛内」
+    // 都由后端完成，changed 的结果一定通过了保存同款校验；前端只按 outcome 替换画布，不做任何几何判定。
+    // 容差由后端按影像像元与图斑面积决定
+    async simplifySelectedFeatures() {
+      if (!this.draw || !this.selectedDrawIds.length || this.simplifying) return;
+      const selected = this.selectedDrawIds
+        .map((id) => {
           try {
-            const feature = this.draw.get(id);
-            if (!feature || !['Polygon', 'MultiPolygon'].includes(feature.geometry?.type)) return;
-            const simplified = simplify(
-              { type: 'Feature', properties: {}, geometry: feature.geometry },
-              { tolerance, highQuality: false },
-            );
-            // turf 输出 geometry 键序与 draw.get 不同，整对象 stringify 恒不等——按坐标比较
-            if (
-              JSON.stringify(simplified.geometry.coordinates) ===
-              JSON.stringify(feature.geometry.coordinates)
-            ) return;
-            // 先 add 后 delete（同 merge 原子化策略）；单面退化（环点数不足等）跳过不中断整批
-            this.draw.add({
-              type: 'Feature',
-              id: createClientFeatureId(),
-              properties: feature.properties,
-              geometry: simplified.geometry,
-            });
-            this.draw.delete(id);
-            simplifiedCount += 1;
+            return this.draw.get(id);
           } catch (_) {
-            skippedCount += 1;
+            return null;
           }
-        });
-      } finally {
-        this.suppressDrawEvents = false;
-      }
-      if (skippedCount) {
-        this.$message.warning(`${skippedCount} 个面无法简化（几何退化），已跳过`);
-      }
-      if (simplifiedCount) {
-        this.selectedDrawIds = [];
-        this.recordMutation('simplify');
-        this.$message.success(`已简化 ${simplifiedCount} 个面的边缘`);
-      } else {
+        })
+        .filter((feature) => feature && POLYGON_GEOMETRY_TYPES.has(feature.geometry?.type));
+      if (!selected.length) {
         this.$message.info('选中面的边缘已足够平滑');
+        return;
+      }
+      // 接口不保证幂等：对同一个面再简化一次，约 5% 的面还会变，偏差会叠上去。
+      // 仍是上次简化返回的几何、之后没被修改的面不重复提交
+      const targets = selected.filter((feature) => !this.simplifiedResults.isFreshResult(feature));
+      const alreadySimplified = selected.length - targets.length;
+      if (!targets.length) {
+        this.$message.info(simplifyMessages(summarizeSimplify([]), { alreadySimplified })[0].text);
+        return;
+      }
+      // 简化腿上下文守卫（同上）
+      const seq = this.reloadSeq;
+      const simplifyResultId = this.context?.resultId;
+      const stillOwnsState = () => this.reloadSeq === seq && this.context?.resultId === simplifyResultId;
+      this.simplifying = true;
+      try {
+        const simplified = await simplifyClassificationGeometries(
+          this.context.projectId,
+          simplifyResultId,
+          targets.map((feature) => feature.geometry),
+        );
+        if (!stillOwnsState()) return;
+        // 返回项必须与送审的面一一对应、每一项都是后端会给的形状；对不上整次按失败处理，画布一个面都不动
+        const items = parseSimplifyResponse(simplified, targets.length);
+        // 请求期间这个面被拖动、删除或被撤销 / 重做换掉：结论对应的是旧几何，不套用
+        let changedMeanwhileCount = 0;
+        const applied = [];
+        items.forEach((item, index) => {
+          if (item.outcome !== 'changed') return;
+          const live = this.unchangedLiveFeature(targets[index]);
+          if (live) applied.push({ live, geometry: item.geometry });
+          else changedMeanwhileCount += 1;
+        });
+        if (applied.length) {
+          this.applyCanvasChange((afterKeys) => {
+            const newIds = [];
+            // changed → 用后端给的几何替换原面（properties 原样保留）；先 add 后 delete。
+            // rejected / unchanged 的面不动
+            applied.forEach(({ live, geometry }) => {
+              const newId = createClientFeatureId();
+              this.draw.add({ type: 'Feature', id: newId, properties: live.properties, geometry });
+              this.draw.delete(live.id);
+              this.simplifiedResults.remember(newId, geometry);
+              newIds.push(newId);
+            });
+            this.simplifiedResults.retainOnly(new Set(afterKeys().keys()));
+            // 被替换掉的面不再跟踪；简化的结果后端已经校验过，其余面的跟踪状态不变
+            this.validationCoordinator.removed(applied.map(({ live }) => live.id));
+            this.validationCoordinator.backendValidated(newIds);
+          });
+          this.setSelectedDrawIds([]);
+          this.recordMutation('simplify');
+        }
+        simplifyMessages(summarizeSimplify(items), { changedMeanwhile: changedMeanwhileCount, alreadySimplified })
+          .forEach(({ type, text }) => this.$message[type](text));
+      } catch (error) {
+        if (!stillOwnsState()) return;
+        this.$message.error(`简化失败：${requestFailureReason(error, '几何服务暂时不可用')}`);
+      } finally {
+        // 上下文已被更新的 reload 接管时 simplifying 由该 reload 复位，这里不动
+        if (stillOwnsState() || this.reloadSeq === -1) {
+          this.simplifying = false;
+        }
       }
     },
     async saveDrawing() {
       if (!this.context || !this.result || !this.draw) return;
+      if (this.isSketching()) {
+        this.warnSketchInProgress();
+        return;
+      }
       let featureCollection;
       try {
         featureCollection = buildEditableFeatureCollection(this.draw.getAll());
@@ -652,6 +1198,10 @@ export default {
       // draw.update 要到鼠标释放才发出、代次可能未变，需快照比对兜底
       const submittedDrawJson = this.currentDrawJson();
       const editSeq = this.editGeneration;
+      // 保存 422 定位用（E2-d）：后端 details.feature_index 是提交 FC 的 0 起下标，
+      // 与 draw.getAll().features 同序——记下提交瞬间各下标对应的画布要素 id，
+      // 保存期间画布若有增删，按 id 仍能找回出错的那个面
+      const submittedDrawIds = this.draw.getAll().features.map((feature) => feature.id);
       // 保存提交边界（2026-10-31 复审 P2）：提交后的首个 vertex 手势不得被
       // coalesce 窗口合并进提交前手势，否则历史栈中没有保存边界快照，
       // markSaved 只能退化清栈，保存期间的修改无法撤销
@@ -680,23 +1230,44 @@ export default {
           }
           this.history.markSaved(rewriteFeatureCollectionJson(submittedDrawJson, assignedIds));
           this.syncHistoryState();
-          await this.loadRevisions();
+          // 保存期间没再改过的面，后端已经在保存时认可了它们：还在「校验中」或「未确认」的据此记为合法
+          this.validationCoordinator.savedUnchanged(geometryKeysOf(JSON.parse(submittedDrawJson)));
+          // 提示先于任何 await 弹出（2026-11-23 P1）：此前先等版本刷新再提示，
+          // 刷新期间用户切到别的成果时，归属检查会把"已保存"提示吞掉
           this.$message.warning(`已保存为 V${saved.current_revision_no}；保存期间又有新的修改，请再次保存。`);
+          // 保存事务已成功：先解除 saving（工具栏立即可用），再发不阻塞的版本刷新
+          // ——版本接口慢时按钮不再被占到刷新结束
+          this.saving = false;
+          this.loadRevisions().catch(() => {
+            if (!stillOwnsState()) return;
+            this.$message.warning(`已保存为 V${saved.current_revision_no}；版本列表刷新失败，可手动刷新查看。`);
+          });
           return;
         }
+        // 画布换成服务端规范化后的新版本：全部面都是后端校验过的，逐面的校验状态清空；
+        // 在途的校验响应回来时指纹对不上，自然判为过期
+        this.validationScheduler.cancel();
+        this.validationCoordinator.reset();
+        this.simplifiedResults.clear();
         this.draw.set(saved.feature_collection || emptyFeatureCollection());
         // 新版本即新基线：编辑历史作废，撤销只服务当前版本的未保存手势
         this.resetEditHistory();
-        this.selectedDrawIds = [];
-        await this.loadRevisions();
+        this.setSelectedDrawIds([]);
+        // 问题11（2026-11-15，自 B2 候选移植 2026-11-23）：保存成功与列表刷新
+        // 分离——刷新失败不伪装成保存失败，不诱导用户重复保存
         this.$message.success(`已保存为 V${saved.current_revision_no}`);
+        // 同上：先解除 saving，再发不阻塞的版本刷新
+        this.saving = false;
+        this.loadRevisions().catch(() => {
+          if (!stillOwnsState()) return;
+          this.$message.warning(`已保存为 V${saved.current_revision_no}；版本列表刷新失败，可手动刷新查看。`);
+        });
       } catch (error) {
         if (!stillOwnsState()) return;
         if (error?.status === 409) {
           this.$message.error('该成果已有新版本，请重新加载后再编辑；系统不会自动覆盖他人的修改。');
         } else if (error?.status === 422) {
-          const reason = error?.details?.reason || error?.details?.message || error?.message;
-          this.$message.error(`无法保存：${reason}`);
+          this.locateSaveValidationFailure(error, submittedDrawIds);
         } else {
           this.$message.error(error?.message || '保存分类成果失败');
         }
@@ -721,27 +1292,126 @@ export default {
       });
     },
     async loadRevisions() {
-      if (!this.context) return;
-      const payload = await getClassificationRevisions(this.context.projectId, this.context.resultId);
+      if (!this.context) return false;
+      // 响应归属检查（问题12，2026-11-15 移植；2026-11-23 P1 补全为四项）：以
+      // reloadSeq 为编辑会话代次，发出前捕获会话代次、请求序号、项目与成果；返回后
+      // 四项全部一致才写 revisions 并返回 true，否则返回 false 且不动任何状态。
+      // 此前只比后三项：同一成果"重新加载"后，本方法自己发的请求没登记进会话，
+      // 更早发出的旧 loadRevisions 响应归属检查全部通过——版本列表先显示 V2
+      // 又被旧响应改回 V1
+      const { projectId, resultId } = this.context;
+      const sessionSeq = this.reloadSeq;
+      const seq = (this.revisionsLoadSeq = (this.revisionsLoadSeq || 0) + 1);
+      this.revisionsLoading = true;
+      let payload;
+      try {
+        payload = await getClassificationRevisions(projectId, resultId);
+      } finally {
+        // 只有仍是当前会话的最新请求才收起 loading：过期请求的 finally 不得
+        // 提前收起新请求的"加载中"
+        if (seq === this.revisionsLoadSeq && sessionSeq === this.reloadSeq) {
+          this.revisionsLoading = false;
+        }
+      }
+      const current = this.context;
+      if (
+        sessionSeq !== this.reloadSeq
+        || seq !== this.revisionsLoadSeq
+        || !current
+        || current.projectId !== projectId
+        || current.resultId !== resultId
+      ) {
+        return false;
+      }
       this.revisions = payload?.revisions || [];
-    },    async downloadCurrent() {
+      return true;
+    },
+    // 保存 422 定位（E2-d，2026-11-23）：后端 details 带 feature_index（提交 FC 的
+    // 0 起下标，与 draw.getAll().features 同序）与 reason。此前只回显"无法保存：
+    // 原因"，用户找不到是哪个面；现在在地图上选中并定位到出错的要素。
+    // 不带 feature_index 的请求体级错误、下标非法、或该面在保存期间已被删除时，
+    // 退化为只回显原因 / 序号。
+    locateSaveValidationFailure(error, submittedDrawIds) {
+      const reason = error?.details?.reason || error?.details?.message || error?.message;
+      const featureIndex = error?.details?.feature_index;
+      const total = submittedDrawIds.length;
+      if (!Number.isInteger(featureIndex) || featureIndex < 0 || featureIndex >= total) {
+        this.$message.error(`无法保存：${reason}`);
+        return;
+      }
+      const targetId = submittedDrawIds[featureIndex];
+      let target = null;
+      try {
+        target = this.draw?.get(targetId) || null;
+      } catch (_) {
+        // 保存期间该面已被删除：无法定位
+        target = null;
+      }
+      // 保存期间用户可能又开始画面：此时切换模式会把草稿结束或丢弃，只提示、不定位
+      const sketching = this.isSketching();
+      if (target && !sketching) {
+        this.draw.changeMode('simple_select', { featureIds: [targetId] });
+        // 已处于 simple_select 时 changeMode 静默改选、不发 selectionchange，同步本地选中态
+        this.setSelectedDrawIds([targetId]);
+        const bounds = resolveFocusBounds({ type: 'FeatureCollection', features: [target] }, null, null);
+        if (bounds && this.map) {
+          this.map.fitBounds(
+            [[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
+            { padding: 80, maxZoom: 18, duration: 400 },
+          );
+        }
+      }
+      const located = target && !sketching ? '，已在地图上选中并定位' : '';
+      this.$message.error(`无法保存：第 ${featureIndex + 1} 个面（共 ${total} 个）${reason}${located}`);
+    },
+    async downloadCurrent() {
       if (!this.context) return;
+      // 导出腿上下文守卫（与保存腿同构，2026-11-23 P1）：导出 A 期间切到成果 B，
+      // A 的错误提示与 exporting 复位不得落到 B
+      const seq = this.reloadSeq;
+      const exportResultId = this.context.resultId;
+      const stillOwnsState = () => this.reloadSeq === seq && this.context?.resultId === exportResultId;
+      if (this.isDirty) {
+        this.exportDraft(exportResultId);
+        return;
+      }
       this.exporting = true;
       try {
-        const response = await exportClassificationResult(this.context.projectId, this.context.resultId);
-        const objectUrl = URL.createObjectURL(response.data);
-        const anchor = document.createElement('a');
-        anchor.href = objectUrl;
-        anchor.download = filenameFromContentDisposition(response.headers?.['content-disposition']);
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        URL.revokeObjectURL(objectUrl);
+        const response = await exportClassificationResult(this.context.projectId, exportResultId);
+        saveBlobAsFile(
+          response.data,
+          filenameFromContentDisposition(response.headers?.['content-disposition']),
+        );
       } catch (error) {
+        if (!stillOwnsState()) return;
         this.$message.error(error?.message || '导出当前分类成果失败');
       } finally {
-        this.exporting = false;
+        // 上下文已被更新的 reload 接管时 exporting 由该 reload 复位，这里不动
+        if (stillOwnsState() || this.reloadSeq === -1) {
+          this.exporting = false;
+        }
       }
+    },
+    // 草稿导出（E2-e，2026-11-23）：服务端接口导出的是已保存版本，有未保存修改时
+    // 导出的不是用户看到的内容。改为在客户端导出当前画布（与保存提交同一套规范化：
+    // 只保留 class_code / feature_id），文件名标明"基于 Vn 的未保存草稿"
+    exportDraft(resultId) {
+      if (this.isSketching()) {
+        this.warnSketchInProgress();
+        return;
+      }
+      let draft;
+      try {
+        draft = buildEditableFeatureCollection(this.draw.getAll());
+      } catch (error) {
+        this.$message.error(error?.message || '草稿矢量数据无效');
+        return;
+      }
+      saveBlobAsFile(
+        new Blob([JSON.stringify(draft)], { type: 'application/geo+json' }),
+        draftExportFilename(resultId, this.result?.current_revision_no),
+      );
+      this.$message.info('已导出草稿（包含未保存的修改）；保存后导出的才是正式版本');
     },
     classColor(definition) {
       return resolveClassColor(definition);
@@ -861,6 +1531,30 @@ h1 {
   color: var(--text-muted);
 }
 
+/* 编辑期校验的状态：校验中（灰）/ 未通过（红）/ 未确认（橙，悬停有说明） */
+.validation-state {
+  margin-left: 10px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: help;
+}
+
+.validation-state.is-pending {
+  background: #eef1f5;
+  color: var(--text-muted);
+}
+
+.validation-state.is-invalid {
+  background: #fdecea;
+  color: #c0392b;
+}
+
+.validation-state.is-unknown {
+  background: #fdf3e7;
+  color: #b45309;
+}
+
 .editor-workspace {
   display: grid;
   grid-template-columns: 220px minmax(480px, 1fr) 260px;
@@ -946,6 +1640,44 @@ h1 {
   border-top: 1px solid var(--border-light);
 }
 
+/* 键盘操作说明（2026-11-24）：默认收起，只占一行；展开后用版本记录下方的空白 */
+.key-hints {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.key-hints summary {
+  color: var(--text-secondary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.key-hints ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.key-hints li + li {
+  margin-top: 4px;
+}
+
+.key-hints kbd {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+}
+
 .map-card {
   position: relative;
   min-height: 650px;
@@ -956,8 +1688,11 @@ h1 {
   min-height: 650px;
 }
 
+/* 纯文字提示，没有可点内容：不拦截鼠标。否则被它盖住的那块地图上点击画不出顶点、
+   选不中图斑，且没有任何反馈（2026-11-24 真实浏览器回归抓到；没有底图的项目一直显示它） */
 .map-notice {
   position: absolute;
+  pointer-events: none;
   right: 14px;
   bottom: 14px;
   max-width: 330px;
@@ -966,6 +1701,13 @@ h1 {
   border-radius: 9px;
   background: rgba(255, 251, 235, 0.94);
   color: #92400e;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* 版本列表加载中占位（2026-11-23 P1）：与版本条目的次要文字同一视觉层级 */
+.revision-loading {
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.55;
 }
@@ -1042,7 +1784,7 @@ h1 {
 
   .class-panel .panel-heading,
   .class-panel .panel-note {
-    grid-column: 1 / -1;
+    grid-column: 1 - / -1;
   }
 
   .map-card,

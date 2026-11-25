@@ -673,3 +673,34 @@ test('quality review relay forwards result id and threshold query', async () => 
   assert.equal(calls[0].options.cookie, '');
   assert.equal(calls[0].options.query.small_area_threshold_m2, '200');
 });
+
+test('createProjectRoutes proxies dataset deletion id, cookie, and upstream status', async () => {
+  const calls = [];
+  const router = createProjectRoutes({
+    projectApi: {
+      async deleteProjectDataset(projectId, datasetId, cookie) {
+        calls.push({ projectId, datasetId, cookie });
+        return { status: 200, body: { success: true, code: 0, data: { id: 9, deleted: true } } };
+      },
+    },
+  });
+
+  const app = express();
+  app.use('/api/projects', router);
+  const server = await new Promise((resolve) => {
+    const instance = app.listen(0, () => resolve(instance));
+  });
+  const { port } = server.address();
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/projects/7/datasets/9`, {
+      method: 'DELETE',
+      headers: { cookie: 'session=route-test' },
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.data.deleted, true);
+    assert.deepEqual(calls[0], { projectId: '7', datasetId: '9', cookie: 'session=route-test' });
+  } finally {
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});

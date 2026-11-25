@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -862,8 +863,13 @@ class TestSpatialTerminateKillsWholeProcessGroup(unittest.TestCase):
 
     gdal2tiles --processes=N 的 multiprocessing 池子进程不在 _terminate 的
     单点 terminate 范围内——孤儿池会继续切瓦片占 CPU/写盘。江西教训：取消
-    链路不能只靠 mock 单测（曾有取消传参 TypeError 被 mock 静默吞掉），
+    链路不能只靠 mock 单测（曾有取消入参 TypeError 被 mock 静默吞掉），
     本用例用真实三进程组验证 killpg 行为。
+
+    职责边界（2026-11-24）：这里只验证代码职责——整组杀、不留还在跑的孤儿。
+    "被杀子进程的僵尸条目被收尸"是 PID 1 的职责，部署上由 compose 的 init: true
+    保证（见 TestSpatialWorkerRunsUnderInitReaper 的静态断言）。此前把僵尸条目
+    也算作"存活"，在没配 init 的一次性测试容器里必然假红。
     """
 
     PARENT_SCRIPT = (
@@ -875,14 +881,25 @@ class TestSpatialTerminateKillsWholeProcessGroup(unittest.TestCase):
     )
 
     @staticmethod
-    def _alive(pid):
+    def _is_zombie(pid):
+        """Linux：/proc/<pid>/stat 第 3 个字段为 Z 即已退出待收尸。无 /proc 的平台一律不是。"""
+        try:
+            with open(f"/proc/{int(pid)}/stat", "r", encoding="utf-8") as handle:
+                fields = handle.read().rsplit(")", 1)[-1].split()
+            return bool(fields) and fields[0] == "Z"
+        except (OSError, ValueError, IndexError):
+            return False
+
+    @classmethod
+    def _alive(cls, pid):
+        """进程是否仍在运行。已退出、只剩待收尸的僵尸条目不算运行。"""
         try:
             os.kill(int(pid), 0)
-            return True
         except ProcessLookupError:
             return False
         except PermissionError:
-            return True  # 存在但属他人（zombie 转收尸中）
+            return True  # 存在但属他人
+        return not cls._is_zombie(pid)
 
     def test_terminate_kills_parent_and_pool_children(self):
         import subprocess as sp
@@ -921,6 +938,33 @@ class TestSpatialTerminateKillsWholeProcessGroup(unittest.TestCase):
                     os.killpg(os.getpgid(int(pid)), 9)
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
+
+
+class TestSpatialWorkerRunsUnderInitReaper(unittest.TestCase):
+    """部署半边的静态断言：切片 worker 的容器必须由 init（tini）任 PID 1。
+
+    _terminate 整组杀 gdal2tiles 的 multiprocessing 池后，被杀子进程重挂到 PID 1；
+    入口是 exec python，不 reap 孤儿，反复取消任务会积累 Z 状态进程（2026-11-13
+    风险复盘）。进程组 terminate 的行为由上一个用例验证，这里锁定它的部署前提，
+    避免 compose 改动把 init 悄悄拿掉。"""
+
+    def test_spatial_worker_service_declares_init(self):
+        compose_path = Path(__file__).resolve().parents[1] / "docker-compose.prod.yml"
+        lines = compose_path.read_text(encoding="utf-8").splitlines()
+        start = next(
+            (index for index, line in enumerate(lines) if line.rstrip() == "  spatial-worker:"),
+            None,
+        )
+        self.assertIsNotNone(start, "compose 里应有 spatial-worker 服务")
+        block = []
+        for line in lines[start + 1:]:
+            if re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):  # 下一个服务头
+                break
+            block.append(line)
+        self.assertTrue(
+            any(line.strip() == "init: true" for line in block),
+            "spatial-worker 必须 init: true（tini 任 PID 1 负责收尸）",
+        )
 
 
 class TestSpatialJobDeadlineKillsHangingProcess(unittest.TestCase):

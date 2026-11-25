@@ -12,7 +12,7 @@
         <a
           class="platform-title"
           @click="goShow"
-        >智能遥感解译系统</a>
+        >废弃矿山生态自然恢复过程管理系统V1.0</a>
       </div>
     </div>
     <el-divider content-position="center">
@@ -98,7 +98,7 @@ export default {
     goSegmentation,
     goSpectralIndices,
     goShow() {
-      this.$message.success("欢迎使用智能遥感解译系统");
+      this.$message.success("欢迎使用废弃矿山生态自然恢复过程管理系统V1.0");
     }
   }
 };

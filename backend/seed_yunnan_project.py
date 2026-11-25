@@ -16,6 +16,12 @@ def main():
     )
     parser.add_argument("--expected-count", type=int, default=EXPECTED_MINE_COUNT)
     parser.add_argument("--manager", default=os.getenv("ADMIN_USERNAME", "admin"))
+    parser.add_argument(
+        "--skip-foreign",
+        action="store_true",
+        help="自动启动模式：检测到非云南项目时跳过种子并告警（不抛错）；"
+        "数据库异常等其余失败仍正常报错。手动执行不带此参数保持严格校验。",
+    )
     args = parser.parse_args()
 
     app = create_app(os.getenv("FLASK_CONFIG", "development"))
@@ -24,6 +30,7 @@ def main():
             kml_path=args.kml_path,
             expected_count=args.expected_count,
             manager=args.manager,
+            skip_foreign=args.skip_foreign,
         )
         print(json.dumps(result, ensure_ascii=False))
 

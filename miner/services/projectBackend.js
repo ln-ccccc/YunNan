@@ -1,3 +1,5 @@
+import { fetchBackend } from './backendFetch.js';
+
 const backendBaseUrl = (process.env.GEOVIEW_BACKEND_URL || 'http://localhost:5008').replace(/\/$/, '');
 
 async function requestJson(method, path, { query, body, cookie, timeoutMs = 15000 } = {}) {
@@ -8,7 +10,7 @@ async function requestJson(method, path, { query, body, cookie, timeoutMs = 1500
     }
   });
 
-  const response = await fetch(url, {
+  const response = await fetchBackend(url, {
     method,
     headers: {
       ...(body ? { 'content-type': 'application/json' } : {}),
@@ -27,17 +29,32 @@ async function requestJson(method, path, { query, body, cookie, timeoutMs = 1500
   return { status: response.status, body: parsed };
 }
 
+/**
+ * 路由参数校验错误：BFF 在向上游发请求之前抛出，status 固定 400。
+ * 路由层按 error.status 识别后回 400 + 校验文案；文案由 BFF 依字段名生成、不含上游
+ * 细节，可回显。此前抛的是普通 Error，被路由 catch 兜成 502「上游服务不可用，请稍后
+ * 重试」，把客户端传错参数误报成上游故障并诱导重试（2026-11-23 D2）。
+ */
+export class RouteParamError extends Error {
+  status = 400;
+
+  constructor(message) {
+    super(message);
+    this.name = 'RouteParamError';
+  }
+}
+
 function positiveRouteId(value, fieldName) {
   const raw = String(value ?? '');
   if (!/^[1-9]\d*$/.test(raw)) {
-    throw new Error(`${fieldName}参数不合法`);
+    throw new RouteParamError(`${fieldName}参数不合法`);
   }
   return raw;
 }
 
 async function requestBinary(method, path, { cookie, timeoutMs = 30000 } = {}) {
   const url = new URL(`${backendBaseUrl}${path}`);
-  const response = await fetch(url, {
+  const response = await fetchBackend(url, {
     method,
     headers: cookie ? { cookie } : {},
     signal: AbortSignal.timeout(timeoutMs),
@@ -64,7 +81,7 @@ async function requestBinaryStream(method, path, { cookie, connectTimeoutMs = 30
   const connectTimer = setTimeout(() => controller.abort(), connectTimeoutMs);
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetchBackend(url, {
       method,
       headers: cookie ? { cookie } : {},
       signal: controller.signal,
@@ -216,6 +233,11 @@ export const projectApi = {
   createProjectDataset(projectId, payload, cookie) {
     return requestJson('POST', `/api/projects/${projectId}/datasets`, { body: payload, cookie });
   },
+  deleteProjectDataset(projectId, datasetId, cookie) {
+    const safeProjectId = positiveRouteId(projectId, '项目');
+    const safeDatasetId = positiveRouteId(datasetId, '数据集');
+    return requestJson('DELETE', `/api/projects/${safeProjectId}/datasets/${safeDatasetId}`, { cookie });
+  },
   getProjectTimeline(projectId, cookie) {
     return requestJson('GET', `/api/projects/${projectId}/timeline`, { cookie });
   },
@@ -226,7 +248,16 @@ export const projectApi = {
     return requestJson('POST', `/api/projects/${projectId}/restore`, { body: payload, cookie });
   },
   createProjectExport(projectId, payload, cookie) {
-    return requestJson('POST', `/api/projects/${projectId}/exports`, { body: payload, cookie });
+    // 后端同步生成导出制品（非后台任务）：项目 10 的 xlsx 台账实测约 55s。沿用默认 15s
+    // 会造成「BFF 先回 502、后端仍继续生成并落一条 completed 记录」，用户看到失败去重试
+    // 即重复建档（2026-11-23 D1）。与 clip/slice 长请求先例对齐放宽到 10 分钟（生产
+    // compose 的 gunicorn 超时 WEB_TIMEOUT_SECONDS=1800 更宽，不会先于 BFF 断开）；前端
+    // 失败分支据此改为先刷新列表、不诱导重试（见 src/projectWorkspace/exportRequestFeedback.js）。
+    return requestJson('POST', `/api/projects/${projectId}/exports`, {
+      body: payload,
+      cookie,
+      timeoutMs: 600000,
+    });
   },
   listProjectExports(projectId, cookie) {
     return requestJson('GET', `/api/projects/${projectId}/exports`, { cookie });

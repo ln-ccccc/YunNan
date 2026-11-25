@@ -72,7 +72,7 @@ def history_delete():
     if not isinstance(ids, list) or not ids or not all(
         isinstance(item, int) and not isinstance(item, bool) for item in ids
     ):
-        return fail_api(msg="参数异常：ids 必须是记录 ID 列表")
+        return fail_api(msg="参数异常：ids 必须是记录 ID 列表", status=400)
     Analysis.query.filter(Analysis.id.in_(ids)).delete(synchronize_session=False)
     db.session.commit()
     return success_api(msg="批量删除成功")
@@ -83,7 +83,7 @@ def history_remove_one():
     req_json = request.json or {}
     rid = req_json.get('id')
     if rid is None:
-        return fail_api(msg="参数异常")
+        return fail_api(msg="参数异常", status=400)
     Analysis.query.filter_by(id=rid).delete()
     db.session.commit()
     return success_api(msg="删除成功")
@@ -95,7 +95,7 @@ def history_clear_by_type():
     type_name = req_json.get('type')
     to_type = type_utils.str_to_type(type_name)
     if to_type is None:
-        return fail_api(msg="类型不正确")
+        return fail_api(msg="类型不正确", status=400)
     removed = Analysis.query.filter_by(type=to_type).delete()
     db.session.commit()
     return success_api(msg="清理成功", data={"removed": int(removed or 0)})

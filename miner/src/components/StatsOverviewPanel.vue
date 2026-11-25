@@ -70,16 +70,37 @@ const classShareRows = computed(() => {
 
 const hasClassArea = computed(() => (overview.value?.class_area?.total_area_m2 || 0) > 0);
 
+// 同一时刻只发一个概览请求。后端的概览在缓存过期时要重算，重算期间同一 worker 上的其它
+// 接口会被拖慢；并发两个请求就是让两个 worker 同时重算（2026-11-24 修复时实测：重算约 9 秒，
+// 同一毫秒发出的两个请求各约 8.8 秒，其间其它接口最慢约 670ms，平时约 27ms；随后后端把重算
+// 降到约 0.5 秒，见 applications/api/stats.py）。
+// 在途期间又被调用（新建/归档后的刷新）不能丢：等在途请求回来后补发一次。
+let requestInFlight = null;
+let refetchRequested = false;
 const fetchOverview = async () => {
+  if (requestInFlight) {
+    refetchRequested = true;
+    return requestInFlight;
+  }
   loading.value = true;
   error.value = '';
+  requestInFlight = (async () => {
+    try {
+      const res = await axios.get(`${MINER_API_BASE_URL}/api/stats/overview`);
+      overview.value = res.data?.data || {};
+    } catch (e) {
+      error.value = '统计读取失败，请稍后刷新';
+    }
+  })();
   try {
-    const res = await axios.get(`${MINER_API_BASE_URL}/api/stats/overview`);
-    overview.value = res.data?.data || {};
-  } catch (e) {
-    error.value = '统计读取失败，请稍后刷新';
+    await requestInFlight;
   } finally {
+    requestInFlight = null;
     loading.value = false;
+  }
+  if (refetchRequested) {
+    refetchRequested = false;
+    await fetchOverview();
   }
 };
 

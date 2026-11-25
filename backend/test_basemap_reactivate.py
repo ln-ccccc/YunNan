@@ -29,7 +29,19 @@ class TestBasemapReactivate(TestProjectAPI):
                 self.storage_root / "projects" / str(project_id) / "tiles" / str(resource.id)
             )
             tile_dir.mkdir(parents=True, exist_ok=True)
-            (tile_dir / ".active").write_text("1", encoding="utf-8")
+            # 生产态对齐（2026-11-23 修复配套）：retained 底图的 .active 标记
+            # 已被激活状态机切除，只有 active 底图带标记；旧夹具给 retained
+            # 也写标记，掩盖了"标记判活"对被切换底图永远拒绝的缺陷
+            # 瓦片层级对齐（2026-11-24）：完整的底图每个声明级别都有瓦片——重激活
+            # 门槛会逐级检查，只造 z8 一层的夹具现在属于"半成品"，会被门槛拒绝
+            # （半成品的用例见 test_basemap_reactivation_gate.py）。这里不建切片任务
+            # 记录，顺带覆盖"存量底图没有任务行，只按瓦片内容判"的路径
+            for level in range(8, 16):
+                zoom_dir = tile_dir / str(level) / "207"
+                zoom_dir.mkdir(parents=True, exist_ok=True)
+                (zoom_dir / "107.png").write_bytes(b"png-placeholder")
+            if status == "active":
+                (tile_dir / ".active").write_text("1", encoding="utf-8")
         db.session.commit()
         return resource
 

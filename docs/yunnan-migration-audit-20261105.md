@@ -153,7 +153,7 @@
 
 - **送测前必办**：P1-5（重建镜像）、P1-1（分片白名单）、P1-3（取消杀进程组，需 e2e）、P1-6（至少文档化热更纪律）
 - **高价值低风险**：P1-4（request timeout/遮罩逃生口，几行改动）、P2-12（补一行 ensure_session_owner）、P2-15（NODE_ENV 一行）、P2-2（新增测试断言规范）
-- **需要设计的**：P1-2（semantic_segmentation 异步化——改 API 契约，涉及前端两处调用）、P2-1（缓存策略分层）、P2-16（备份脚本）
+- **需要设计的**：P1-2 异步化本体（2026-11-13 评估结论：并发闸止血已有双测试锁定，标题问题两层防护到位——429 闸 + subprocess timeout=1200<gunicorn 1800；异步化剩余收益仅轮询/取消类 UX 增强，imgUpload 为 4 端点共用、InferenceJob 契约 kml 专用，**建议不立项维持同步+闸**，详见 fix-acceptance §4.1）、P2-1（缓存策略分层；批次 4 已落 Cache-Control 分层部分）
 - **观察项**：P2-7（先实测误判再决定 letterbox）、P2-3/P2-10（冷启动窗口，restart 已自愈）
 
 ---
@@ -166,7 +166,9 @@
 | 2 | P1-3 spatial 取消整组杀进程组（含真实三进程组 e2e 测试） | 887698f |
 | 3 | P1-6 热更纪律文档化 + P2 纵深（static-server 显式 origin-form 断言/502 脱敏 + 启动依赖预检）+ 本报告 P1-5 定性修正 | 本批 |
 | 4（2026-11-05 下午，生产化加固） | P2-4 单发普通图片 512MB 闸门 / P2-13 SECRET_KEY 非 testing 拒绝回退 / P2-14 登录失败限速（15min×5 锁定）/ P2-5 raster_ops 六处静默失败补日志 / P2-10 wait-for-mysql 预算 60s→180s / P2-1 Cache-Control 分层（API no-store、瓦片 24h、透明兜底 60s、鉴权 410/429 no-store）/ P3-1 miner/.env 权威性注释 / P3-2 Zone.Identifier 清理。**审计未列出的新增**：切片任务 deadline（SPATIAL_JOB_TIMEOUT_SECONDS 默认 6h，卡死任务不再永 running）/ SQLALCHEMY pool_pre_ping / 全容器日志轮转 20m×3 / 容器 mem_limit / /api/system/version 版本自描述（YUNNAN_GIT_SHA 注入）/ X-Request-Id 生成回显+5xx 日志携带 / 前端全局错误留痕（errorSink，两 app）/ 备份脚本 docker/backup_yunnan.sh + docs/backup-restore.md / MySQL 慢查询日志 / GeoView 直连瓦片超 maxZoom 透明兜底（10-28 遗留②收口）。测试：test_production_hardening.py 10 例 | 见 git log |
+| 5（2026-11-13，风险复盘批） | P1-2 止血：semantic_segmentation 进程内并发闸（占满 429 快速失败，不再挂满 gunicorn 线程池；异步化本体仍待设计）/ spatial-worker compose `init: true`（P1-3 killpg 整组杀后孤儿僵尸由 docker-init 收尸）/ 数据集登记幂等（同键重跑返回既有记录 `already_registered`）/ 成果详情下发 `roi_geometry` + GeoView 编辑器 ROI 边界叠加与绘制/拖点即时越界提示（后端保存校验仍是唯一防线）/ BFF requestJson 默认超时回退 15s（长操作已有显式超时）。测试：backend 61 例（新增 4）、frontend 69 例 | 本批 |
+| 6（2026-11-13，P2-2 收口批） | P2-2 错误契约收口：业务校验失败（ValueError/FileNotFoundError）统一 HTTP 400，不再 200+success=false；`ProjectNotFoundError` 类型化 404（error_responses.py 统一映射，项目详情/undelete 等入口同口径）/ 全量回归暴露的假绿断言按新契约修正（test_spectral_indices、test_security_recheck 首批；test_project_api 瓦片直挂两负例 + test_new_features 无效模型类型二批）/ GeoView 编辑器 direct_select trash 提示修复真实缺陷：按钮级监听被 mapbox-gl-draw 控件 click 拦截（浏览器探针实证 mousedown 触发而 click 为 0），改为地图容器捕获阶段监听后真浏览器验收 PASS（指引 toast 出现、面未误删、零 console 错误） | 本批 |
 
-**验证**：后端全量 2305 passed + 1337 subtests（新增 5 测试）；frontend 容器构建通过；compose config OK；static-server 实测绝对形 400/正常 200；依赖预检三环境实跑（本机 frontend 28 项/miner 10 项、容器 miner-web 14 项全就绪）。
+**验证**（批次 6 复跑后最新）：后端全量 **2451 passed + 53 skipped** + 1337 subtests、0 failed（yunnan-runtime:current 容器内全量 pytest，`GDAL_DATA`/`PROJ_DATA` 显式指向 conda share——PROJ 库缺省路径打不开会使 osr 坐标转换 TypeError 连坐 40+ 用例；批次 5 时点为 2305 passed）；frontend 69 例通过、容器构建通过；GeoView 编辑器 trash 提示 Playwright 真浏览器验收 PASS；compose config OK；static-server 实测绝对形 400/正常 200；依赖预检三环境实跑（本机 frontend 28 项/miner 10 项、容器 miner-web 14 项全就绪）。
 
-**未修（待负责人决策）**：P1-2（semantic_segmentation 异步化——涉及 API 契约与前端两处调用方，需设计）；P2-1（缓存策略分层）、P2-2（fail_api status 规范）、P2-16（备份脚本）；P2-7（小图斑 letterbox——先实测误判再动手）。
+**未修（待负责人决策）**：P1-2 异步化本体（2026-11-13 已加并发闸 429 止血且有双测试锁定，同日评估结论为**建议不立项**——两层防护已覆盖标题问题，剩余收益为 UX 增强，见 §6 与 fix-acceptance §4.1）；P2-1（缓存策略分层，批次 4 已落 Cache-Control 部分）；P2-7（小图斑 letterbox——先实测误判再动手）。P2-2（fail_api status 规范）已于 2026-11-13 批次 6 收口（28 处补码 + 项目详情类型化 404），自本清单移除。P2-16 备份脚本已于批次 4 落地、4d996ed 真实备份+恢复演练闭环，自本清单移除。

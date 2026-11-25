@@ -2,7 +2,7 @@
   <div class="workspace-page">
     <header class="workspace-header">
       <div>
-        <p class="workspace-kicker">矿山项目化监测平台</p>
+        <p class="workspace-kicker">废弃矿山生态自然恢复过程管理系统V1.0</p>
         <h1>项目工作台</h1>
         <p class="workspace-subtitle">项目建档、空间资源、成果审阅和配置快照均在受控项目上下文中完成。</p>
       </div>
@@ -147,7 +147,8 @@
             :activities="activityItems"
             :loading="slices.assets.loading || slices.snapshots.loading || slices.activity.loading"
             :error="slices.assets.error || slices.snapshots.error || slices.activity.error"
-            @imported="refreshCurrent(INVALIDATION.restoreSnapshot)"
+            :busy="projectOperationBusy"
+            @import-snapshot="importSnapshot"
           />
 
           <ParcelPanel
@@ -186,7 +187,9 @@ import ProjectOverviewPanel from './projectWorkspace/ProjectOverviewPanel.vue';
 import ProjectSelector from './projectWorkspace/ProjectSelector.vue';
 import ProjectSpatialResources from './projectWorkspace/ProjectSpatialResources.vue';
 import { createProjectWorkspaceApi } from '../projectWorkspace/projectWorkspaceApi.js';
+import { exportOutcomePendingMessage, isExportOutcomeUncertain } from '../projectWorkspace/exportRequestFeedback.js';
 import { shouldUseChunkedUpload } from '../utils/basemapChunking.js';
+import { saveBlobAsFile } from '../utils/blobDownload.js';
 import { actionTarget, createSelectionGate, createSlice, INVALIDATION } from '../projectWorkspace/projectWorkspaceViewModel.js';
 import { setSelectedProjectId } from '../services/projectSelectionStore.js';
 
@@ -388,10 +391,11 @@ async function loadSelectedProject(projectId, revision, requestedSlices = Object
   }
 }
 
-async function loadProjects(preferredProjectId = null) {
+async function loadProjects(preferredProjectId = null, { refreshStats = true } = {}) {
   const revision = listGate.next();
-  // 看板与项目列表同刷：新建/归档后统计即时跟随
-  statsPanelRef.value?.fetchOverview?.();
+  // 看板与项目列表同刷：新建/归档后统计即时跟随。首屏除外——看板组件自己会拉，
+  // 这里再调一次就是同一时刻两个相同的请求（refreshStats 只在首屏传 false）
+  if (refreshStats) statsPanelRef.value?.fetchOverview?.();
   if (!await loadProjectList(revision) || listSlice.error) return;
   const items = listSlice.data?.items || [];
   const preferred = preferredProjectId || currentProjectId.value || items[0]?.id;
@@ -722,9 +726,17 @@ async function createExport(format) {
     if (!isCurrentProjectOperation(operation)) return;
     await refreshCurrent(INVALIDATION.export);
   } catch (error) {
-    if (isCurrentProjectOperation(operation)) {
+    if (!isCurrentProjectOperation(operation)) return;
+    if (!isExportOutcomeUncertain(error)) {
       slices.exports.error = messageFrom(error, '导出创建失败');
+      return;
     }
+    // 导出由后端同步生成：502/超时/网络错误时后端可能已建档（2026-11-23 D1）。先刷新
+    // 列表让已生成的记录现身，再给不诱导重复提交的提示。loadSlice 开始时会清空
+    // exports.error，所以提示必须在刷新完成之后写入；刷新期间切了项目同样不写入。
+    await refreshCurrent(INVALIDATION.export);
+    if (!isCurrentProjectOperation(operation)) return;
+    slices.exports.error = exportOutcomePendingMessage(!slices.exports.error);
   } finally {
     if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
   }
@@ -752,14 +764,7 @@ async function downloadFile(path, filename, sliceName) {
   slices[sliceName].error = '';
   try {
     const response = await axios.get(`${minerApiBase}${path}`, { responseType: 'blob' });
-    const objectUrl = URL.createObjectURL(response.data);
-    const anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(objectUrl);
+    saveBlobAsFile(response.data, filename);
   } catch (error) {
     if (isCurrentProjectOperation(operation)) {
       slices[sliceName].error = messageFrom(error, '下载失败，请稍后重试');
@@ -798,6 +803,28 @@ async function restoreSnapshot(snapshotId) {
   } catch (error) {
     if (isCurrentProjectOperation(operation)) {
       slices.snapshots.error = messageFrom(error, '项目配置快照恢复失败');
+    }
+  } finally {
+    if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
+  }
+}
+
+async function importSnapshot({ projectId, manifest } = {}) {
+  // 载荷携带子组件操作开始时锁定的项目 ID；与当前项目不一致说明期间已切换，必须丢弃
+  if (!projectId || !manifest || projectId !== currentProjectId.value) return;
+  const operation = startProjectOperation();
+  if (!operation) {
+    slices.snapshots.error = '有其他项目操作进行中，快照导入未执行，请稍后重试';
+    return;
+  }
+  try {
+    await api.importBackupManifest(operation.projectId, manifest);
+    if (!isCurrentProjectOperation(operation)) return;
+    window.alert('快照导入成功：项目基础信息与矿山/数据集清单已应用');
+    await refreshCurrent(INVALIDATION.restoreSnapshot);
+  } catch (error) {
+    if (isCurrentProjectOperation(operation)) {
+      slices.snapshots.error = messageFrom(error, '快照导入失败，请检查文件格式');
     }
   } finally {
     if (projectOperationGate.isCurrent(operation.revision)) projectOperationBusy.value = false;
@@ -993,7 +1020,7 @@ function scheduleSpatialPoll() {
   }, 2000);
 }
 
-onMounted(() => loadProjects());
+onMounted(() => loadProjects(null, { refreshStats: false }));
 onUnmounted(() => {
   if (spatialPollTimer) window.clearTimeout(spatialPollTimer);
 });

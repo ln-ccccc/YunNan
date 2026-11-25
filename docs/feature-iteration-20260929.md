@@ -78,6 +78,8 @@
 - 撤销/重做：纯逻辑抽 `classificationEditorHistory.mjs`（手势前状态入栈、顶点拖拽 500ms 合并、
   栈深 50、基线化脏判定），Ctrl+Z/Y，保存即新基线；原「撤销本地修改」更名「放弃全部修改」。
 - 合并选中：`@turf/union` 真溶解，仅同地类 ≥2 面；消除锯齿：`@turf/simplify` ≈1.1m 容差。
+  （2026-11-24 起两者都改走后端统一几何引擎：合并是 GEOS `unary_union`，消除锯齿是 GEOS 拓扑保持简化，
+  结果都须通过与保存相同的校验；前端不再自带任何几何算法。见 [架构审计](geometry-engine-architecture-audit.md)。）
 
 ### 3. DXF 导出（四.1）
 

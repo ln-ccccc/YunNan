@@ -96,8 +96,8 @@ MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sh \
 
 ## 4. 诚实边界（未做/已知限制）
 
-1. **P1-2 未修**（semantic_segmentation 等同步长端点异步化）——方案已定（完整异步化），属下一轮，涉及 API 契约与前端两处调用方。
-2. **P2 批次未做**：P2-1 缓存策略 / P2-2 fail_api status 规范 / P2-16 备份脚本 / P2-7 小图斑 letterbox（待实测误判再定）。
+1. **P1-2 止血已验证、异步化本体经评估建议不立项**（2026-11-13 复核）：并发闸已有双测试锁定（占满 429 不触碰推理 / 空闲放行且释放，test_analysis_sync_inference_api.py）；标题问题两层防护到位——"占满 gthread 全站无响应"由闸消除（2 workers 下最多 2/8 线程被占），"孤儿 GPU 进程"正常路径由 subprocess timeout=1200 < gunicorn 1800 防护（异常路径如 OOM/容器重启杀 worker 时，异步化后 job 线程同样消亡，根治需独立 worker 进程，超出本期边界）；异步化本体剩余收益仅为轮询进度/主动取消（UX 痛点已由 15s 逃生口解决），且 imgUpload 为 4 个同步端点共用函数（semantic_segmentation/object_detection/classification/image_restore）、InferenceJob 契约 kml 专用（old_tif_path/mine_fids），单端点分叉或契约复用成本高于收益。如负责人仍要完整异步化，另行立项。
+2. **P2 批次**：P2-2 fail_api status 规范已于 2026-11-13 收口（全仓 28 处无状态码调用补齐 + business_or_server_failure 默认 400，见迁移审计 §7 批次 6）。仍未做：P2-1 缓存策略分层（部分已落地：批次 4 Cache-Control 分层）/ P2-7 小图斑 letterbox（待实测误判再定）。P2-16 备份脚本后于当日下午批次 4 落地（docker/backup_yunnan.sh），并经 4d996ed 真实备份+恢复演练闭环，不再是遗留项。
 3. V4 的 15s 逃生口在"同批请求滞留期间新请求无遮罩反馈"上有已知取舍（宽松优于死锁，与江西定案一致）。
 4. inference-worker 在宿主内存 <4GB 时对 CPU 回退任务预检拒绝（设计行为，非本轮引入）；验收机内存充足即不触发。
-5. miner-web 容器仍用镜像 node_modules（当前 14 项自洽就绪）；其主树 node_modules 缺 4 项未补——补齐前不给 miner-web 挂主树 node_modules（compose 注释已说明）。
+5. miner-web 依赖方向已澄清（2026-11-13 复核，此前表述反了）：主树 8c465ee/4df4d7a 已刻意移除全部零引用依赖（xlsx 含 CVE 版本、@mapbox/togeojson、@xmldom/xmldom、mysql2），**主树 package.json 为权威**（依赖预检 10 项全就绪）；镜像内 14 项 package.json 系清理前旧版。无需向主树"补齐"，容器继续用镜像自洽 node_modules 即可；如需对齐，方向是重建镜像而非回补依赖。

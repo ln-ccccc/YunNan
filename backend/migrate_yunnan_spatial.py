@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import logging
 import os
 import re
 import shutil
@@ -146,9 +147,18 @@ def migrate_indices(project):
     return len(by_fid)
 
 
-def migrate(kml_path):
+def migrate(kml_path, allow_missing_project=False):
     project = Project.query.filter_by(remark=PROJECT_REMARK, deleted_at=None).first()
     if project is None:
+        # BUG-003 联动（2026-11-16 验收）：种子因非云南项目被 --skip-foreign 跳过时，
+        # 本脚本不能因找不到目标项目再次阻断启动，也不得触碰其他项目——本函数全部
+        # 操作均以 remark=PROJECT_REMARK 定界。自动启动路径带 --allow-missing-project
+        # 时记录告警并返回结构化 skipped；手动执行不带该参数保持严格报错。
+        if allow_missing_project:
+            logging.getLogger(__name__).warning(
+                "migrate_yunnan_spatial 未找到云南种子项目，按 allow_missing_project 跳过"
+            )
+            return {"skipped": True, "reason": "yunnan_project_missing"}
         raise RuntimeError("未找到云南种子项目")
     result = {"project_id": project.id, "mine_resource": "existing", "basemap_job": "existing"}
     mine_resource = ProjectSpatialResource.query.filter_by(
@@ -190,9 +200,24 @@ def migrate(kml_path):
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Bootstrap yunnan seed project spatial resources.")
+    parser.add_argument(
+        "--kml-path",
+        default=os.getenv("YUNNAN_KML_PATH", "/app/miner/yunnan.kml"),
+    )
+    parser.add_argument(
+        "--allow-missing-project",
+        action="store_true",
+        help="自动启动模式：云南种子项目不存在时跳过资源引导并告警（不抛错）；"
+        "手动执行不带此参数保持严格报错。",
+    )
+    args = parser.parse_args()
+
     app = create_app(os.getenv("FLASK_CONFIG", "development"))
     with app.app_context():
-        result = migrate(os.getenv("YUNNAN_KML_PATH", "/app/miner/yunnan.kml"))
+        result = migrate(args.kml_path, allow_missing_project=args.allow_missing_project)
         print(json.dumps(result, ensure_ascii=False))
 
 

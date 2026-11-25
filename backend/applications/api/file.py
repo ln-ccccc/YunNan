@@ -53,7 +53,7 @@ def require_file_auth():
 @file_api.post('/upload')
 def upload_api():
     if 'files' not in request.files:
-        return fail_api('请选择文件')
+        return fail_api('请选择文件', status=400)
 
     type_ = request.form['type']
     to_type = type_utils.str_to_type(type_)
@@ -81,7 +81,8 @@ def upload_api():
             if size_mb > MAX_UPLOAD_TIFF_SIZE_MB:
                 return fail_api(
                     f"影像文件 '{photo.filename}' 大小 ({size_mb:.1f}MB) 超过单发上传硬上限 "
-                    f"({MAX_UPLOAD_TIFF_SIZE_MB}MB)，请改用分片续传上传"
+                    f"({MAX_UPLOAD_TIFF_SIZE_MB}MB)，请改用分片续传上传",
+                    status=413,
                 )
         elif not is_tiff_file(photo.filename):
             # 普通图片单发上限（P2-4）：非栅格无逐文件大小闸门，见常量注释
@@ -91,7 +92,8 @@ def upload_api():
             if image_size_mb > MAX_UPLOAD_IMAGE_SIZE_MB:
                 return fail_api(
                     f"图片文件 '{photo.filename}' 大小 ({image_size_mb:.1f}MB) 超过单发上传上限 "
-                    f"({MAX_UPLOAD_IMAGE_SIZE_MB}MB)，请改用分片续传上传"
+                    f"({MAX_UPLOAD_IMAGE_SIZE_MB}MB)，请改用分片续传上传",
+                    status=413,
                 )
 
     data = []
@@ -127,7 +129,7 @@ def upload_api():
                     'raw_tiff_path': raw_tiff_path,
                 })
         except ValueError as e:
-            return fail_api(str(e))
+            return fail_api(str(e), status=400)
         except Exception as e:
             return business_or_server_failure(e, "文件上传失败", logger=LOGGER)
 
@@ -236,7 +238,7 @@ def upload_session_complete_api(session_id):
         return fail_api(str(error)), 400
     except ValueError as error:
         dest_path.unlink(missing_ok=True)
-        return fail_api(str(error))
+        return fail_api(str(error), status=400)
     except Exception as error:
         dest_path.unlink(missing_ok=True)
         return business_or_server_failure(error, "文件上传失败", logger=LOGGER)

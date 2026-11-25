@@ -495,6 +495,74 @@ class TestInferenceJobAPI(unittest.TestCase):
         self.assertFalse(data["success"])
         self.assertNotIn("/internal/path", json.dumps(data))
 
+    def test_retry_job_contract_four_states(self):
+        """重试契约四态（2026-11 验收遗留：失败后只能人工重建任务）：
+        成功（failed→新任务 queued，原任务保持 failed）/ 参数边界
+        （queued 409、legacy 无上下文 409）/ 无数据（404）/ 失败（影像被删 400）。"""
+        import uuid as uuid_module
+
+        self.login()
+        seed = self.seed_ready_project()
+
+        # 成功：failed 任务重试生成新 queued 任务
+        response = self.post_safe_job(seed)
+        self.assertEqual(response.status_code, 201)
+        original_id = json.loads(response.data.decode("utf-8"))["data"]["id"]
+        from applications.models.inference_job import InferenceJob
+
+        job = InferenceJob.query.filter_by(id=original_id).first()
+        job.status = "failed"
+        job.error_code = "WORKER_RESTARTED"
+        self.db.session.commit()
+
+        with patch(
+            "applications.api.inference.resolve_interpretation_scope",
+            return_value=self.project_scope(seed),
+        ):
+            response = self.client.post(f"/api/inference/jobs/{original_id}/retry")
+        self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
+        new_job = json.loads(response.data.decode("utf-8"))["data"]
+        self.assertEqual(new_job["status"], "queued")
+        self.assertNotEqual(new_job["id"], original_id)
+        self.assertEqual(
+            InferenceJob.query.filter_by(id=original_id).first().status, "failed"
+        )
+
+        # 参数边界：非终态（queued）任务不可重试 409
+        queued_id = new_job["id"]
+        response = self.client.post(f"/api/inference/jobs/{queued_id}/retry")
+        self.assertEqual(response.status_code, 409)
+
+        # 参数边界：legacy 无项目/影像上下文的任务 409
+        legacy = InferenceJob(
+            id=str(uuid_module.uuid4()),
+            request_payload_json=json.dumps({"old_tif_path": "/tmp/x.tif"}),
+        )
+        self.db.session.add(legacy)
+        self.db.session.commit()
+        response = self.client.post(f"/api/inference/jobs/{legacy.id}/retry")
+        self.assertEqual(response.status_code, 409)
+
+        # 无数据：404
+        response = self.client.post("/api/inference/jobs/does-not-exist/retry")
+        self.assertEqual(response.status_code, 404)
+
+        # 失败：影像登记已删除 → 重走校验流水后 400 干净报错（不复活坏引用）
+        from applications.models.project import ProjectDataset
+
+        self.db.session.delete(
+            ProjectDataset.query.filter_by(id=seed.dataset.id).first()
+        )
+        self.db.session.commit()
+        with patch(
+            "applications.api.inference.resolve_interpretation_scope",
+            return_value=self.project_scope(seed),
+        ):
+            response = self.client.post(f"/api/inference/jobs/{original_id}/retry")
+        self.assertEqual(response.status_code, 400)
+        data = json.loads(response.data.decode("utf-8"))
+        self.assertFalse(data["success"])
+
     def test_create_job_rejects_legacy_path_body(self):
         self.login()
         response = self.client.post(

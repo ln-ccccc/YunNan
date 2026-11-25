@@ -15,6 +15,7 @@
 """
 import hashlib
 import json
+import os
 import re
 import shutil
 import time
@@ -300,3 +301,33 @@ def assemble_session(session_id: str, dest_path: Path) -> Path:
 
 def remove_session(session_id: str) -> None:
     shutil.rmtree(_session_dir(session_id), ignore_errors=True)
+
+
+def _try_lock_fd(fd: int) -> None:
+    """对已打开的文件描述符加非阻塞排他锁（失败抛 OSError）。锁挂在 open file
+    description 上——同进程的两个线程各自 open 后同样互斥，进程崩溃由内核释放。
+    容器级资源槽位（resource_slots）依赖它做跨进程/跨线程的并发上限。"""
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_fd(fd: int) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass

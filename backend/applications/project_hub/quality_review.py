@@ -10,67 +10,22 @@
   WGS84 球面几何近似计算兜底（Chamberlain & Duquette 公式，与 JS 生态
   turf.area 同源，正反均忽略地球扁率，相对误差 ~0.1% 量级）。
   不读 binding.area_snapshot（量纲随源数据，历史项目曾误映射平方度）。
-- 复核对象优先 current（人工修订后）矢量，为空回落 auto，两者皆空
-  （vector_failed 等）返回零值报告而非报错。
+- 复核对象是 current（已保存的当前版本，包括人工清空后的空集合——复核
+  必须反映当前版本，而不是回退到已被取代的 auto）。只有 current 从未落库、
+  或成果本身 vector_failed 时才用 auto 作线索；两者皆无时返回零值报告而非
+  报错。（本段 2026-11-24 订正：此前写成"为空回落 auto"，与 2026-11-23 的
+  修复不符。）
 """
-import math
 from datetime import datetime, timezone
 
 from applications.common.utils.utc_time import to_utc_z
+from applications.project_hub._geometry import geometry_area_m2, ring_area_m2
 
 DEFAULT_SMALL_AREA_THRESHOLD_M2 = 100.0
 MAX_SMALL_AREA_THRESHOLD_M2 = 1_000_000.0
 MAX_SUSPECTS = 200
 
-_SPHERE_RADIUS_M = 6371008.8
-
 _AREA_PROPERTY_ALIASES = ("area", "TBTYMJ_1", "TBTYMJ")
-
-
-def ring_area_m2(ring):
-    """单环球面面积（m²，带符号：逆时针为正）。重复首尾点与单点环按 0 处理。"""
-    if not ring or len(ring) < 3:
-        return 0.0
-    total = 0.0
-    prev_lon = None
-    prev_lat = None
-    first_lon = None
-    first_lat = None
-    for point in ring:
-        try:
-            lon = math.radians(float(point[0]))
-            lat = math.radians(float(point[1]))
-        except (TypeError, ValueError, IndexError):
-            return 0.0
-        if prev_lon is not None:
-            total += (lon - prev_lon) * (2.0 + math.sin(prev_lat) + math.sin(lat))
-        else:
-            first_lon, first_lat = lon, lat
-        prev_lon, prev_lat = lon, lat
-    if prev_lon is not None and first_lon is not None:
-        total += (first_lon - prev_lon) * (2.0 + math.sin(prev_lat) + math.sin(first_lat))
-    return total * _SPHERE_RADIUS_M * _SPHERE_RADIUS_M / 2.0
-
-
-def geometry_area_m2(geometry):
-    """GeoJSON Polygon/MultiPolygon 绝对面积（m²，外环减内环，环方向不敏感）。"""
-    if not isinstance(geometry, dict):
-        return 0.0
-    geom_type = geometry.get("type")
-    if geom_type == "Polygon":
-        rings = [geometry.get("coordinates") or []]
-    elif geom_type == "MultiPolygon":
-        rings = geometry.get("coordinates") or []
-    else:
-        return 0.0
-    total = 0.0
-    for polygon in rings:
-        if not polygon:
-            continue
-        exterior = abs(ring_area_m2(polygon[0]))
-        holes = sum(abs(ring_area_m2(ring)) for ring in polygon[1:])
-        total += max(exterior - holes, 0.0)
-    return total
 
 
 def _ring_centroid(ring):
@@ -151,10 +106,24 @@ def build_result_quality_review(project_id, result_id, small_area_threshold_m2=N
     }
     current = _serialize_feature_collection(result.current_feature_collection_json)
     auto = _serialize_feature_collection(result.auto_feature_collection_json)
-    current_usable = isinstance(current, dict) and bool(current.get("features"))
-    auto_usable = isinstance(auto, dict) and bool(auto.get("features"))
-    collection = current if current_usable else (auto if auto_usable else None)
-    source = "current" if current_usable else ("auto" if auto_usable else "none")
+    # 版本口径（2026-11-23 修复，2026-11-24 收紧）：current 是已保存的显式
+    # 集合——包括"人工清空"的空集合（features=[]）——复核必须反映当前版本；
+    # 只有 current 从未落库、或成果本身 vector_failed（无可编辑矢量，复核
+    # 提供的是 auto 原始线索）才回退 auto。此前空集合一律回退 auto，导致
+    # 删光图斑保存 V1 后复核仍显示 V0 图斑，画布/质检/溯源口径分叉
+    if (
+        result.vector_status != "vector_failed"
+        and result.current_feature_collection_json
+        and isinstance(current, dict)
+    ):
+        collection = current
+        source = "current"
+    elif isinstance(auto, dict) and bool(auto.get("features")):
+        collection = auto
+        source = "auto"
+    else:
+        collection = None
+        source = "none"
 
     features = (collection or {}).get("features") or []
     class_stats = {}

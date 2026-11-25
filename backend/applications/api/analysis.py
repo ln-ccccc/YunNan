@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -36,6 +37,12 @@ spectral_vector_root = repo_root / 'miner'
 # 矢量白名单不含 .json：受控根就是 miner/ 目录（内含 package.json 等 MB 级
 # JSON），放行 .json 会允许把它们当矢量喂给解析器浪费 CPU
 SPECTRAL_VECTOR_SUFFIXES = {'.kml', '.geojson'}
+
+# 同步推理并发闸（2026-11-13 风险复盘）：semantic_segmentation 在请求线程内
+# 直接执行推理（分钟级），gunicorn 2 worker × 4 线程下 8 个并发慢请求即可占满
+# 线程池，其余 API 全部无响应。每 worker 进程同时只放行 1 个，占满时快速失败
+# 而非排队挂线程。彻底解法是异步化（迁移审查 P1-2，涉及 API 契约另行设计）。
+_sync_inference_slots = threading.BoundedSemaphore(1)
 
 
 def _safe_int(value, default):
@@ -177,7 +184,7 @@ def show_result(analysis_type):
     # 白名单校验：hasattr 会放行模块级任意属性（函数/列表等），导致 filter_by(type=<非标量>) 500
     analysis_type_value = getattr(type_utils, str(analysis_type), None)
     if not isinstance(analysis_type_value, int):
-        return fail_api("当前类型暂未开放")
+        return fail_api("当前类型暂未开放", status=400)
 
     page = _safe_int(request.args.get('page'), 1)
     # per_page 无上界会让单请求整表加载，与 kml_roi_history_list 一致钳制到 100
@@ -196,22 +203,26 @@ def semantic_segmentation_api():
     req_json = request.json or {}
     model_path = req_json.get("model_path") or "mmseg:cc-ln/CUGRS"
     if not str(model_path).startswith("mmseg:"):
-        return fail_api("地物分类仅支持多要素模型 mmseg:cc-ln/CUGRS")
+        return fail_api("地物分类仅支持多要素模型 mmseg:cc-ln/CUGRS", status=400)
 
     img_list = req_json.get("list")
     if not img_list:
-        return fail_api("请上传图片")
+        return fail_api("请上传图片", status=400)
 
     step1_ = req_json.get("prehandle")
     step2_ = req_json.get("denoise")
     if step1_ not in (0, fun_type_2, fun_type_4) or step2_ not in (0, fun_type_3, fun_type_5):
-        return fail_api("参数异常")
+        return fail_api("参数异常", status=400)
 
+    if not _sync_inference_slots.acquire(blocking=False):
+        return fail_api("已有推理任务正在执行中，请稍后重试", status=429)
     try:
         terrain_classification(model_path, up_dir, generate_dir, img_list, step1_, step2_, type_=3)
         return success_api()
     except Exception as e:
         return business_or_server_failure(e, "推理失败", logger=LOGGER)
+    finally:
+        _sync_inference_slots.release()
 
 @analysis_api.post('/image_pre')
 def image_pre_api():
@@ -221,18 +232,18 @@ def image_pre_api():
     type_ = req_json.get("type")
 
     if not img_list:
-        return fail_api("请上传图片")
+        return fail_api("请上传图片", status=400)
     if step1_ not in (fun_type_2, fun_type_4):
-        return fail_api("请求参数异常")
+        return fail_api("请求参数异常", status=400)
     if type_ == 1:
-        return fail_api("当前模式不支持")
+        return fail_api("当前模式不支持", status=400)
 
     temps = [img_url_handle(u) for u in img_list]
     try:
         imgs = handle(step1_, temps, up_dir, generate_dir)
     except ValueError as error:
         # 预处理模块对缺文件/坏图抛带文件名的业务 ValueError，按业务失败返回而非 500
-        return fail_api(str(error))
+        return fail_api(str(error), status=400)
     for i, img in enumerate(imgs):
         imgs[i] = generate_url + img
     return success_api(data=imgs)
@@ -243,7 +254,7 @@ def spectral_indices_api():
     req_json = request.json or {}
     img_list = req_json.get("list")
     if not img_list:
-        return fail_api("请上传图片")
+        return fail_api("请上传图片", status=400)
 
     index_type = req_json.get("index_type", "NDVI")
     year = req_json.get("year", "")
@@ -380,7 +391,7 @@ def kml_roi_output_file(fid, filename):
     except ValueError as error:
         return fail_api(str(error)), 400
     if not target.is_file():
-        return fail_api("结果目录不存在")
+        return fail_api("结果目录不存在", status=404)
     return send_from_directory(str(target.parent), target.name)
 
 
@@ -448,17 +459,17 @@ def kml_roi_history_remove_one():
     req_json = request.json or {}
     record_id = str(req_json.get("record_id", "")).strip()
     if "|" not in record_id:
-        return fail_api("参数异常")
+        return fail_api("参数异常", status=400)
     fid, filename = record_id.split("|", 1)
     if not fid or not filename:
-        return fail_api("参数异常")
+        return fail_api("参数异常", status=400)
     try:
         target = resolve_output_file(miner_change_output_root, fid, filename)
         src_target = resolve_output_file(miner_change_output_root, fid, f"{Path(filename).stem}_src.png")
     except ValueError as error:
         return fail_api(str(error)), 400
     if not target.exists():
-        return fail_api("记录不存在")
+        return fail_api("记录不存在", status=404)
     target.unlink()
     if src_target.exists():
         src_target.unlink()

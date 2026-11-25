@@ -25,6 +25,7 @@ const pendingSaves = [];
 const savePayloads = [];
 const savedVersions = [];
 const submittedClientIds = new Set(); // 已提交过的 client-*（断链断言基准）
+let validateRequests = 0; // 编辑期几何校验请求（geometry/validate）的次数
 const clientToOfficial = new Map();   // 服务端分配映射（正式 ID 断言用）
 
 // 等待一个保存请求进入挂起状态（route handler 已捕获请求体）
@@ -85,6 +86,20 @@ async function main() {
       };
     } else if (request.method() === 'GET' && endpoint.endsWith('/classification-results/142/revisions')) {
       data = { revisions: [{ revision_no: serverRevision, source: 'auto', feature_count: initialFeatureCollection.features.length, created_at: '2026-10-09T10:00:00Z' }] };
+    } else if (request.method() === 'POST' && endpoint.endsWith('/classification-results/142/geometry/validate')) {
+      // 编辑完成后的几何校验（2026-11-24 起走后端几何引擎）。fixture 不实现任何几何算法：
+      // 这个夹具里画的面都在矿山边界内，固定回「合法」，只核对请求体形状（只带几何本身）。
+      // 注意：本夹具每次都是画完 200ms 防抖窗口内就点保存并很快放行响应，保存响应会先把画布上的面
+      // 换掉，待校验的面随之作废，所以这里收到的请求常常是 0 次——这是预期行为（保存进去的内容
+      // 已由服务端校验），不在此断言次数。「画面 / 改顶点后确实发出校验请求」由
+      // geoview-editor-vertex-guard-smoke.cjs 断言（那里每次操作后都停留观察）
+      const body = JSON.parse(request.postData() || '{}');
+      assert.ok(Array.isArray(body.geometries) && body.geometries.length >= 1, 'geometry/validate 的请求体应是 geometries 数组');
+      body.geometries.forEach(geometry => assert.deepEqual(
+        Object.keys(geometry).sort(), ['coordinates', 'type'], 'geometry/validate 只能带几何本身',
+      ));
+      validateRequests += 1;
+      data = { items: body.geometries.map(() => ({ ok: true })) };
     } else if (request.method() === 'POST' && endpoint.endsWith('/classification-results/142/revisions')) {
       // 保存挂起闸门：请求体先入库，等测试显式放行，模拟慢响应/晚到响应
       const payload = JSON.parse(request.postData() || '{}');
@@ -250,7 +265,7 @@ async function main() {
     assert.deepEqual([...new Set(missing)], [], '未经 fixture 覆盖的 API');
     await fs.writeFile(path.join(out, 'save-race-results.json'), JSON.stringify({
       scope: '可见Chromium+HTTP fixture；验证保存竞态行为，不代表真实后端/GPU',
-      browser: browser.version(), checks, savePayloads, errors, missing, consoleErrors, failedRequests,
+      browser: browser.version(), checks, validateRequests, savePayloads, errors, missing, consoleErrors, failedRequests,
     }, null, 2));
     console.log(JSON.stringify({ checks: checks.length, errors, missing, consoleErrors, failedRequests, out }, null, 2));
   } catch (error) {

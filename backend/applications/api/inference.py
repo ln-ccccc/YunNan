@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import re
 
 from flask import Blueprint, request
@@ -23,6 +25,26 @@ from applications.project_hub.spatial_storage import get_storage_root, resolve_s
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _ensure_worker_writable_publish_dir(project_root, project_id=None):
+    """任务创建期预备推理发布目录并保证 Worker 可写（2026-11-18 验收 D-02，自 main 的 65aa0fb/9a96217 移植）。
+
+    推理镜像以 USER inference(uid 10001) 运行；bind mount 部署形态下 projects/<id> 由服务端(root)
+    创建为 755，Worker 发布期 mkdir 会被 EACCES 挡下（生产挂载同样命中——2026-11-24 在生产栈
+    实测复现：新项目的首个推理任务 5 秒内失败）。这里以 0o777 预备 outputs 与 outputs/inference
+    两级（发布还要写 outputs/change_matrix 摘要目录，只放行 inference 子目录不够）；
+    失败不阻塞任务创建，发布期由 PUBLISH_DIR_NOT_WRITABLE 给出明确错误。"""
+    outputs_dir = project_root / "outputs"
+    publish_dir = outputs_dir / "inference"
+    try:
+        publish_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(outputs_dir, 0o777)
+        os.chmod(publish_dir, 0o777)
+    except OSError as error:
+        LOGGER.warning(
+            "推理发布目录预备失败 project_id=%s: %s", project_id, error
+        )
 
 
 inference_api = Blueprint("inference_api", __name__, url_prefix="/api/inference")
@@ -91,23 +113,33 @@ def _safe_create_error_message(error):
     return message
 
 
+def _create_job_from_public_payload(payload):
+    """create / retry 共用的建任务流水：解析→重解析输入→规范化→落库。
+
+    retry 传入的 payload 来自原任务存储的请求快照，同样走全量校验
+    （影像/矿山可能已被删，重试时干净失败而非复活坏引用）。
+    """
+    private_inputs = resolve_project_inference_inputs(
+        **payload,
+        scope_resolver=resolve_interpretation_scope,
+    )
+    storage_root = get_storage_root()
+    project_id = private_inputs["project_id"]
+    project_root = resolve_storage_path(storage_root, f"projects/{project_id}")
+    _ensure_worker_writable_publish_dir(project_root, project_id=project_id)
+    normalized = normalize_job_request(
+        private_inputs,
+        allowed_roots=[storage_root],
+        allowed_output_roots=[project_root / "outputs"],
+    )
+    return create_job(normalized)
+
+
 @inference_api.post("/jobs")
 def create_inference_job_api():
     try:
         payload = _parse_create_job_payload()
-        private_inputs = resolve_project_inference_inputs(
-            **payload,
-            scope_resolver=resolve_interpretation_scope,
-        )
-        storage_root = get_storage_root()
-        project_id = private_inputs["project_id"]
-        project_root = resolve_storage_path(storage_root, f"projects/{project_id}")
-        normalized = normalize_job_request(
-            private_inputs,
-            allowed_roots=[storage_root],
-            allowed_output_roots=[project_root / "outputs"],
-        )
-        job = create_job(normalized)
+        job = _create_job_from_public_payload(payload)
     except InferenceRequestValidationError as error:
         return fail_api(str(error)), 422
     except (ProjectInferenceInputError, ValueError, FileNotFoundError) as error:
@@ -117,6 +149,45 @@ def create_inference_job_api():
             details=getattr(error, "details", None),
         )
     return success_api(data=serialize_job(job)), 201
+
+
+@inference_api.post("/jobs/<job_id>/retry")
+def retry_inference_job_api(job_id):
+    """重试失败/已取消任务（2026-11 验收遗留：失败后只能人工重建）。
+
+    从原任务的请求快照重建公共入参，按 create 同一校验流水新建任务；
+    原任务记录不动（保留失败原因与审计链）。
+    """
+    job = get_job(job_id)
+    if job is None:
+        return fail_api("推理任务不存在"), 404
+    if job.status not in {"failed", "cancelled"}:
+        return fail_api("仅失败或已取消的任务可以重试"), 409
+    try:
+        stored = json.loads(job.request_payload_json or "{}")
+    except ValueError:
+        stored = {}
+    if not isinstance(stored, dict) or not stored.get("project_id") or not stored.get("dataset_id"):
+        return fail_api("该任务缺少项目/影像上下文，无法重试，请重新创建任务"), 409
+    payload = {
+        "project_id": stored["project_id"],
+        "dataset_id": stored["dataset_id"],
+    }
+    if stored.get("year") not in (None, ""):
+        payload["year"] = stored["year"]
+    if isinstance(stored.get("mine_fids"), list):
+        payload["mine_fids"] = stored["mine_fids"]
+    if job.requested_device:
+        payload["device"] = job.requested_device
+    try:
+        new_job = _create_job_from_public_payload(payload)
+    except (ProjectInferenceInputError, ValueError, FileNotFoundError) as error:
+        return fail_api(
+            _safe_create_error_message(error),
+            status=400,
+            details=getattr(error, "details", None),
+        )
+    return success_api(data=serialize_job(new_job)), 201
 
 
 @inference_api.get("/jobs/<job_id>")

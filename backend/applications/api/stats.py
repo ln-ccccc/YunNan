@@ -3,7 +3,8 @@
 GET /api/stats/overview：
 - 项目计数（按 lifecycle status 分组，仅未软删）
 - 矿山绑定总数、图斑要素总数（每 fid+year 取最新成果，不重复计数）
-- 地类占比：按各成果 current FC 的矢量要素球面面积（m²）按类别聚合
+- 地类占比：按各成果 current FC 的矢量要素球面面积（m²）按类别聚合；逐成果的面积记在
+  项目派生目录里，成果没变直接取用（2026-11-24，见 _class_area_share）
 - 新增修复面积：各矿山 change_matrix_pixels.csv（草/林净获得像素）× 像元面积
 - 疑似异常矿山数：最新两期中草林净流向裸建占比 ≥ SUSPECT_LOSS_RATIO 的矿山
 
@@ -13,10 +14,12 @@ import csv
 import json
 import logging
 import math
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import rasterio
-from flask import Blueprint
+from flask import Blueprint, current_app, has_app_context
 from sqlalchemy.orm import load_only
 
 from applications.auth.guard import ensure_logged_in
@@ -24,9 +27,17 @@ from applications.common.utils.http import success_api
 from applications.extensions import db
 from applications.models.project import Project
 from applications.models.classification_result import ClassificationResult
+from applications.project_hub.derived_cache import cache_path, load_cache, result_signature, save_cache
 
 stats_api = Blueprint('stats_api', __name__, url_prefix='/api/stats')
 LOGGER = logging.getLogger(__name__)
+
+# 概览聚合是纯读重计算。2026-11-22 实测约 10s（BFF 15s 超时 502）时先加了模块级 TTL 缓存：
+# 跨进程失效不可行，至多 _TTL 秒有界陈旧；TESTING 旁路避免用例间共享缓存假绿。
+# 2026-11-24 再把重算本身降下来（见 _class_area_share / _change_metrics），缓存过期后的
+# 那一次重算不再拖慢同一 worker 上的其它接口
+_OVERVIEW_CACHE_TTL_SECONDS = 120
+_OVERVIEW_CACHE = {"expires_at": 0.0, "payload": None}
 
 # 类别码 → 类别名（与 kml_roi.change_matrix.CLASS_NAMES 同源）
 CLASS_BY_CODE = {0: "grassland", 1: "forest", 2: "building", 3: "road", 4: "bareground", 5: "water"}
@@ -93,6 +104,8 @@ def _latest_results_per_fid_year(project_ids):
                 ClassificationResult.year,
                 ClassificationResult.vector_status,
                 ClassificationResult.feature_count,
+                ClassificationResult.current_revision_no,
+                ClassificationResult.update_time,
             )
         )
         .order_by(ClassificationResult.id.desc())
@@ -113,31 +126,74 @@ def _latest_results_per_fid_year(project_ids):
     return list(latest.values())
 
 
-def _class_area_share(results):
-    # 矢量 JSON 只为去重后的成果按需加载（同批 id 一条查询），去重阶段
-    # load_only 的行不带 MEDIUMTEXT 重列
-    collections = []
-    if results:
-        collections = (
-            db.session.query(
+# 逐成果地类面积的记忆（2026-11-24）。概览此前每次缓存过期都要把全库有效成果的矢量 JSON
+# （实测 644 条、167.8MB、440 万个顶点）取回、解析、逐点求面积：约 9 秒，其中六秒多是进程
+# CPU，期间拖慢同一 worker 上的其它接口。成果几乎不变，所以把"每个有效成果各类别的面积"记进
+# 项目派生缓存（约定与签名见 applications/project_hub/derived_cache.py）：没变的直接取用，
+# 变了的只重算那几条。面积函数不变；与逐次全量计算相比只有求和次序不同带来的浮点末位差异。
+_AREA_CACHE_FILE = "class_area_by_result.json"
+# 变化矩阵与像元面积是纯文件读取（生产存储单次 stat 约 8ms），逐矿山并发
+_CHANGE_SCAN_WORKERS = 16
+
+
+def _feature_collection_class_areas(raw):
+    """单个成果的 {类别名: 外环球面面积 m²}，六个类别齐全；类别码不认识的记在空串键下（计入总面积）。"""
+    area_by_class = {name: 0.0 for name in CLASS_BY_CODE.values()}
+    try:
+        collection = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return area_by_class
+    for feature in (collection.get("features") or []) if isinstance(collection, dict) else []:
+        code = (feature or {}).get("properties", {}).get("class_code")
+        name = CLASS_BY_CODE.get(code, "")
+        area_by_class[name] = area_by_class.get(name, 0.0) + _polygon_area_m2(feature.get("geometry"))
+    return area_by_class
+
+
+def _class_area_share(results, project_roots=None):
+    """有效成果的矢量球面面积按类别聚合。
+
+    project_roots（{project_id: 项目目录}）给出时启用逐成果面积记忆：签名没变的成果直接取
+    记忆里的面积，只对新增或有变化的成果取矢量 JSON 重算。为 None 时逐条现算（测试，以及
+    不该落文件的场合）。"""
+    area_by_class = {name: 0.0 for name in CLASS_BY_CODE.values()}
+    grouped = {}
+    for result in results:
+        grouped.setdefault(result.project_id, []).append(result)
+    for project_id in sorted(grouped):
+        # 固定求和次序（项目、成果 id 升序），同一份数据每次算出的结果一致
+        group = sorted(grouped[project_id], key=lambda result: result.id)
+        areas = {}
+        project_root = (project_roots or {}).get(project_id)
+        cache_file = cache_path(project_root, _AREA_CACHE_FILE) if project_root is not None else None
+        memo = load_cache(cache_file) if cache_file is not None else {}
+        stale = []
+        for result in group:
+            entry = memo.get(str(result.id))
+            if entry and entry.get("signature") == result_signature(result):
+                areas[result.id] = entry["area_m2"]
+            else:
+                stale.append(result)
+        if stale:
+            # 矢量 JSON 只为需要重算的成果按需加载（同批 id 一条查询）
+            collections = db.session.query(
                 ClassificationResult.id,
                 ClassificationResult.current_feature_collection_json,
+            ).filter(ClassificationResult.id.in_([result.id for result in stale])).all()
+            computed = {result_id: _feature_collection_class_areas(raw) for result_id, raw in collections}
+            for result in stale:
+                areas[result.id] = computed.get(result.id, {name: 0.0 for name in CLASS_BY_CODE.values()})
+        if cache_file is not None:
+            save_cache(
+                cache_file,
+                {
+                    str(result.id): {"signature": result_signature(result), "area_m2": areas[result.id]}
+                    for result in group
+                },
             )
-            .filter(ClassificationResult.id.in_([result.id for result in results]))
-            .all()
-        )
-    area_by_class = {name: 0.0 for name in CLASS_BY_CODE.values()}
-    for _, raw in collections:
-        try:
-            collection = json.loads(raw or "{}")
-        except (TypeError, ValueError):
-            continue
-        for feature in (collection.get("features") or []) if isinstance(collection, dict) else []:
-            code = (feature or {}).get("properties", {}).get("class_code")
-            area_by_class[CLASS_BY_CODE.get(code, "")] = (
-                area_by_class.get(CLASS_BY_CODE.get(code, ""), 0.0)
-                + _polygon_area_m2(feature.get("geometry"))
-            )
+        for result in group:
+            for name, value in areas[result.id].items():
+                area_by_class[name] = area_by_class.get(name, 0.0) + value
     total = sum(area_by_class.values())
     share = {
         name: round(area / total * 100.0, 2) if total > 0 else 0.0
@@ -197,40 +253,60 @@ def _pixel_area_m2(fid_dir: Path):
     return pixel_area
 
 
+def _scan_change_dir(fid_dir: Path):
+    """单座矿的净转移指标 (获得像素, 流失像素, 草林→裸建像素, 有效像素总数, 像元面积 m²)。
+    没有可用的变化矩阵时返回 None。只做文件读取，在线程池里跑。"""
+    matrix = _read_change_matrix_pixels(fid_dir)
+    if matrix is None:
+        return None
+    gained = 0
+    lost = 0
+    to_disturbance = 0
+    total_valid = 0
+    for old_class, transitions in matrix.items():
+        for new_class, pixels in transitions.items():
+            total_valid += pixels
+            if old_class not in RESTORATION_CLASSES and new_class in RESTORATION_CLASSES:
+                gained += pixels
+            if old_class in RESTORATION_CLASSES and new_class not in RESTORATION_CLASSES:
+                lost += pixels
+            if (
+                old_class in RESTORATION_CLASSES
+                and new_class in DISTURBANCE_CLASSES
+            ):
+                to_disturbance += pixels
+    return gained, lost, to_disturbance, total_valid, _pixel_area_m2(fid_dir)
+
+
 def _change_metrics(project_root: Path):
-    """新增修复面积（m²）与疑似异常矿山数（按计划 §4.3/§4.4 口径）。"""
-    restoration_m2 = 0.0
-    suspect_fids = []
+    """新增修复面积（m²）与疑似异常矿山数（按计划 §4.3/§4.4 口径）。
+
+    逐矿山并发读取（原先串行：565 个目录各做两次 stat，外加 60 个矿各读一次矩阵、打开一次
+    label.tif，约 3 秒）。各矿互不依赖；汇总按矿山目录名升序，结果与串行版本一致。"""
+    empty = {"restored_area_m2": 0.0, "suspect_mine_count": 0, "suspect_fids": []}
     inference_root = project_root / "outputs" / "inference"
     if not inference_root.is_dir():
-        return {"restored_area_m2": 0.0, "suspect_mine_count": 0, "suspect_fids": []}
-    for fid_dir in inference_root.iterdir():
+        return dict(empty)
+    names = sorted(path.name for path in inference_root.iterdir())
+
+    def scan(name):
+        fid_dir = inference_root / name
         if not fid_dir.is_dir():
+            return None
+        return _scan_change_dir(fid_dir)
+
+    with ThreadPoolExecutor(max_workers=_CHANGE_SCAN_WORKERS) as pool:
+        scanned = list(pool.map(scan, names))
+    restoration_m2 = 0.0
+    suspect_fids = []
+    for name, item in zip(names, scanned):
+        if item is None:
             continue
-        matrix = _read_change_matrix_pixels(fid_dir)
-        if matrix is None:
-            continue
-        gained = 0
-        lost = 0
-        to_disturbance = 0
-        total_valid = 0
-        for old_class, transitions in matrix.items():
-            for new_class, pixels in transitions.items():
-                total_valid += pixels
-                if old_class not in RESTORATION_CLASSES and new_class in RESTORATION_CLASSES:
-                    gained += pixels
-                if old_class in RESTORATION_CLASSES and new_class not in RESTORATION_CLASSES:
-                    lost += pixels
-                if (
-                    old_class in RESTORATION_CLASSES
-                    and new_class in DISTURBANCE_CLASSES
-                ):
-                    to_disturbance += pixels
-        pixel_area = _pixel_area_m2(fid_dir)
+        gained, lost, to_disturbance, total_valid, pixel_area = item
         if pixel_area:
             restoration_m2 += (gained - lost) * pixel_area
         if total_valid > 0 and to_disturbance / total_valid >= SUSPECT_LOSS_RATIO:
-            suspect_fids.append(fid_dir.name)
+            suspect_fids.append(name)
     return {
         "restored_area_m2": round(max(restoration_m2, 0.0), 1),
         "suspect_mine_count": len(suspect_fids),
@@ -238,7 +314,21 @@ def _change_metrics(project_root: Path):
     }
 
 
-def build_stats_overview(storage_root: Path = None):
+def build_stats_overview(storage_root: Path = None, use_area_memo=False):
+    """use_area_memo=True 时即使传了 storage_root 也启用逐成果面积记忆（给测试用）；
+    正常请求路径上它与 TTL 缓存同开同关。"""
+    now = time.monotonic()
+    cacheable = (
+        storage_root is None
+        and has_app_context()
+        and not current_app.config.get("TESTING")
+    )
+    if (
+        cacheable
+        and _OVERVIEW_CACHE["payload"] is not None
+        and now < _OVERVIEW_CACHE["expires_at"]
+    ):
+        return _OVERVIEW_CACHE["payload"]
     projects = Project.query.filter_by(deleted_at=None).all()
     project_counts = {"draft": 0, "active": 0, "completed": 0, "archived": 0}
     for project in projects:
@@ -257,19 +347,27 @@ def build_stats_overview(storage_root: Path = None):
         "project_total": len(projects),
         "mine_total": mine_total,
         "feature_total": feature_total,
-        "class_area": _class_area_share(results),
     }
 
     root = storage_root or get_storage_root()
+    project_roots = {
+        project.id: resolve_storage_path(root, Path("projects") / str(project.id))
+        for project in active_projects
+    }
+    overview["class_area"] = _class_area_share(
+        results, project_roots if (cacheable or use_area_memo) else None
+    )
     restored_m2 = 0.0
     suspect_fids = []
     for project in active_projects:
-        project_root = resolve_storage_path(root, Path("projects") / str(project.id))
-        metrics = _change_metrics(project_root)
+        metrics = _change_metrics(project_roots[project.id])
         restored_m2 += metrics["restored_area_m2"]
         suspect_fids.extend(f"{project.id}:{fid}" for fid in metrics["suspect_fids"])
     overview["restored_area_m2"] = round(max(restored_m2, 0.0), 1)
     overview["suspect_mine_count"] = len(suspect_fids)
+    if cacheable:
+        _OVERVIEW_CACHE["expires_at"] = now + _OVERVIEW_CACHE_TTL_SECONDS
+        _OVERVIEW_CACHE["payload"] = overview
     return overview
 
 

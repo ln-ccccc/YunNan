@@ -18,9 +18,11 @@ python /app/docker/wait-for-mysql.py
 python /app/docker/write-runtime-env.py
 
 cd /app/backend
-python /app/backend/seed_yunnan_project.py --kml-path /app/miner/yunnan.kml --expected-count 565
+# BUG-003（2026-11-16 验收）：自动启动走 skip-foreign/allow-missing-project——
+# 含非云南区域用户项目的库不再阻断重启；手动执行两脚本（不带新参数）仍为严格校验。
+python /app/backend/seed_yunnan_project.py --kml-path /app/miner/yunnan.kml --expected-count 565 --skip-foreign
 if [ "${AUTO_MIGRATE_YUNNAN_SPATIAL:-1}" = "1" ]; then
-  python /app/backend/migrate_yunnan_spatial.py
+  python /app/backend/migrate_yunnan_spatial.py --allow-missing-project
 fi
 exec gunicorn \
   --bind "0.0.0.0:${BACKEND_PORT:-5008}" \

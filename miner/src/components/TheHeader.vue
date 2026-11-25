@@ -2,7 +2,7 @@
   <header class="header">
     <div class="header-left">
       <div class="logo-area">
-        <h1 class="title">矿山生态修复智能监测平台</h1>
+        <h1 class="title">废弃矿山生态自然恢复过程管理系统V1.0</h1>
       </div>
     </div>
     <div class="header-right">

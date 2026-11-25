@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import uuid
+from itertools import islice
 from pathlib import Path
 
 from osgeo import gdal, ogr, osr
@@ -555,8 +556,52 @@ def _sidecar_paths(path):
     return sorted({item.name for item in names if item.is_file()})
 
 
+def _has_png_tile(directory):
+    """目录（含子目录）里是否至少有一张 PNG 瓦片——找到第一张即返回，不全量遍历。
+
+    生产存储是宿主盘的 9p 挂载，单次元数据访问约 8ms；全量瓦片（3 万张）逐个 stat
+    要几分钟，这里只做"这一层有没有瓦片"的存在性判断。"""
+    try:
+        return any(islice(Path(directory).rglob("*.png"), 1))
+    except OSError:
+        return False
+
+
+def basemap_reactivation_blocker(project_id, target, tile_dir):
+    """这张 retained 底图现在能不能重新激活；不能时返回给用户看的原因，能则返回 None。
+
+    两道检查对应两种"看着像历史底图、其实不能用"的情形（2026-11-24 审计 C1）：
+    - 切片是否真正完成：只有"切换下来的完整底图"才是 retained。切片被取消/失败的资源
+      此前也被标成 retained（worker 侧已改为 failed），这里对存量数据再核一次它最近
+      一次切片任务的结果；
+    - 瓦片是否可用：声明的每一个缩放级别都要有瓦片。只看"目录非空"时，只切出一张
+      z8 瓦片的半成品也能通过，重激活后会替换掉原本可用的底图，并对外宣称可放大到
+      最高级别，而地图在那一级是空白。
+    """
+    latest_job = (
+        ProjectSpatialJob.query.filter_by(project_id=project_id, resource_id=target.id)
+        .order_by(ProjectSpatialJob.create_time.desc(), ProjectSpatialJob.id.desc())
+        .first()
+    )
+    if latest_job is not None and latest_job.status != "succeeded":
+        return f"切片任务未成功结束（{latest_job.status}），瓦片不完整"
+    if target.min_zoom is not None and target.max_zoom is not None:
+        levels = range(int(target.min_zoom), int(target.max_zoom) + 1)
+        missing = [level for level in levels if not _has_png_tile(tile_dir / str(level))]
+        if missing:
+            span = f"{missing[0]}–{missing[-1]}" if len(missing) > 1 else str(missing[0])
+            return f"缩放级别 {span} 缺少瓦片（共 {len(missing)} 级），瓦片不完整"
+        return None
+    if not _has_png_tile(tile_dir):
+        return "该底图的瓦片数据已被清理，无法重新激活"
+    return None
+
+
 def list_retained_basemaps(project_id):
-    """列出 retained 历史底图（保留最近 2 个的策略产物），供重新激活。"""
+    """列出 retained 历史底图（保留最近 2 个的策略产物），供重新激活。
+
+    每条附 reactivable / reactivate_blocked_reason：界面据此置灰按钮并说明原因，
+    不让用户点了才知道不行。"""
     if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
         raise ValueError(f"项目不存在: {project_id}")
     rows = (
@@ -568,17 +613,32 @@ def list_retained_basemaps(project_id):
         .order_by(ProjectSpatialResource.version.desc())
         .all()
     )
-    return [_serialize_resource(row) for row in rows]
+    storage_root = ensure_storage_layout()
+    items = []
+    for row in rows:
+        item = _serialize_resource(row)
+        tile_dir = resolve_storage_path(
+            storage_root, Path("projects") / str(project_id) / "tiles" / str(row.id)
+        )
+        blocker = basemap_reactivation_blocker(project_id, row, tile_dir)
+        item["reactivable"] = blocker is None
+        item["reactivate_blocked_reason"] = blocker
+        items.append(item)
+    return items
 
 
 def reactivate_basemap(project_id, resource_id, actor="system"):
     """重新激活 retained 历史底图：互斥激活（旧 active 置 retained）。
 
-    前提是瓦片目录与 .active 标记仍在其自身 resource 目录中（激活期只改
-    状态与标记，不复制数据——性能计划遗留项的收敛实现）。
+    只接受"切换下来的完整底图"：状态必须是 retained，最近一次切片任务成功，声明的
+    各缩放级别都有瓦片（见 basemap_reactivation_blocker）。不要求 .active 标记存在——
+    激活状态机 commit 后会删除旧标记，真实流程产生的 retained 底图本就没有它。
+
+    互斥与回滚顺序和切片 worker 的 _activate_basemap 一致：写新标记 → commit（失败则
+    删掉新标记，旧标记不动）→ commit 成功后才删除旧标记。此前顺序相反（先删旧标记
+    再 commit）：commit 一失败，库里旧底图仍是激活态，它的标记却已经没了。
     """
-    if Project.query.filter_by(id=project_id, deleted_at=None).first() is None:
-        raise ValueError(f"项目不存在: {project_id}")
+    _editable_project(project_id)
     target = ProjectSpatialResource.query.filter_by(
         id=resource_id,
         project_id=project_id,
@@ -588,14 +648,17 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         raise ValueError("历史底图不存在")
     if target.status == "active":
         raise ValueError("该底图已是激活状态")
+    if target.status != "retained":
+        raise ValueError(f"该底图不是可重新激活的历史底图（当前状态：{target.status}）")
 
     storage_root = ensure_storage_layout()
     target_tile_dir = resolve_storage_path(
         storage_root,
         Path("projects") / str(project_id) / "tiles" / str(target.id),
     )
-    if not (target_tile_dir / ".active").is_file():
-        raise ValueError("该底图的瓦片数据已被清理，无法重新激活")
+    blocker = basemap_reactivation_blocker(project_id, target, target_tile_dir)
+    if blocker is not None:
+        raise ValueError(f"无法重新激活：{blocker}")
 
     current_active = (
         ProjectSpatialResource.query.filter_by(
@@ -607,17 +670,9 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         .first()
     )
     if current_active is not None:
-        current_tile_dir = resolve_storage_path(
-            storage_root,
-            Path("projects") / str(project_id) / "tiles" / str(current_active.id),
-        )
-        active_marker = current_tile_dir / ".active"
-        if active_marker.exists():
-            active_marker.unlink()
         current_active.status = "retained"
-
-    (target_tile_dir / ".active").write_text("1", encoding="utf-8")
     target.status = "active"
+    target.error_message = None
     _activity(
         project_id,
         "basemap_reactivated",
@@ -626,7 +681,21 @@ def reactivate_basemap(project_id, resource_id, actor="system"):
         actor=actor,
         target={"type": "spatial_resource", "id": str(target.id)},
     )
-    db.session.commit()
+    active_marker = target_tile_dir / ".active"
+    active_marker.write_text(str(target.id), encoding="utf-8")
+    try:
+        db.session.commit()
+    except Exception:
+        active_marker.unlink(missing_ok=True)
+        raise
+    # commit 成功后才删除旧底图的标记：数据库失败路径上新标记已回滚、旧标记未动，
+    # 文件状态与回滚后的库状态保持一致
+    if current_active is not None:
+        current_tile_dir = resolve_storage_path(
+            storage_root,
+            Path("projects") / str(project_id) / "tiles" / str(current_active.id),
+        )
+        (current_tile_dir / ".active").unlink(missing_ok=True)
     return _serialize_resource(target)
 
 

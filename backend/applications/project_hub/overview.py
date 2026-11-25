@@ -246,6 +246,8 @@ ACTION_CODE_BY_EVENT_TYPE = {
     "dataset_created": "DATASET_REGISTERED",
     "project_archived": "PROJECT_ARCHIVED",
     "project_restored": "PROJECT_RESTORED",
+    "project_undeleted": "PROJECT_UNDELETED",
+    "dataset_deleted": "DATASET_DELETED",
     "spatial_resource_removed": "SPATIAL_RESOURCE_REMOVED",
     "spatial_resource_activated": "SPATIAL_RESOURCE_ACTIVATED",
     "spatial_job_queued": "SPATIAL_JOB_QUEUED",
