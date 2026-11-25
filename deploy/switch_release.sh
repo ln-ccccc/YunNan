@@ -7,7 +7,7 @@
 #   --project-dir <目录>   compose 文件与环境文件所在的目录（默认本仓库）
 #   --file <文件>          compose 文件，相对 --project-dir，可重复（默认 docker-compose.prod.yml 加 docker-compose.gpu.yml）
 #   --env-file <文件>      环境文件，可重复；版本钉在第一个里（默认 .env 加 image_bundle.env）
-#   --skip <服务,...>      这次不切也不核对的服务，例如演练栈没有的 inference-worker
+#   --skip <服务,...>      不切也不核对的 worker（目前只有 inference-worker 用得上：演练栈没有它）
 #   --config-override <文件>  演练栈挂的另一份 config.yaml（只改了端口）；生产不传
 #   --with-mysql           mysql 容器不存在时先创建；已存在则完全不碰
 #   --allow-running-jobs   有排队或运行中的推理 / 切片任务也照常切（默认拦下：重启 worker 会中断任务）
