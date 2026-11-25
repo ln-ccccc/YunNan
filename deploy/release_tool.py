@@ -544,6 +544,8 @@ def cmd_manifest(args):
         data_files[relative] = file_record(path) if path.is_file() else None
     cache_path = Path(args.asset_cache) if args.asset_cache else None
     cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path and cache_path.is_file() else {}
+    if cache.get("_algorithm") != tree_hash.ALGORITHM:
+        cache = {"_algorithm": tree_hash.ALGORITHM}     # 指纹算法变了，按旧算法缓存的资产指纹作废，重算
     assets = asset_records(args.asset_root, cache)
     if cache_path:
         cache_path.parent.mkdir(parents=True, exist_ok=True)

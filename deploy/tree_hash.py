@@ -15,6 +15,7 @@
 指纹算法：相对路径（正斜杠）按码位排序，逐个文件取内容的 sha256，
          把 "<相对路径>\\0<十六进制摘要>\\n" 依次拼接，再对整段取 sha256。
          文件集合、文件名、文件内容任一不同，指纹就不同。
+         文件名里的私有区字符 U+F03A 按冒号算（见 fingerprint_name）。
 始终跳过：__pycache__ 目录与 *.pyc 文件（只读挂载下不会生成，别的环境里可能生成）。
 路径不存在或是空目录时直接报错退出，不会算出一个看起来正常的"空指纹"。
 """
@@ -25,6 +26,14 @@ import os
 import sys
 
 CHUNK = 1 << 20
+ALGORITHM = 2   # 指纹算法的版本：算法变了就加一，宿主机上按旧算法算出来的资产指纹缓存随之作废
+
+
+def fingerprint_name(relative):
+    """指纹里用的相对路径。Windows 上 MSYS / Cygwin 把名字里的冒号记成私有区字符 U+F03A
+    （下载标记 "x.pth:Zone.Identifier" 就是真实文件，名字里带的是 U+F03A），Docker Desktop 挂进容器后又是普通的冒号。
+    宿主机生成、容器内核对用的是同一份脚本：名字都按容器里看到的算，两边的指纹才对得上。"""
+    return relative.replace("\uf03a", ":")
 
 
 def relative_parts(relative):
@@ -51,7 +60,7 @@ def walk_files(root, relative, exclude):
             if name.endswith(".pyc"):
                 continue
             full = os.path.join(directory, name)
-            name_relative = os.path.relpath(full, root).replace(os.sep, "/")
+            name_relative = fingerprint_name(os.path.relpath(full, root).replace(os.sep, "/"))
             if any(name_relative == item or name_relative.startswith(item + "/") for item in exclude):
                 continue   # 被排除的路径本身，或它目录下的文件
             files.append((name_relative, full))

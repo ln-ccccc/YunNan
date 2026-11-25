@@ -189,6 +189,17 @@ class TreeHashTest(TempDirTestCase):
         write(self.root / "backend" / "app.pyc", "bytes")
         self.assertEqual(baseline, tree_hash.tree_fingerprint(str(self.root), "backend"))
 
+    def test_names_use_the_colon_as_seen_inside_containers(self):
+        """Windows 上 MSYS 把冒号记成 U+F03A，挂进容器又变回冒号：指纹按容器里看到的名字算，两边才一致。
+        2026-11-25 容器内重算资产 SHA256 时查出：目录型资产全部对不上，差别只在 2,995 个下载标记文件名字里的这一个字符。"""
+        write(self.root / "vendor" / "a.py", "1")
+        write(self.root / "vendor" / ("w.pth" + "\uf03a" + "Zone.Identifier"), "mark")
+        expected = hashlib.sha256()
+        for name, content in (("vendor/a.py", b"1"), ("vendor/w.pth:Zone.Identifier", b"mark")):
+            expected.update(name.encode("utf-8") + b"\0" + hashlib.sha256(content).hexdigest().encode("ascii") + b"\n")
+        self.assertEqual({"files": 2, "bytes": 1 + len("mark"), "sha256": expected.hexdigest()},
+                         tree_hash.tree_fingerprint(str(self.root), "vendor"))
+
     def test_stat_mode(self):
         write(self.root / "backend" / "model" / "w.pth", "weights")
         write(self.root / "backend" / "model" / "vendor" / "a.py", "1")
@@ -502,6 +513,21 @@ class ManifestFlowTest(TempDirTestCase):
         self.assertEqual(1, code, output)
         self.assertIn("不符: 运行时资产目录读不了", output)
         self.assertIn("空目录", output)
+
+    def test_cached_asset_fingerprints_from_an_older_algorithm_are_discarded(self):
+        """指纹算法升级后，缓存里按旧算法算出来的资产指纹不能再用——哪怕大小和文件数都没变。"""
+        relative = "backend/model/mmseg_config/dinov3_swinV1"
+        cache_file = self.root / "cache.json"
+        key = release_tool.host_path(str(self.assets / relative))
+        write(cache_file, json.dumps({"_algorithm": release_tool.tree_hash.ALGORITHM - 1,
+                                      key: {"bytes": len("weights"), "files": 1, "sha256": "stale"}}))
+        self.export()
+        self.tool(release_tool.cmd_placeholders, release=str(self.release))
+        code, output = self.tool(release_tool.cmd_manifest, release=str(self.release), commit="HEAD", repo=str(self.repo), name="test-release",
+                                 data_dir=str(self.root), asset_root=str(self.assets), asset_cache=str(cache_file))
+        self.assertEqual(0, code, output)
+        self.assertNotEqual("stale", json.loads(read(self.release / "RELEASE.json"))["assets"][relative]["sha256"])
+        self.assertEqual(release_tool.tree_hash.ALGORITHM, json.loads(read(cache_file))["_algorithm"])
 
     def test_tampered_code_is_caught(self):
         self.flow()
